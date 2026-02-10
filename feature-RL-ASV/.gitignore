@@ -1,0 +1,23 @@
+# Ignore the entire results folder
+results/
+demo_models/
+startup_files/
+
+# Ignore all Python byte-code caches
+**/__pycache__/
+*.py[cod]
+
+# Ignore build/install artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+
+# macOS Finder metadata
+**/.DS_Store
+*.DS_Store
+.DS_Store
+
+#files to view changes via git
+*.diff
