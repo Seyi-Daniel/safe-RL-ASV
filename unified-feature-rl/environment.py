@@ -208,7 +208,7 @@ class SingleTargetFeatureEnv:
         self._draw_goal(self.agent.goal_x, self.agent.goal_y, (250, 215, 60))
 
         if self.envp.show_spawn_rings:
-            self._draw_dotted_circle(self.start_x, self.start_y, self.envp.spawn_ring_radius, (180, 220, 255))
+            self._draw_dotted_circle(self.agent.x, self.agent.y, self.envp.spawn_ring_radius, (180, 220, 255))
             self._draw_dotted_circle(self.start_x, self.start_y, self.envp.goal_ring_radius, (250, 215, 60))
 
         self._draw_vessel(self.agent, (95, 170, 255), "A")
