@@ -1,110 +1,97 @@
 # unified-feature-rl
 
-New standalone project folder for your corrected feature-based RL implementation.
+Single-agent ASV training sandbox using **DDQN** (feature-based state + discrete control actions).
 
-## What this implements
+## What this now implements
 
-- One **agent/ASV** vessel + one **target** vessel.
-- Both vessels have their own goals and move each episode.
-- Random initial positions, headings, speeds, and goals (within square world bounds).
-- Internal 12-sector encounter awareness.
-- **10 input features** for the agent policy (target goal removed):
-  1. agent x
-  2. agent y
-  3. agent heading
-  4. agent speed
-  5. agent goal x
-  6. agent goal y
-  7. target heading relative to agent
-  8. target speed
-  9. relative bearing to target
-  10. relative distance to target
-- **2 continuous outputs** from the policy:
-  - rudder command in `[-1, 1]`
-  - throttle command in `[-1, 1]`
+- One learning ASV vessel (no second target vessel in training).
+- Agent always starts at the world center.
+- Agent heading is randomized each episode.
+- Agent goal is sampled on a random angle along a configurable outer ring around the start point.
+- Optional dotted rings rendered around the start location:
+  - `spawn_ring_radius` (inner ring)
+  - `goal_ring_radius` (outer goal ring)
 
-## Single place to tweak numerics/hyperparameters
+## State, action, and algorithm
 
-Edit:
-- `unified-feature-rl/hyperparameters.py`
+### Observation/state (6 features)
+1. normalized agent x
+2. normalized agent y
+3. normalized agent heading
+4. normalized agent speed
+5. normalized goal x
+6. normalized goal y
 
-This file contains environment dynamics, reward weights, and training hyperparameters.
-The values are imported and used by:
-- `unified-feature-rl/environment.py`
-- `unified-feature-rl/train.py`
-- `unified-feature-rl/run_episode.py`
+### Action space (9 discrete actions)
+Actions are a Cartesian product of:
+- steer: `{none, starboard, port}`
+- throttle: `{coast, accelerate, decelerate}`
 
-## Files
+Each DDQN action index `[0..8]` is decoded into continuous control commands for the simulator (`rudder`, `throttle` in `{-1,0,1}`).
 
-- `hyperparameters.py` — all main numerics/hyperparameters.
-- `environment.py` — environment dynamics, observation build, reward terms, COLREGs + DCPA shaping, pygame render.
-- `policy.py` — small continuous policy MLP utilities.
-- `train.py` — CEM-based RL training (continuous outputs, no torch dependency).
-- `run_episode.py` — run episodes with random policy or a saved trained policy.
+### Training algorithm
+Training is now **Double DQN** (not CEM):
+- online and target Q networks
+- replay buffer
+- epsilon-greedy exploration with linear decay by environment steps
+- Double-DQN target selection (`argmax` from online net, value from target net)
+- smooth L1 (Huber) loss and gradient clipping
 
-## Run commands
+## Why this differs from the previous CEM version
 
-### 1) Run visualization / episodes
+The RL_ASV and feature-RL-ASV subprojects are value-based DDQN-style implementations. This subproject now follows that same family so hyperparameters and behavior match expected DDQN workflows (episodes, replay, target updates, epsilon schedule) instead of population/elites.
+
+## Suggested improvements included
+
+Compared with a minimal DDQN baseline, this setup includes:
+- gradient clipping (`max_norm=5.0`) for stability
+- Huber loss (robust to outliers)
+- checkpoint metadata in `ddqn_policy.pt` (`obs_dim`, `hidden_dim`, `n_actions`)
+
+If you want, next improvements could be:
+- prioritized replay
+- dueling DDQN head
+- n-step returns
+- reward normalization
+
+## Main files
+
+- `hyperparameters.py` — environment/reward/DDQN hyperparameters.
+- `environment.py` — single-agent environment and rendering.
+- `policy.py` — DDQN Q-network and action decoding.
+- `train.py` — DDQN training loop.
+- `run_episode.py` — evaluate with random or saved DDQN policy.
+
+## Commands
+
+### Train (DDQN)
+
+```bash
+python unified-feature-rl/train.py --episodes 600 --render
+# or headless
+python unified-feature-rl/train.py --episodes 600 --no-render
+```
+
+### Run episodes (evaluation/visualization)
 
 ```bash
 python unified-feature-rl/run_episode.py --render
+python unified-feature-rl/run_episode.py --render --policy unified-feature-rl/runs/ddqn_policy.pt
 ```
 
-### 2) Train policy
+## Key train options
 
-```bash
-python unified-feature-rl/train.py --episodes 200 --population 32
-```
-
-### 3) Run with trained policy
-
-```bash
-python unified-feature-rl/run_episode.py --render --policy unified-feature-rl/runs/policy_mean.npy
-```
-
-## Complete command options
-
-### `run_episode.py`
-
-```bash
-python unified-feature-rl/run_episode.py [options]
-```
-
-Options:
-- `--episodes <int>` number of episodes (default: 5)
-- `--seed <int>` base random seed (default: 7)
-- `--policy <path.npy>` load trained policy (`policy_mean.npy`)
-- `--hidden-dim <int>` policy hidden size (default: 32)
-- `--render` enable pygame visualization (**visibility ON**)
-- `--no-render` disable pygame visualization (**visibility OFF**)
-- `--show-grid` draw map grid
-- `--hide-grid` hide map grid
-- `--show-sectors` draw 12 sector rays
-- `--hide-sectors` hide 12 sector rays
-- `--episode-seconds <float>` episode duration
-- `--world-w <float>` world width
-- `--world-h <float>` world height
-- `--sensor-range <float>` sensing range used in features / COLREG logic window
-- `--pixels-per-meter <float>` render scale
-- `--save-log <path.json>` save episode summaries
-
-### `train.py`
-
-```bash
-python unified-feature-rl/train.py [options]
-```
-
-Options:
-- `--episodes <int>` number of CEM iterations
-- `--population <int>` candidate policies per iteration
-- `--elite-frac <float>` top fraction kept as elites
-- `--eval-rollouts <int>` rollouts per candidate
-- `--hidden-dim <int>` policy hidden size
-- `--init-std <float>` initial parameter sampling std
-- `--min-std <float>` lower bound on std
-- `--std-decay <float>` std decay factor
-- `--seed <int>` random seed
-- `--save-every <int>` checkpoint frequency
-- `--out-dir <path>` directory for outputs
-- `--render` enable pygame visualization during training
-- `--no-render` disable pygame visualization during training
+- `--episodes`
+- `--batch-size`
+- `--replay-size`
+- `--min-replay`
+- `--gamma`
+- `--learning-rate`
+- `--target-update`
+- `--eps-start`
+- `--eps-end`
+- `--eps-decay-steps`
+- `--hidden-dim`
+- `--save-every`
+- `--out-dir`
+- `--render` / `--no-render`
