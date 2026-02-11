@@ -1,32 +1,48 @@
 from __future__ import annotations
 
-import numpy as np
+from dataclasses import dataclass
+
+import torch
+import torch.nn as nn
 
 
-def unpack_theta(theta: np.ndarray, in_dim: int = 10, hidden_dim: int = 32, out_dim: int = 2):
-    """Unpack flat parameter vector into MLP weights."""
-    idx = 0
-    w1_size = in_dim * hidden_dim
-    b1_size = hidden_dim
-    w2_size = hidden_dim * out_dim
-    b2_size = out_dim
-
-    w1 = theta[idx : idx + w1_size].reshape(in_dim, hidden_dim)
-    idx += w1_size
-    b1 = theta[idx : idx + b1_size]
-    idx += b1_size
-    w2 = theta[idx : idx + w2_size].reshape(hidden_dim, out_dim)
-    idx += w2_size
-    b2 = theta[idx : idx + b2_size]
-    return w1, b1, w2, b2
+N_ACTIONS = 9
 
 
-def theta_dim(in_dim: int = 10, hidden_dim: int = 32, out_dim: int = 2) -> int:
-    return in_dim * hidden_dim + hidden_dim + hidden_dim * out_dim + out_dim
+@dataclass(frozen=True)
+class ActionCommand:
+    rudder: float
+    throttle: float
 
 
-def policy_action(obs: np.ndarray, theta: np.ndarray, hidden_dim: int = 32) -> np.ndarray:
-    w1, b1, w2, b2 = unpack_theta(theta, in_dim=10, hidden_dim=hidden_dim, out_dim=2)
-    h = np.tanh(obs @ w1 + b1)
-    out = np.tanh(h @ w2 + b2)
-    return out.astype(np.float32)  # [rudder_cmd, throttle_cmd] in [-1, 1]
+def decode_action_idx(a: int) -> ActionCommand:
+    """Map discrete action index [0,8] to rudder/throttle in {-1,0,1}."""
+    steer_idx = a // 3
+    throttle_idx = a % 3
+
+    steer_map = {0: 0.0, 1: -1.0, 2: 1.0}      # none, starboard, port
+    throttle_map = {0: 0.0, 1: 1.0, 2: -1.0}   # coast, accelerate, decelerate
+    return ActionCommand(rudder=steer_map[steer_idx], throttle=throttle_map[throttle_idx])
+
+
+class DDQNQNet(nn.Module):
+    """Feature-DDQN MLP, similar style to feature-RL-ASV (ReLU + Kaiming init)."""
+
+    def __init__(self, in_dim: int = 6, hidden_dim: int = 256, n_actions: int = N_ACTIONS):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, n_actions),
+        )
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
