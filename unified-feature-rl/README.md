@@ -11,6 +11,7 @@ Single-agent ASV training sandbox using **DDQN** (feature-based state + discrete
 - Optional dotted rings rendered around the start location:
   - `spawn_ring_radius` (inner ring)
   - `goal_ring_radius` (outer goal ring)
+  - `vessel_outline_radius` (agent marker ring size in render)
 
 ## State, action, and algorithm
 

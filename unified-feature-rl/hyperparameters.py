@@ -34,6 +34,7 @@ class EnvParams:
     goal_radius: float = 10.0
     spawn_ring_radius: float = 35.0
     goal_ring_radius: float = 180.0
+    vessel_outline_radius: float = 4.0
 
 
 @dataclass

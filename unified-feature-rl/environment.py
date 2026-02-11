@@ -234,7 +234,7 @@ class SingleTargetFeatureEnv:
             self._screen,
             (255, 255, 255),
             (self.sx(v.x), self.sy(v.y)),
-            int(max(2, self.rewp.collision_radius * self.envp.pixels_per_meter * 0.5)),
+            int(max(2, self.envp.vessel_outline_radius * self.envp.pixels_per_meter)),
             1,
         )
         txt = self._font.render(label, True, (255, 255, 255))
