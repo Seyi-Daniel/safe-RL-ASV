@@ -1,0 +1,14 @@
+# Core simulation and NEAT training
+neat-python>=0.92
+pygame>=2.1
+numpy>=1.23
+matplotlib>=3.5
+imageio>=2.31
+Pillow>=9.4
+
+# Explanation pipelines (LIME/SHAP)
+lime>=0.2.0
+shap>=0.44.0
+
+# Sensitivity summary table export
+openpyxl>=3.1
