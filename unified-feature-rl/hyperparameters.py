@@ -36,6 +36,13 @@ class EnvParams:
     goal_ring_radius: float = 180.0
     vessel_outline_radius: float = 4.0
 
+    # moving target vessel on outer-circle to outer-circle arc
+    target_outer_radius: float = 180.0
+    target_min_speed: float = 2.0
+    target_max_speed: float = 7.0
+    target_arc_min_deg: float = 20.0
+    target_arc_max_deg: float = 110.0
+
 
 @dataclass
 class RewardParams:
@@ -64,7 +71,7 @@ class TrainParams:
     eps_end: float = 0.05
     eps_decay_steps: int = 300_000
 
-    # network architecture: 6 -> hidden -> hidden -> 9 actions
+    # network architecture: 10 -> hidden -> hidden -> 9 actions
     hidden_dim: int = 256
 
     # reproducibility / checkpoints

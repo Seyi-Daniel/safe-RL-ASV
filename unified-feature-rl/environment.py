@@ -36,7 +36,7 @@ class Vessel:
 
 
 class SingleTargetFeatureEnv:
-    """Single learning ASV navigating to a goal sampled on an outer ring."""
+    """Single learning ASV with a moving target vessel that traverses an inner arc."""
 
     def __init__(
         self,
@@ -49,12 +49,23 @@ class SingleTargetFeatureEnv:
         self.rng = random.Random(self.envp.seed)
 
         self.agent: Optional[Vessel] = None
+        self.target: Optional[Vessel] = None
         self.start_x = 0.5 * self.envp.world_w
         self.start_y = 0.5 * self.envp.world_h
         self.time = 0.0
         self.step_idx = 0
         self.max_steps = max(1, int(round(self.envp.episode_seconds / self.envp.dt)))
         self.prev_goal_d = 0.0
+
+        # target arc trajectory state (quadratic bezier)
+        self.target_ctrl_x = 0.0
+        self.target_ctrl_y = 0.0
+        self.target_end_heading = 0.0
+        self.target_prog = 0.0
+        self.target_prog_rate = 0.0
+        self.target_start_x = 0.0
+        self.target_start_y = 0.0
+        self.target_cruise_speed = 0.0
 
         self.render_enabled = render and HAS_PYGAME
         self._screen = None
@@ -112,8 +123,97 @@ class SingleTargetFeatureEnv:
         v.x += v.speed * math.cos(v.h) * dt
         v.y += v.speed * math.sin(v.h) * dt
 
+    def _bezier_point(self, t: float, sx: float, sy: float, cx: float, cy: float, ex: float, ey: float) -> Tuple[float, float]:
+        u = 1.0 - t
+        x = u * u * sx + 2.0 * u * t * cx + t * t * ex
+        y = u * u * sy + 2.0 * u * t * cy + t * t * ey
+        return x, y
+
+    def _bezier_tangent(self, t: float, sx: float, sy: float, cx: float, cy: float, ex: float, ey: float) -> Tuple[float, float]:
+        tx = 2.0 * (1.0 - t) * (cx - sx) + 2.0 * t * (ex - cx)
+        ty = 2.0 * (1.0 - t) * (cy - sy) + 2.0 * t * (ey - cy)
+        return tx, ty
+
+    def _sample_target_arc(self) -> Vessel:
+        cxw = 0.5 * self.envp.world_w
+        cyw = 0.5 * self.envp.world_h
+        radius = self.envp.target_outer_radius
+
+        start_ang = self.rng.uniform(0.0, 2.0 * math.pi)
+        turn_sign = self.rng.choice([-1.0, 1.0])
+        arc_deg = self.rng.uniform(self.envp.target_arc_min_deg, self.envp.target_arc_max_deg)
+        end_ang = start_ang + turn_sign * math.radians(arc_deg)
+
+        sx = cxw + radius * math.cos(start_ang)
+        sy = cyw + radius * math.sin(start_ang)
+        ex = cxw + radius * math.cos(end_ang)
+        ey = cyw + radius * math.sin(end_ang)
+
+        mid_ang = 0.5 * (start_ang + end_ang)
+        inner_radius = self.rng.uniform(0.2 * radius, 0.8 * radius)
+        self.target_ctrl_x = cxw + inner_radius * math.cos(mid_ang)
+        self.target_ctrl_y = cyw + inner_radius * math.sin(mid_ang)
+
+        self.target_prog = 0.0
+        speed = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
+        self.target_cruise_speed = speed
+        # Coarse conversion to normalized bezier progress / second
+        chord = math.hypot(ex - sx, ey - sy)
+        travel_dist = max(0.35 * radius, chord)
+        self.target_prog_rate = clamp(speed / max(1e-6, travel_dist), 0.05, 0.5)
+
+        tanx0, tany0 = self._bezier_tangent(0.0, sx, sy, self.target_ctrl_x, self.target_ctrl_y, ex, ey)
+        heading = math.atan2(tany0, tanx0)
+        tanx1, tany1 = self._bezier_tangent(1.0, sx, sy, self.target_ctrl_x, self.target_ctrl_y, ex, ey)
+        self.target_end_heading = math.atan2(tany1, tanx1)
+
+        self.target_start_x = sx
+        self.target_start_y = sy
+        return Vessel(sx, sy, wrap_pi(heading), speed, ex, ey)
+
+    def _advance_target(self, dt: float) -> None:
+        if self.target is None:
+            return
+        if self.target_prog >= 1.0:
+            self.target.h = wrap_pi(self.target_end_heading)
+            self.target.speed = 0.0
+            return
+
+        ex, ey = self.target.goal_x, self.target.goal_y
+        next_prog = clamp(self.target_prog + self.target_prog_rate * dt, 0.0, 1.0)
+        px, py = self._bezier_point(
+            next_prog,
+            self.target_start_x,
+            self.target_start_y,
+            self.target_ctrl_x,
+            self.target_ctrl_y,
+            ex,
+            ey,
+        )
+        tx, ty = self._bezier_tangent(
+            next_prog,
+            self.target_start_x,
+            self.target_start_y,
+            self.target_ctrl_x,
+            self.target_ctrl_y,
+            ex,
+            ey,
+        )
+
+        self.target.x = px
+        self.target.y = py
+        self.target.h = wrap_pi(math.atan2(ty, tx))
+        self.target.speed = self.target_cruise_speed if next_prog < 1.0 else 0.0
+        self.target_prog = next_prog
+
+        if self.target_prog >= 1.0:
+            self.target.x = ex
+            self.target.y = ey
+            self.target.h = wrap_pi(self.target_end_heading)
+            self.target.speed = 0.0
+
     def get_obs(self) -> np.ndarray:
-        # 6 features for the solo-agent setup
+        # 10 features: ego + goal + target absolute state
         return np.asarray(
             [
                 self.agent.x / self.envp.world_w,
@@ -122,6 +222,10 @@ class SingleTargetFeatureEnv:
                 self.agent.speed / self.envp.max_speed,
                 self.agent.goal_x / self.envp.world_w,
                 self.agent.goal_y / self.envp.world_h,
+                self.target.x / self.envp.world_w,
+                self.target.y / self.envp.world_h,
+                self.target.h / math.pi,
+                self.target.speed / self.envp.target_max_speed,
             ],
             dtype=np.float32,
         )
@@ -136,6 +240,7 @@ class SingleTargetFeatureEnv:
         agx, agy = self._sample_goal_on_ring(ax, ay, self.envp.goal_ring_radius)
 
         self.agent = Vessel(ax, ay, ah, self.rng.uniform(0.0, 0.5 * self.envp.max_speed), agx, agy)
+        self.target = self._sample_target_arc()
         self.time = 0.0
         self.step_idx = 0
         self.prev_goal_d = self._goal_distance(self.agent)
@@ -148,6 +253,7 @@ class SingleTargetFeatureEnv:
         h = self.envp.dt / max(1, self.envp.substeps)
         for _ in range(max(1, self.envp.substeps)):
             self._apply_control(self.agent, rudder_cmd, throttle_cmd, h)
+            self._advance_target(h)
 
         self.time += self.envp.dt
         self.step_idx += 1
@@ -159,6 +265,8 @@ class SingleTargetFeatureEnv:
             done, reason = True, "out_of_bounds"
         elif self.step_idx >= self.max_steps:
             done, reason = True, "timeout"
+        elif self._outside(self.target):
+            done, reason = True, "target_out_of_bounds"
         elif agent_reached:
             done, reason = True, "goal"
 
@@ -169,7 +277,7 @@ class SingleTargetFeatureEnv:
         if agent_reached and self.prev_goal_d > self.envp.goal_radius:
             reward += self.rewp.goal_bonus
 
-        if reason == "out_of_bounds":
+        if reason in {"out_of_bounds", "target_out_of_bounds"}:
             reward += self.rewp.out_of_bounds_penalty
 
         self.prev_goal_d = d_now
@@ -206,12 +314,14 @@ class SingleTargetFeatureEnv:
                 pygame.draw.line(surf, (40, 80, 110), (0, self.sy(y)), (self.sx(self.envp.world_w), self.sy(y)))
 
         self._draw_goal(self.agent.goal_x, self.agent.goal_y, (250, 215, 60))
+        self._draw_goal(self.target.goal_x, self.target.goal_y, (255, 140, 90))
 
         if self.envp.show_spawn_rings:
-            self._draw_dotted_circle(self.agent.x, self.agent.y, self.envp.spawn_ring_radius, (180, 220, 255))
             self._draw_dotted_circle(self.start_x, self.start_y, self.envp.goal_ring_radius, (250, 215, 60))
+            self._draw_dotted_circle(self.start_x, self.start_y, self.envp.target_outer_radius, (255, 140, 90))
 
         self._draw_vessel(self.agent, (95, 170, 255), "A")
+        self._draw_vessel(self.target, (255, 120, 120), "T")
 
         hud = self._font.render(f"step={self.step_idx} t={self.time:.1f}s", True, (255, 255, 255))
         surf.blit(hud, (10, 10))
