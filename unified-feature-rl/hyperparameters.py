@@ -22,12 +22,19 @@ class EnvParams:
     show_grid: bool = True
     show_spawn_rings: bool = True
 
-    # vessel dynamics
-    max_speed: float = 12.0
+    # vessel dynamics (ASV_NEAT-style rudder-limited yaw + continuous throttle)
+    max_speed: float = 7.0
     min_speed: float = 0.0
-    accel_rate: float = 1.0
-    decel_rate: float = 1.2
-    turn_rate_rad_s: float = math.radians(20.0)
+    accel_rate: float = 0.20
+    decel_rate: float = 0.05
+    brake_rate: float = 0.20
+
+    rudder_max_angle_rad: float = math.radians(35.0)
+    rudder_max_yaw_rate_rad_s: float = 0.25
+    rudder_max_rate_rad_s: float = math.radians(40.0)
+
+    throttle_slew_rate: float = 0.4
+    throttle_deadband: float = 0.02
 
     # spawn & goals
     spawn_margin: float = 20.0
@@ -38,7 +45,7 @@ class EnvParams:
 
     # moving target vessel on outer-circle to outer-circle arc
     target_outer_radius: float = 180.0
-    target_min_speed: float = 2.0
+    target_min_speed: float = 0.5
     target_max_speed: float = 7.0
     target_arc_min_deg: float = 20.0
     target_arc_max_deg: float = 110.0
