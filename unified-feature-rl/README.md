@@ -4,10 +4,14 @@ Single-agent ASV training sandbox using **DDQN** (feature-based state + discrete
 
 ## What this now implements
 
-- One learning ASV vessel (no second target vessel in training).
+- One learning ASV vessel (ego) plus one moving target vessel.
 - Agent always starts at the world center.
 - Agent heading is randomized each episode.
 - Agent goal is sampled on a random angle along a configurable outer ring around the start point.
+- Target vessel behavior:
+  - spawns on a large outer circle (`target_outer_radius`)
+  - picks random left/right traversal and random arc angle
+  - follows a smooth inner arc and stops at an endpoint on the same outer circle
 - Optional dotted rings rendered around the start location:
   - `spawn_ring_radius` (inner ring)
   - `goal_ring_radius` (outer goal ring)
@@ -15,13 +19,17 @@ Single-agent ASV training sandbox using **DDQN** (feature-based state + discrete
 
 ## State, action, and algorithm
 
-### Observation/state (6 features)
+### Observation/state (10 features)
 1. normalized agent x
 2. normalized agent y
 3. normalized agent heading
 4. normalized agent speed
 5. normalized goal x
 6. normalized goal y
+7. normalized target x
+8. normalized target y
+9. normalized target heading
+10. normalized target speed
 
 ### Action space (9 discrete actions)
 Actions are a Cartesian product of:
@@ -58,7 +66,7 @@ If you want, next improvements could be:
 ## Main files
 
 - `hyperparameters.py` — environment/reward/DDQN hyperparameters.
-- `environment.py` — single-agent environment and rendering.
+- `environment.py` — ego + moving-target environment and rendering.
 - `policy.py` — DDQN Q-network and action decoding.
 - `train.py` — DDQN training loop.
 - `run_episode.py` — evaluate with random or saved DDQN policy.
