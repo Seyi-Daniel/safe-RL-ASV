@@ -27,7 +27,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 
@@ -71,6 +71,8 @@ class Vessel:
     y: float
     h: float
     speed: float
+    rudder: float = 0.0
+    throttle: float = 0.0
 
 
 @dataclass
@@ -82,15 +84,20 @@ class EnvConfig:
     # initialization
     spawn_margin: float = 20.0
     min_spawn_separation: float = 30.0
-    target_min_speed: float = 1.5
-    target_max_speed: float = 8.0
+    target_min_speed: float = 0.5
+    target_max_speed: float = 7.0
     ego_min_speed: float = 0.0
-    ego_max_speed: float = 10.0
+    ego_max_speed: float = 7.0
 
-    # actions / dynamics
-    turn_rate: float = math.radians(16.0)  # rad/s
-    accel_rate: float = 1.0
-    decel_rate: float = 1.2
+    # ASV_NEAT-style actions / dynamics
+    rudder_max_angle: float = math.radians(35.0)      # ±35°
+    rudder_max_yaw_rate: float = 0.25                 # rad/s
+    rudder_slew_rate: float = math.radians(40.0)      # 40°/s
+    accel_rate: float = 0.20                           # m/s^2 (full fwd)
+    decel_rate: float = 0.05                           # m/s^2 (passive/coast)
+    brake_rate: float = 0.20                           # m/s^2 (full reverse thrust)
+    throttle_slew_rate: float = 0.4                    # 1/s (0->1 in 2.5 s)
+    throttle_deadband: float = 0.02
 
     # goal
     goal_radius: float = 10.0
@@ -135,13 +142,25 @@ class ColregsFeatureEnv:
         self.prev_goal_distance = 0.0
 
     @staticmethod
-    def decode_action(action: int) -> Tuple[int, int]:
-        """Map discrete action [0..8] -> (helm, throttle)."""
-        steer = action // 3
-        throttle = action % 3
-        helm = -1 if steer == 1 else (1 if steer == 2 else 0)  # -1 right, +1 left
-        thr = -1 if throttle == 2 else (1 if throttle == 1 else 0)
-        return helm, thr
+    def decode_action(action: Union[int, np.ndarray, Tuple[float, float], list]) -> Tuple[float, float]:
+        """Map action to continuous (rudder_cmd, throttle_cmd) in [-1, 1].
+
+        Backward compatibility: integer actions [0..8] are still accepted and
+        converted from the historical 3x3 discrete action table.
+        """
+        if isinstance(action, (int, np.integer)):
+            steer = int(action) // 3
+            throttle = int(action) % 3
+            rudder_cmd = -1.0 if steer == 1 else (1.0 if steer == 2 else 0.0)
+            throttle_cmd = -1.0 if throttle == 2 else (1.0 if throttle == 1 else 0.0)
+            return rudder_cmd, throttle_cmd
+
+        arr = np.asarray(action, dtype=np.float32).reshape(-1)
+        if arr.size < 2:
+            raise ValueError("Continuous action must provide at least 2 values: [rudder_cmd, throttle_cmd].")
+        rudder_cmd = clamp(float(arr[0]), -1.0, 1.0)
+        throttle_cmd = clamp(float(arr[1]), -1.0, 1.0)
+        return rudder_cmd, throttle_cmd
 
     def _random_vessel(self, speed_lo: float, speed_hi: float) -> Vessel:
         m = self.cfg.spawn_margin
@@ -162,22 +181,36 @@ class ColregsFeatureEnv:
         gx, gy = self.goal
         return math.hypot(gx - self.ego.x, gy - self.ego.y)
 
-    def _apply_motion(self, v: Vessel, helm: int, thr: int) -> None:
-        # heading update
-        if v.speed > 1e-4 and helm != 0:
-            # helm=-1 => starboard (right) turn (decreasing heading)
-            v.h = wrap_pi(v.h + helm * self.cfg.turn_rate * self.cfg.dt)
+    def _apply_motion(self, v: Vessel, rudder_cmd: float, throttle_cmd: float, speed_constant: bool = False) -> None:
+        # 1) Rudder dynamics (ASV_NEAT-style continuous rudder with slew limits)
+        rudder_target = clamp(rudder_cmd, -1.0, 1.0) * self.cfg.rudder_max_angle
+        rudder_step = self.cfg.rudder_slew_rate * self.cfg.dt
+        rudder_delta = clamp(rudder_target - v.rudder, -rudder_step, rudder_step)
+        v.rudder += rudder_delta
 
-        # speed update
-        if thr > 0:
-            v.speed += self.cfg.accel_rate * self.cfg.dt
-        elif thr < 0:
-            v.speed -= self.cfg.decel_rate * self.cfg.dt
+        # 2) Yaw rate cap from rudder authority
+        yaw_rate = (v.rudder / max(1e-6, self.cfg.rudder_max_angle)) * self.cfg.rudder_max_yaw_rate
+        v.h = wrap_pi(v.h + yaw_rate * self.cfg.dt)
 
-        if v is self.ego:
-            v.speed = clamp(v.speed, self.cfg.ego_min_speed, self.cfg.ego_max_speed)
-        else:
-            v.speed = clamp(v.speed, self.cfg.target_min_speed, self.cfg.target_max_speed)
+        # 3) Continuous throttle with slew limits + forward/reverse/coast behavior
+        thr_target = clamp(throttle_cmd, -1.0, 1.0)
+        thr_step = self.cfg.throttle_slew_rate * self.cfg.dt
+        v.throttle = clamp(v.throttle + clamp(thr_target - v.throttle, -thr_step, thr_step), -1.0, 1.0)
+
+        if not speed_constant:
+            if v.throttle > self.cfg.throttle_deadband:
+                accel = v.throttle * self.cfg.accel_rate
+            elif v.throttle < -self.cfg.throttle_deadband:
+                accel = v.throttle * self.cfg.brake_rate
+            else:
+                accel = -self.cfg.decel_rate
+
+            v.speed += accel * self.cfg.dt
+
+            if v is self.ego:
+                v.speed = clamp(v.speed, self.cfg.ego_min_speed, self.cfg.ego_max_speed)
+            else:
+                v.speed = clamp(v.speed, self.cfg.target_min_speed, self.cfg.target_max_speed)
 
         # kinematics
         v.x += v.speed * math.cos(v.h) * self.cfg.dt
@@ -213,23 +246,23 @@ class ColregsFeatureEnv:
             return "overtaking"
         return "crossing"
 
-    def _colregs_reward(self, encounter: str, rel_bearing_deg: float, helm: int) -> float:
+    def _colregs_reward(self, encounter: str, rel_bearing_deg: float, rudder_cmd: float) -> float:
         """Reward/penalty for action consistency with COLREG expectations."""
-        # helm=-1 means turn right (starboard), helm=+1 turn left (port)
+        # rudder_cmd<0 means starboard (right) turn, rudder_cmd>0 means port (left)
         if encounter == "head_on":
-            return self.cfg.colregs_correct_bonus if helm < 0 else -self.cfg.colregs_wrong_penalty
+            return self.cfg.colregs_correct_bonus if rudder_cmd < 0 else -self.cfg.colregs_wrong_penalty
 
         if encounter == "crossing":
             # target on starboard side (give-way): prefer right turn
             if -112.5 <= rel_bearing_deg <= 0.0:
-                return self.cfg.colregs_correct_bonus if helm < 0 else -self.cfg.colregs_wrong_penalty
+                return self.cfg.colregs_correct_bonus if rudder_cmd < 0 else -self.cfg.colregs_wrong_penalty
             # target on port side: neutral/slight preference to keep course
-            if helm == 0:
+            if abs(rudder_cmd) <= 0.05:
                 return 0.5 * self.cfg.colregs_correct_bonus
             return -0.25 * self.cfg.colregs_wrong_penalty
 
         # overtaking: reward starboard-side pass tendency
-        return self.cfg.colregs_correct_bonus if helm < 0 else -0.5 * self.cfg.colregs_wrong_penalty
+        return self.cfg.colregs_correct_bonus if rudder_cmd < 0 else -0.5 * self.cfg.colregs_wrong_penalty
 
     def _obs(self) -> np.ndarray:
         rel_bearing_deg, dist, _ = self._relative_geometry()
@@ -271,8 +304,8 @@ class ColregsFeatureEnv:
         self.prev_goal_distance = self._goal_distance()
         return self._obs()
 
-    def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict[str, object]]:
-        helm, thr = self.decode_action(int(action))
+    def step(self, action: Union[int, np.ndarray, Tuple[float, float], list]) -> Tuple[np.ndarray, float, bool, Dict[str, object]]:
+        rudder_cmd, throttle_cmd = self.decode_action(action)
 
         # pre-step CPA for DCPA-super-action shaping
         _, dcpa_before = tcpa_dcpa(
@@ -287,12 +320,11 @@ class ColregsFeatureEnv:
         )
 
         # ego action
-        self._apply_motion(self.ego, helm, thr)
+        self._apply_motion(self.ego, rudder_cmd, throttle_cmd)
 
-        # target: small random wandering policy
-        t_helm = self.rng.choice([-1, 0, 1]) if self.rng.random() < 0.15 else 0
-        t_thr = self.rng.choice([-1, 0, 1]) if self.rng.random() < 0.10 else 0
-        self._apply_motion(self.target, t_helm, t_thr)
+        # target: heading can wander, speed remains constant after reset
+        t_rudder = self.rng.uniform(-1.0, 1.0) if self.rng.random() < 0.15 else 0.0
+        self._apply_motion(self.target, t_rudder, 0.0, speed_constant=True)
 
         self.step_count += 1
 
@@ -336,7 +368,7 @@ class ColregsFeatureEnv:
 
         # apply COLREGs shaping only if target is in encounter radius
         if dist <= self.cfg.encounter_radius:
-            reward += self._colregs_reward(encounter, rel_bearing_deg, helm)
+            reward += self._colregs_reward(encounter, rel_bearing_deg, rudder_cmd)
 
         # DCPA super-action shaping: increasing DCPA means safer
         dcpa_delta = dcpa_after - dcpa_before
@@ -363,6 +395,10 @@ class ColregsFeatureEnv:
             "dcpa_before": dcpa_before,
             "dcpa_after": dcpa_after,
             "dcpa_delta": dcpa_delta,
+            "rudder_cmd": rudder_cmd,
+            "throttle_cmd": throttle_cmd,
+            "ego_rudder_angle_rad": self.ego.rudder,
+            "ego_effective_throttle": self.ego.throttle,
         }
         return self._obs(), float(reward), done, info
 
@@ -372,7 +408,10 @@ if __name__ == "__main__":
     obs = env.reset()
     ep_reward = 0.0
     while True:
-        action = random.randint(0, 8)
+        action = np.asarray([
+            random.uniform(-1.0, 1.0),
+            random.uniform(-1.0, 1.0),
+        ], dtype=np.float32)
         obs, reward, done, info = env.step(action)
         ep_reward += reward
         if done:
