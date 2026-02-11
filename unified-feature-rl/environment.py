@@ -49,6 +49,8 @@ class SingleTargetFeatureEnv:
         self.rng = random.Random(self.envp.seed)
 
         self.agent: Optional[Vessel] = None
+        self.start_x = 0.5 * self.envp.world_w
+        self.start_y = 0.5 * self.envp.world_h
         self.time = 0.0
         self.step_idx = 0
         self.max_steps = max(1, int(round(self.envp.episode_seconds / self.envp.dt)))
@@ -128,8 +130,8 @@ class SingleTargetFeatureEnv:
         if seed is not None:
             self.rng.seed(seed)
 
-        ax = 0.5 * self.envp.world_w
-        ay = 0.5 * self.envp.world_h
+        ax = self.start_x
+        ay = self.start_y
         ah = self.rng.uniform(-math.pi, math.pi)
         agx, agy = self._sample_goal_on_ring(ax, ay, self.envp.goal_ring_radius)
 
@@ -206,8 +208,8 @@ class SingleTargetFeatureEnv:
         self._draw_goal(self.agent.goal_x, self.agent.goal_y, (250, 215, 60))
 
         if self.envp.show_spawn_rings:
-            self._draw_dotted_circle(self.agent.x, self.agent.y, self.envp.spawn_ring_radius, (180, 220, 255))
-            self._draw_dotted_circle(self.agent.x, self.agent.y, self.envp.goal_ring_radius, (250, 215, 60))
+            self._draw_dotted_circle(self.start_x, self.start_y, self.envp.spawn_ring_radius, (180, 220, 255))
+            self._draw_dotted_circle(self.start_x, self.start_y, self.envp.goal_ring_radius, (250, 215, 60))
 
         self._draw_vessel(self.agent, (95, 170, 255), "A")
 
