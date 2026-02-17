@@ -66,6 +66,12 @@ class SingleTargetFeatureEnv:
         self.agent_reached = False
         self.target_reached = False
 
+        # per-vessel telemetry
+        self.agent_steps_taken = 0
+        self.target_steps_taken = 0
+        self.agent_start_speed = 0.0
+        self.target_start_speed = 0.0
+
         # vessel 2 planned path and tracking state
         self.target_plan: List[Tuple[str, float, float]] = []  # (segment_kind, duration_s, cmd)
         self.target_plan_idx = 0
@@ -472,6 +478,7 @@ class SingleTargetFeatureEnv:
         ah = math.atan2(agy - self.start_y, agx - self.start_x)
         aspeed = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         self.agent = Vessel(self.start_x, self.start_y, ah, aspeed, agx, agy)
+        self.agent_start_speed = aspeed
 
         # Vessel 2: random start/goal on big circle + randomized initial heading.
         start_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
@@ -486,6 +493,7 @@ class SingleTargetFeatureEnv:
         sh2 = self.rng.uniform(-math.pi, math.pi)
         sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         self.target = Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
+        self.target_start_speed = sp2
 
         (
             self.target_plan,
@@ -506,6 +514,8 @@ class SingleTargetFeatureEnv:
 
         self.prev_goal_d_agent = self._goal_distance(self.agent)
         self.prev_goal_d_target = self._goal_distance(self.target)
+        self.agent_steps_taken = 0
+        self.target_steps_taken = 0
 
         t1 = self.prev_goal_d_agent / max(1e-6, self.agent.speed)
         planned_t2 = sum(d for _, d, _ in self.target_plan)
@@ -527,9 +537,16 @@ class SingleTargetFeatureEnv:
         throttle_cmd = float(a[1])
 
         h = self.envp.dt / max(1, self.envp.substeps)
+        was_agent_active = not self.agent_reached
+        was_target_active = not self.target_reached
         for _ in range(max(1, self.envp.substeps)):
             self._advance_agent_straight(h)
             self._advance_target_plan(h)
+
+        if was_agent_active:
+            self.agent_steps_taken += 1
+        if was_target_active:
+            self.target_steps_taken += 1
 
         self.time += self.envp.dt
         self.step_idx += 1
@@ -572,6 +589,14 @@ class SingleTargetFeatureEnv:
             "target_plan_durations": durations,
             "target_plan_terminal_pos_err": float(self.target_plan_terminal_pos_err),
             "target_plan_terminal_heading_err": float(self.target_plan_terminal_heading_err),
+            "agent_steps_taken": int(self.agent_steps_taken),
+            "target_steps_taken": int(self.target_steps_taken),
+            "agent_start_speed": float(self.agent_start_speed),
+            "target_start_speed": float(self.target_start_speed),
+            "agent_heading_deg": float(math.degrees(self.agent.h)),
+            "target_heading_deg": float(math.degrees(self.target.h)),
+            "agent_rudder_deg": float(math.degrees(self.agent.rudder)),
+            "target_rudder_deg": float(math.degrees(self.target.rudder)),
         }
         return self.get_obs(), float(reward), done, info
 
@@ -621,15 +646,30 @@ class SingleTargetFeatureEnv:
         self._draw_vessel(self.agent, (95, 170, 255), "V1")
         self._draw_vessel(self.target, (255, 120, 120), "V2")
 
-        hud = self._font.render(
-            (
-                f"step={self.step_idx} t={self.time:.1f}s mode={self.target_planner_mode} "
-                f"word={self.target_path_word} reached=({int(self.agent_reached)},{int(self.target_reached)}) paths[P]={int(self.show_planned_paths)}"
-            ),
+        hud0 = self._font.render(
+            f"sim_step={self.step_idx}  t={self.time:.1f}s  paths[P]={int(self.show_planned_paths)}  mode={self.target_planner_mode[:4].upper()}  word={self.target_path_word}",
             True,
             (255, 255, 255),
         )
-        surf.blit(hud, (10, 10))
+        hud1 = self._font.render(
+            (
+                f"V1 steps={self.agent_steps_taken}  spd={self.agent.speed:.2f} (start {self.agent_start_speed:.2f})  "
+                f"hdg={math.degrees(self.agent.h):.1f}deg  rud={math.degrees(self.agent.rudder):.1f}deg"
+            ),
+            True,
+            (170, 220, 255),
+        )
+        hud2 = self._font.render(
+            (
+                f"V2 steps={self.target_steps_taken}  spd={self.target.speed:.2f} (start {self.target_start_speed:.2f})  "
+                f"hdg={math.degrees(self.target.h):.1f}deg  rud={math.degrees(self.target.rudder):.1f}deg"
+            ),
+            True,
+            (255, 190, 190),
+        )
+        surf.blit(hud0, (10, 8))
+        surf.blit(hud1, (10, 26))
+        surf.blit(hud2, (10, 44))
 
         pygame.display.flip()
         self._clock.tick(self.envp.render_fps)
