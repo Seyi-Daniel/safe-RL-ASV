@@ -13,7 +13,7 @@ Two-vessel ASV simulation/training sandbox with continuous rudder/throttle I/O.
   - starts at a random point on the same circumference
   - gets a random goal on the same circumference
   - starts with randomized heading and randomized constant speed
-  - follows a Dubins-style turn/straight/turn plan using the project turn-rate limit.
+  - follows an exact Dubins path family candidate (LSL/RSR/LSR/RSL/RLR/LRL) selected by episode objective and tracked with smooth rudder dynamics.
 - Vessel-2 end-heading candidates include:
   - clockwise/counter-clockwise tangents at goal
   - heading toward center
@@ -24,7 +24,7 @@ Two-vessel ASV simulation/training sandbox with continuous rudder/throttle I/O.
   - minimum steering effort
   - minimum curvature change
   - closest to straight line.
-- Episode terminates when both vessels reach their goals (or safety timeout/oob fallback).
+- Episode terminates when both vessels reach their goals (or safety timeout/oob fallback), with continuous arrival motion (no goal snap teleport).
 ## State, action, and algorithm
 
 ### Observation/state (12 features)

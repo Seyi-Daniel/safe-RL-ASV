@@ -21,6 +21,10 @@ def wrap_pi(a: float) -> float:
     return (a + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def mod2pi(a: float) -> float:
+    return a % (2.0 * math.pi)
+
+
 def clamp(x: float, lo: float, hi: float) -> float:
     return hi if x > hi else lo if x < lo else x
 
@@ -50,8 +54,8 @@ class SingleTargetFeatureEnv:
         self.rewp = reward_params
         self.rng = random.Random(self.envp.seed)
 
-        self.agent: Optional[Vessel] = None   # vessel 1 (center -> circumference straight)
-        self.target: Optional[Vessel] = None  # vessel 2 (circumference -> circumference dubins-style)
+        self.agent: Optional[Vessel] = None
+        self.target: Optional[Vessel] = None
         self.start_x = 0.5 * self.envp.world_w
         self.start_y = 0.5 * self.envp.world_h
         self.time = 0.0
@@ -62,12 +66,15 @@ class SingleTargetFeatureEnv:
         self.agent_reached = False
         self.target_reached = False
 
-        # vessel 2 Dubins-style open-loop sequence (turn/straight/turn)
-        self.target_plan: List[Tuple[float, float]] = []  # list of (turn_cmd in {-1,0,1}, duration_s)
+        # vessel 2 planned path and tracking state
+        self.target_plan: List[Tuple[str, float, float]] = []  # (segment_kind, duration_s, cmd)
         self.target_plan_idx = 0
         self.target_plan_elapsed = 0.0
         self.target_goal_heading = 0.0
         self.target_planner_mode = "shortest_path"
+        self.target_path_word = ""
+        self.target_plan_terminal_pos_err = 0.0
+        self.target_plan_terminal_heading_err = 0.0
 
         self.render_enabled = render and HAS_PYGAME
         self._screen = None
@@ -131,37 +138,123 @@ class SingleTargetFeatureEnv:
                 out.append(wrap_pi(b - k * sweep))
         return out
 
-    def _segment_cost(self, mode: str, plan: List[Tuple[float, float]], speed: float, yaw_rate: float, heading_err: float, pos_err: float, chord: float) -> float:
-        total_time = sum(d for _, d in plan)
-        total_len = total_time * speed
-        steering_effort = sum(abs(cmd) * d for cmd, d in plan)
-        curvature_proxy = steering_effort * yaw_rate / max(1e-6, speed)
+    # ----- exact Dubins words in normalized coordinates -----
+    def _dubins_lsl(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
+        tmp = d + math.sin(alpha) - math.sin(beta)
+        p2 = 2.0 + d * d - 2.0 * math.cos(alpha - beta) + 2.0 * d * (math.sin(alpha) - math.sin(beta))
+        if p2 < 0.0:
+            return None
+        tmp2 = math.atan2(math.cos(beta) - math.cos(alpha), tmp)
+        t = mod2pi(-alpha + tmp2)
+        p = math.sqrt(p2)
+        q = mod2pi(beta - tmp2)
+        return t, p, q
+
+    def _dubins_rsr(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
+        tmp = d - math.sin(alpha) + math.sin(beta)
+        p2 = 2.0 + d * d - 2.0 * math.cos(alpha - beta) + 2.0 * d * (-math.sin(alpha) + math.sin(beta))
+        if p2 < 0.0:
+            return None
+        tmp2 = math.atan2(math.cos(alpha) - math.cos(beta), tmp)
+        t = mod2pi(alpha - tmp2)
+        p = math.sqrt(p2)
+        q = mod2pi(-beta + tmp2)
+        return t, p, q
+
+    def _dubins_lsr(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
+        p2 = -2.0 + d * d + 2.0 * math.cos(alpha - beta) + 2.0 * d * (math.sin(alpha) + math.sin(beta))
+        if p2 < 0.0:
+            return None
+        p = math.sqrt(p2)
+        tmp2 = math.atan2(-math.cos(alpha) - math.cos(beta), d + math.sin(alpha) + math.sin(beta)) - math.atan2(-2.0, p)
+        t = mod2pi(-alpha + tmp2)
+        q = mod2pi(-beta + tmp2)
+        return t, p, q
+
+    def _dubins_rsl(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
+        p2 = -2.0 + d * d + 2.0 * math.cos(alpha - beta) - 2.0 * d * (math.sin(alpha) + math.sin(beta))
+        if p2 < 0.0:
+            return None
+        p = math.sqrt(p2)
+        tmp2 = math.atan2(math.cos(alpha) + math.cos(beta), d - math.sin(alpha) - math.sin(beta)) - math.atan2(2.0, p)
+        t = mod2pi(alpha - tmp2)
+        q = mod2pi(beta - tmp2)
+        return t, p, q
+
+    def _dubins_rlr(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
+        tmp = (6.0 - d * d + 2.0 * math.cos(alpha - beta) + 2.0 * d * (math.sin(alpha) - math.sin(beta))) / 8.0
+        if abs(tmp) > 1.0:
+            return None
+        p = mod2pi(2.0 * math.pi - math.acos(tmp))
+        t = mod2pi(alpha - math.atan2(math.cos(alpha) - math.cos(beta), d - math.sin(alpha) + math.sin(beta)) + 0.5 * p)
+        q = mod2pi(alpha - beta - t + p)
+        return t, p, q
+
+    def _dubins_lrl(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
+        tmp = (6.0 - d * d + 2.0 * math.cos(alpha - beta) + 2.0 * d * (-math.sin(alpha) + math.sin(beta))) / 8.0
+        if abs(tmp) > 1.0:
+            return None
+        p = mod2pi(2.0 * math.pi - math.acos(tmp))
+        t = mod2pi(-alpha - math.atan2(math.cos(alpha) - math.cos(beta), d + math.sin(alpha) - math.sin(beta)) + 0.5 * p)
+        q = mod2pi(beta - alpha - t + p)
+        return t, p, q
+
+    def _exact_dubins_candidates(self, sx: float, sy: float, sh: float, gx: float, gy: float, gh: float, radius: float) -> List[Tuple[str, Tuple[float, float, float], float]]:
+        dx = gx - sx
+        dy = gy - sy
+        D = math.hypot(dx, dy)
+        d = D / max(1e-9, radius)
+        theta = math.atan2(dy, dx)
+        alpha = mod2pi(sh - theta)
+        beta = mod2pi(gh - theta)
+
+        words = [
+            ("LSL", self._dubins_lsl),
+            ("RSR", self._dubins_rsr),
+            ("LSR", self._dubins_lsr),
+            ("RSL", self._dubins_rsl),
+            ("RLR", self._dubins_rlr),
+            ("LRL", self._dubins_lrl),
+        ]
+        out: List[Tuple[str, Tuple[float, float, float], float]] = []
+        for word, fn in words:
+            params = fn(alpha, beta, d)
+            if params is None:
+                continue
+            lengths = (params[0] * radius, params[1] * radius, params[2] * radius)
+            out.append((word, lengths, sum(lengths)))
+        return out
+
+    def _segment_cost(self, mode: str, lengths: Tuple[float, float, float], word: str, heading_err: float, pos_err: float, chord: float) -> float:
+        total_len = sum(lengths)
+        steering_len = lengths[0] + lengths[2] + (lengths[1] if word[1] in {"L", "R"} else 0.0)
+        curvature_proxy = steering_len
         straight_dev = abs(total_len - chord)
 
         if mode == "minimum_steering_effort":
-            return steering_effort + 0.15 * total_len + 6.0 * pos_err + heading_err
+            return steering_len + 0.15 * total_len + 6.0 * pos_err + heading_err
         if mode == "minimum_curvature_change":
-            return curvature_proxy + 0.2 * steering_effort + 5.0 * pos_err + heading_err
+            return curvature_proxy + 0.2 * steering_len + 5.0 * pos_err + heading_err
         if mode == "closest_to_straight_line":
-            return straight_dev + 0.2 * steering_effort + 7.0 * pos_err + heading_err
-        return total_len + 0.25 * steering_effort + 5.0 * pos_err + heading_err
+            return straight_dev + 0.2 * steering_len + 7.0 * pos_err + heading_err
+        return total_len + 0.25 * steering_len + 5.0 * pos_err + heading_err
 
-    def _simulate_plan_endpoint(self, sx: float, sy: float, sh: float, speed: float, yaw_rate: float, plan: List[Tuple[float, float]]) -> Tuple[float, float, float]:
+    def _simulate_plan_endpoint_ideal(self, sx: float, sy: float, sh: float, speed: float, plan: List[Tuple[str, float, float]]) -> Tuple[float, float, float]:
         x, y, h = sx, sy, sh
-        dt = 0.1
-        for cmd, duration in plan:
+        yaw_rate = self.envp.rudder_max_yaw_rate_rad_s
+        for _, duration, cmd in plan:
             t = 0.0
             while t < duration:
-                step = min(dt, duration - t)
+                step = min(0.05, duration - t)
                 h = wrap_pi(h + cmd * yaw_rate * step)
                 x += speed * math.cos(h) * step
                 y += speed * math.sin(h) * step
                 t += step
         return x, y, h
 
-    def _sample_dubins_style_plan(self, sx: float, sy: float, sh: float, gx: float, gy: float, speed: float) -> Tuple[List[Tuple[float, float]], float, str]:
+    def _sample_dubins_style_plan(self, sx: float, sy: float, sh: float, gx: float, gy: float, speed: float) -> Tuple[List[Tuple[str, float, float]], float, str, str, float, float]:
         yaw_rate = self.envp.rudder_max_yaw_rate_rad_s
-        min_turn = 1.0 / max(1e-6, yaw_rate)
+        radius = max(1e-6, speed / max(1e-6, yaw_rate))
         chord = math.hypot(gx - sx, gy - sy)
 
         modes = [
@@ -172,86 +265,116 @@ class SingleTargetFeatureEnv:
         ]
         mode = self.rng.choice(modes)
 
-        headings = self._sample_end_heading_candidates(sx, sy, gx, gy)
-        path_types = [(-1.0, 0.0, -1.0), (1.0, 0.0, 1.0), (-1.0, 0.0, 1.0), (1.0, 0.0, -1.0)]
-
-        best_plan: List[Tuple[float, float]] = []
-        best_goal_h = headings[0]
+        best_plan: List[Tuple[str, float, float]] = []
+        best_goal_h = sh
+        best_word = ""
+        best_pos_err = float("inf")
+        best_heading_err = float("inf")
         best_score = float("inf")
 
-        for gh in headings:
-            for t0, t1, t2 in path_types:
-                for _ in range(30):
-                    turn1 = self.rng.uniform(0.0, 1.4 * math.pi) * min_turn
-                    turn2 = self.rng.uniform(0.0, 1.4 * math.pi) * min_turn
-                    straight = self.rng.uniform(0.0, max(chord * 1.3 / max(1e-6, speed), 1.5))
-                    plan = [(t0, turn1), (t1, straight), (t2, turn2)]
-                    ex, ey, eh = self._simulate_plan_endpoint(sx, sy, sh, speed, yaw_rate, plan)
-                    pos_err = math.hypot(gx - ex, gy - ey)
-                    heading_err = abs(wrap_pi(gh - eh))
-                    score = self._segment_cost(mode, plan, speed, yaw_rate, heading_err, pos_err, chord) + 12.0 * pos_err
-                    if score < best_score:
-                        best_score = score
-                        best_plan = plan
-                        best_goal_h = gh
+        for gh in self._sample_end_heading_candidates(sx, sy, gx, gy):
+            for word, lengths, _ in self._exact_dubins_candidates(sx, sy, sh, gx, gy, gh, radius):
+                # Convert geometric lengths to durations for constant speed execution.
+                durations = tuple(l / max(1e-6, speed) for l in lengths)
+                seg_cmd = {"L": 1.0, "R": -1.0, "S": 0.0}
+                plan = [
+                    (word[0], durations[0], seg_cmd[word[0]]),
+                    (word[1], durations[1], seg_cmd[word[1]]),
+                    (word[2], durations[2], seg_cmd[word[2]]),
+                ]
 
-        return best_plan, best_goal_h, mode
+                ex, ey, eh = self._simulate_plan_endpoint_ideal(sx, sy, sh, speed, plan)
+                pos_err = math.hypot(gx - ex, gy - ey)
+                heading_err = abs(wrap_pi(gh - eh))
+                score = self._segment_cost(mode, lengths, word, heading_err, pos_err, chord) + 20.0 * pos_err
+                if score < best_score:
+                    best_score = score
+                    best_plan = plan
+                    best_goal_h = gh
+                    best_word = word
+                    best_pos_err = pos_err
+                    best_heading_err = heading_err
+
+        # Fallback (very rare): simple straight segment.
+        if not best_plan:
+            dur = chord / max(1e-6, speed)
+            best_plan = [("S", dur, 0.0)]
+            best_word = "S"
+            best_goal_h = math.atan2(gy - sy, gx - sx)
+            best_pos_err = 0.0
+            best_heading_err = abs(wrap_pi(best_goal_h - sh))
+
+        return best_plan, best_goal_h, mode, best_word, best_pos_err, best_heading_err
+
+    def _integrate_rudder_heading(self, v: Vessel, rudder_cmd: float, dt: float) -> None:
+        rudder_cmd = clamp(rudder_cmd, -1.0, 1.0)
+        rudder_target = rudder_cmd * self.envp.rudder_max_angle_rad
+        rudder_step = self.envp.rudder_max_rate_rad_s * dt
+        v.rudder = clamp(
+            v.rudder + clamp(rudder_target - v.rudder, -rudder_step, rudder_step),
+            -self.envp.rudder_max_angle_rad,
+            self.envp.rudder_max_angle_rad,
+        )
+        yaw_rate = (v.rudder / max(1e-6, self.envp.rudder_max_angle_rad)) * self.envp.rudder_max_yaw_rate_rad_s
+        v.h = wrap_pi(v.h + yaw_rate * dt)
 
     def _advance_agent_straight(self, dt: float) -> None:
         if self.agent is None or self.agent_reached:
             return
+
         d = self._goal_distance(self.agent)
         if d <= self.envp.goal_radius:
             self.agent_reached = True
-            self.agent.x = self.agent.goal_x
-            self.agent.y = self.agent.goal_y
             self.agent.speed = 0.0
             return
 
-        step = self.agent.speed * dt
-        if step >= d:
-            self.agent.x = self.agent.goal_x
-            self.agent.y = self.agent.goal_y
-            self.agent.speed = 0.0
+        travel = min(self.agent.speed * dt, d)
+        self.agent.x += math.cos(self.agent.h) * travel
+        self.agent.y += math.sin(self.agent.h) * travel
+
+        if travel + 1e-9 >= d:
             self.agent_reached = True
-            return
-
-        self.agent.x += math.cos(self.agent.h) * step
-        self.agent.y += math.sin(self.agent.h) * step
+            self.agent.speed = 0.0
 
     def _advance_target_plan(self, dt: float) -> None:
         if self.target is None or self.target_reached:
             return
 
-        if self._goal_distance(self.target) <= self.envp.goal_radius:
-            self.target.x = self.target.goal_x
-            self.target.y = self.target.goal_y
-            self.target.h = wrap_pi(self.target_goal_heading)
-            self.target.speed = 0.0
-            self.target_reached = True
-            return
-
         remaining = dt
-        yaw_rate = self.envp.rudder_max_yaw_rate_rad_s
         while remaining > 1e-9 and not self.target_reached:
-            if self.target_plan_idx >= len(self.target_plan):
-                # fallback after planned segments: yaw toward remaining goal bearing.
-                goal_bearing = math.atan2(self.target.goal_y - self.target.y, self.target.goal_x - self.target.x)
-                err = wrap_pi(goal_bearing - self.target.h)
-                cmd = 0.0 if abs(err) < math.radians(1.0) else (1.0 if err > 0.0 else -1.0)
-                seg_rem = remaining
-            else:
-                cmd, seg_dur = self.target_plan[self.target_plan_idx]
+            d_goal = self._goal_distance(self.target)
+            if d_goal <= self.envp.goal_radius:
+                self.target_reached = True
+                self.target.speed = 0.0
+                break
+
+            if self.target_plan_idx < len(self.target_plan):
+                seg_kind, seg_dur, cmd = self.target_plan[self.target_plan_idx]
                 seg_rem = max(0.0, seg_dur - self.target_plan_elapsed)
                 if seg_rem <= 1e-9:
                     self.target_plan_idx += 1
                     self.target_plan_elapsed = 0.0
                     continue
+                step = min(remaining, seg_rem)
+                desired_cmd = cmd
+            else:
+                # Post-plan terminal guidance: smoothly steer toward goal heading.
+                step = remaining
+                goal_bearing = math.atan2(self.target.goal_y - self.target.y, self.target.goal_x - self.target.x)
+                err = wrap_pi(goal_bearing - self.target.h)
+                desired_cmd = clamp(err / math.radians(25.0), -1.0, 1.0)
 
-            step = min(remaining, seg_rem)
-            self.target.h = wrap_pi(self.target.h + cmd * yaw_rate * step)
-            self.target.x += self.target.speed * math.cos(self.target.h) * step
-            self.target.y += self.target.speed * math.sin(self.target.h) * step
+            self._integrate_rudder_heading(self.target, desired_cmd, step)
+
+            d_goal = self._goal_distance(self.target)
+            travel = min(self.target.speed * step, d_goal)
+            self.target.x += travel * math.cos(self.target.h)
+            self.target.y += travel * math.sin(self.target.h)
+
+            if travel + 1e-9 >= d_goal:
+                self.target_reached = True
+                self.target.speed = 0.0
+                break
 
             remaining -= step
             if self.target_plan_idx < len(self.target_plan):
@@ -259,13 +382,6 @@ class SingleTargetFeatureEnv:
                 if self.target_plan_elapsed + 1e-9 >= self.target_plan[self.target_plan_idx][1]:
                     self.target_plan_idx += 1
                     self.target_plan_elapsed = 0.0
-
-            if self._goal_distance(self.target) <= self.envp.goal_radius:
-                self.target.x = self.target.goal_x
-                self.target.y = self.target.goal_y
-                self.target.h = wrap_pi(self.target_goal_heading)
-                self.target.speed = 0.0
-                self.target_reached = True
 
     def get_obs(self) -> np.ndarray:
         return np.asarray(
@@ -304,15 +420,22 @@ class SingleTargetFeatureEnv:
         while self._arc_gap(start_ang_2, goal_ang_2) < math.radians(20.0) and tries < 40:
             goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
             tries += 1
+
         sx2, sy2 = self._point_on_big_circle(start_ang_2)
         gx2, gy2 = self._point_on_big_circle(goal_ang_2)
         sh2 = self.rng.uniform(-math.pi, math.pi)
         sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         self.target = Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
 
-        self.target_plan, self.target_goal_heading, self.target_planner_mode = self._sample_dubins_style_plan(
-            sx2, sy2, sh2, gx2, gy2, sp2
-        )
+        (
+            self.target_plan,
+            self.target_goal_heading,
+            self.target_planner_mode,
+            self.target_path_word,
+            self.target_plan_terminal_pos_err,
+            self.target_plan_terminal_heading_err,
+        ) = self._sample_dubins_style_plan(sx2, sy2, sh2, gx2, gy2, sp2)
+
         self.target_plan_idx = 0
         self.target_plan_elapsed = 0.0
 
@@ -320,14 +443,16 @@ class SingleTargetFeatureEnv:
         self.step_idx = 0
         self.agent_reached = False
         self.target_reached = False
+
         self.prev_goal_d_agent = self._goal_distance(self.agent)
         self.prev_goal_d_target = self._goal_distance(self.target)
 
         t1 = self.prev_goal_d_agent / max(1e-6, self.agent.speed)
-        planned_t2 = sum(d for _, d in self.target_plan)
+        planned_t2 = sum(d for _, d, _ in self.target_plan)
         t2 = max(planned_t2, self.prev_goal_d_target / max(1e-6, self.target.speed))
         episode_time = max(self.envp.episode_seconds, 1.4 * max(t1, t2) + 20.0)
         self.max_steps = max(1, int(round(episode_time / self.envp.dt)))
+
         return self.get_obs()
 
     def step(self, action: Union[np.ndarray, Tuple[float, float], list]) -> Tuple[np.ndarray, float, bool, Dict[str, float | str | int]]:
@@ -370,6 +495,7 @@ class SingleTargetFeatureEnv:
         self.prev_goal_d_agent = d_agent
         self.prev_goal_d_target = d_target
 
+        durations = ",".join(f"{d:.2f}" for _, d, _ in self.target_plan)
         info: Dict[str, float | str | int] = {
             "reason": reason,
             "agent_goal_distance": d_agent,
@@ -379,6 +505,10 @@ class SingleTargetFeatureEnv:
             "rudder_cmd": rudder_cmd,
             "throttle_cmd": throttle_cmd,
             "target_planner_mode": self.target_planner_mode,
+            "target_path_word": self.target_path_word,
+            "target_plan_durations": durations,
+            "target_plan_terminal_pos_err": float(self.target_plan_terminal_pos_err),
+            "target_plan_terminal_heading_err": float(self.target_plan_terminal_heading_err),
         }
         return self.get_obs(), float(reward), done, info
 
@@ -423,7 +553,10 @@ class SingleTargetFeatureEnv:
         self._draw_vessel(self.target, (255, 120, 120), "V2")
 
         hud = self._font.render(
-            f"step={self.step_idx} t={self.time:.1f}s mode={self.target_planner_mode} reached=({int(self.agent_reached)},{int(self.target_reached)})",
+            (
+                f"step={self.step_idx} t={self.time:.1f}s mode={self.target_planner_mode} "
+                f"word={self.target_path_word} reached=({int(self.agent_reached)},{int(self.target_reached)})"
+            ),
             True,
             (255, 255, 255),
         )
@@ -454,15 +587,3 @@ class SingleTargetFeatureEnv:
         )
         txt = self._font.render(label, True, (255, 255, 255))
         self._screen.blit(txt, (self.sx(v.x) + 6, self.sy(v.y) - 8))
-
-    def _draw_dotted_circle(self, cx: float, cy: float, radius: float, color: Tuple[int, int, int]) -> None:
-        points = 60
-        dash = 2
-        gap = 2
-        for i in range(points):
-            if i % (dash + gap) >= dash:
-                continue
-            ang = 2.0 * math.pi * i / points
-            px = cx + radius * math.cos(ang)
-            py = cy + radius * math.sin(ang)
-            pygame.draw.circle(self._screen, color, (self.sx(px), self.sy(py)), 2)
