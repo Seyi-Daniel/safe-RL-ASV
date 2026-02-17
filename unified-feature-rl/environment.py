@@ -411,7 +411,13 @@ class SingleTargetFeatureEnv:
         self._draw_goal(self.target.goal_x, self.target.goal_y, (255, 140, 90))
 
         if self.envp.show_spawn_rings:
-            self._draw_dotted_circle(self.start_x, self.start_y, self.envp.target_outer_radius, (255, 225, 120))
+            pygame.draw.circle(
+                self._screen,
+                (255, 225, 120),
+                (self.sx(self.start_x), self.sy(self.start_y)),
+                int(round(self.envp.target_outer_radius * self.envp.pixels_per_meter)),
+                1,
+            )
 
         self._draw_vessel(self.agent, (95, 170, 255), "V1")
         self._draw_vessel(self.target, (255, 120, 120), "V2")

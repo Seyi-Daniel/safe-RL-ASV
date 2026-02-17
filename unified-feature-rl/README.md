@@ -1,6 +1,6 @@
 # unified-feature-rl
 
-Two-vessel ASV simulation/training sandbox using **DDQN-compatible** feature observations and action I/O.
+Two-vessel ASV simulation/training sandbox with continuous rudder/throttle I/O.
 
 ## What this now implements
 
@@ -41,12 +41,10 @@ Two-vessel ASV simulation/training sandbox using **DDQN-compatible** feature obs
 11. normalized target goal x
 12. normalized target goal y
 
-### Action space (9 discrete actions)
-Actions are a Cartesian product of:
-- steer: `{none, starboard, port}`
-- throttle: `{coast, accelerate, decelerate}`
+### Action interface (continuous)
+The environment step input remains continuous `[rudder, throttle]` where each channel is expected in `[-1, 1]`.
 
-Each DDQN action index `[0..8]` is decoded into continuous control commands for the simulator (`rudder`, `throttle` in `{-1,0,1}`).
+At the moment, vessel control is scripted by the path planners (as requested), so model outputs are still produced but are not used to steer either boat during training rollouts.
 
 ### Training algorithm
 Training is now **Double DQN** (not CEM):
@@ -58,7 +56,7 @@ Training is now **Double DQN** (not CEM):
 
 ## Why this differs from the previous CEM version
 
-The RL_ASV and feature-RL-ASV subprojects are value-based DDQN-style implementations. This subproject now follows that same family so hyperparameters and behavior match expected DDQN workflows (episodes, replay, target updates, epsilon schedule) instead of population/elites.
+The RL_ASV and feature-RL-ASV subprojects are value-based DDQN-style implementations. This subproject keeps that model/replay scaffolding, while boat motion is currently scripted to validate scenario geometry/path planning before RL control is re-enabled.
 
 ## Suggested improvements included
 
