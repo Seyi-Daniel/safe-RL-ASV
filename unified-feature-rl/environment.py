@@ -100,6 +100,7 @@ class SingleTargetFeatureEnv:
         self.target_planned_path: List[Tuple[float, float]] = []
 
         self.render_enabled = render and HAS_PYGAME
+        self.paused = False
         self._screen = None
         self._clock = None
         self._font = None
@@ -819,6 +820,8 @@ class SingleTargetFeatureEnv:
                 raise SystemExit
             if event.type == pygame.KEYDOWN and event.key == pygame.K_p:
                 self.show_planned_paths = not self.show_planned_paths
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                self.paused = not self.paused
 
         surf = self._screen
         surf.fill((17, 58, 92))
@@ -858,7 +861,7 @@ class SingleTargetFeatureEnv:
 
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
         hud0 = self._font.render(
-            f"sim_step={self.step_idx}  t={self.time:.1f}s  paths[P]={int(self.show_planned_paths)}  mode={self.target_planner_mode[:4].upper()}  word={self.target_path_word}",
+            f"sim_step={self.step_idx}  t={self.time:.1f}s  paused={int(self.paused)}[SPACE]  paths[P]={int(self.show_planned_paths)}  mode={self.target_planner_mode[:4].upper()}  word={self.target_path_word}",
             True,
             (255, 255, 255),
         )

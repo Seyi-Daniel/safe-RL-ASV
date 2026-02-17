@@ -71,6 +71,9 @@ def main() -> None:
         done = False
         info = {"reason": ""}
         while not done:
+            if args.render and getattr(env, "paused", False):
+                env.render()
+                continue
             if policy is None:
                 action = np.asarray(
                     [np.random.uniform(-1.0, 1.0), np.random.uniform(-1.0, 1.0)],
