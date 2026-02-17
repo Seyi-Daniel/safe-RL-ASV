@@ -117,3 +117,105 @@ def helm_label_from_rudder_cmd(rudder_cmd: float, eps: float = 0.05) -> str:
     if rudder_cmd < -eps:
         return "turn_starboard"
     return "keep_straight"
+
+
+def _bearing_in_sector(bearing_deg: float, start_deg: float, end_deg: float) -> bool:
+    """Return whether ``bearing_deg`` lies in the circular interval [start, end]."""
+
+    bearing = bearing_deg % 360.0
+    start = start_deg % 360.0
+    end = end_deg % 360.0
+    if start <= end:
+        return start <= bearing <= end
+    return bearing >= start or bearing <= end
+
+
+def classify_colregs_encounter(
+    own: dict,
+    target: dict,
+    *,
+    head_on_half_angle_deg: float = 5.0,
+    crossing_starboard_max_deg: float = 112.5,
+    overtaking_max_aft_deg: float = 247.5,
+    speed_eps: float = 0.2,
+) -> dict:
+    """Classify a two-vessel encounter and infer give-way/stand-on roles.
+
+    Returns a dictionary with:
+      - scenario: one of ``head_on``, ``crossing``, ``overtaking``, ``safe``
+      - own_role / target_role: ``give_way``, ``stand_on``, or ``none``
+      - own_bearing_deg / target_bearing_deg
+    """
+
+    own_bearing = relative_bearing_deg(own, target)
+    target_bearing = relative_bearing_deg(target, own)
+
+    head_on_min = (360.0 - head_on_half_angle_deg) % 360.0
+    head_on_max = head_on_half_angle_deg % 360.0
+    crossing_min = head_on_half_angle_deg
+    crossing_max = crossing_starboard_max_deg
+    overtaking_min = crossing_starboard_max_deg
+    overtaking_max = overtaking_max_aft_deg
+
+    own_speed = float(own.get("speed", 0.0))
+    target_speed = float(target.get("speed", 0.0))
+
+    head_on = _bearing_in_sector(own_bearing, head_on_min, head_on_max) and _bearing_in_sector(
+        target_bearing, head_on_min, head_on_max
+    )
+    if head_on:
+        return {
+            "scenario": "head_on",
+            "own_role": "give_way",
+            "target_role": "give_way",
+            "own_bearing_deg": own_bearing,
+            "target_bearing_deg": target_bearing,
+        }
+
+    own_overtaking = _bearing_in_sector(target_bearing, overtaking_min, overtaking_max) and (
+        own_speed > target_speed + speed_eps
+    )
+    target_overtaking = _bearing_in_sector(own_bearing, overtaking_min, overtaking_max) and (
+        target_speed > own_speed + speed_eps
+    )
+    if own_overtaking and not target_overtaking:
+        return {
+            "scenario": "overtaking",
+            "own_role": "give_way",
+            "target_role": "stand_on",
+            "own_bearing_deg": own_bearing,
+            "target_bearing_deg": target_bearing,
+        }
+    if target_overtaking and not own_overtaking:
+        return {
+            "scenario": "overtaking",
+            "own_role": "stand_on",
+            "target_role": "give_way",
+            "own_bearing_deg": own_bearing,
+            "target_bearing_deg": target_bearing,
+        }
+
+    if _bearing_in_sector(own_bearing, crossing_min, crossing_max):
+        return {
+            "scenario": "crossing",
+            "own_role": "give_way",
+            "target_role": "stand_on",
+            "own_bearing_deg": own_bearing,
+            "target_bearing_deg": target_bearing,
+        }
+    if _bearing_in_sector(own_bearing, overtaking_max, head_on_min):
+        return {
+            "scenario": "crossing",
+            "own_role": "stand_on",
+            "target_role": "give_way",
+            "own_bearing_deg": own_bearing,
+            "target_bearing_deg": target_bearing,
+        }
+
+    return {
+        "scenario": "safe",
+        "own_role": "none",
+        "target_role": "none",
+        "own_bearing_deg": own_bearing,
+        "target_bearing_deg": target_bearing,
+    }

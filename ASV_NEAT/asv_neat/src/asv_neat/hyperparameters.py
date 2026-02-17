@@ -185,6 +185,22 @@ class HyperParameters:
         category="colregs",
     )
 
+    rl_takeover_distance: float = _hp(
+        35.0,
+        "Distance travelled by the give-way vessel before handing control to the learned policy in risky encounters (metres).",
+        category="colregs",
+    )
+    autopilot_rudder_cmd: float = _hp(
+        0.0,
+        "Fallback rudder command used before RL takeover (−1 starboard to +1 port).",
+        category="colregs",
+    )
+    autopilot_throttle_cmd: int = _hp(
+        0,
+        "Fallback throttle command used before RL takeover (0 coast, 1 accelerate, 2 decelerate).",
+        category="colregs",
+    )
+
     def as_dict(self) -> Dict[str, Any]:
         """Return a shallow dictionary of hyperparameter names and values."""
 

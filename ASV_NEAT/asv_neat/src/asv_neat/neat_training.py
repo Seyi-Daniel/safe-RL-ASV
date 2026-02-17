@@ -27,9 +27,9 @@ from .utils import (
     goal_distance,
     heading_error_deg,
     helm_label_from_rudder_cmd,
-    relative_bearing_deg,
     clamp,
     tcpa_dcpa,
+    classify_colregs_encounter,
 )
 
 
@@ -97,6 +97,14 @@ def simulate_episode(
     goal_progress_bonus = 0.0
     steps = 0
 
+    initial_snapshot = env.snapshot()
+    if initial_snapshot:
+        start_agent_x = float(initial_snapshot[0]["x"])
+        start_agent_y = float(initial_snapshot[0]["y"])
+    else:
+        start_agent_x = 0.0
+        start_agent_y = 0.0
+
     for step_idx in range(params.max_steps):
         snapshot = env.snapshot()
         if not snapshot:
@@ -112,8 +120,44 @@ def simulate_episode(
         rudder_cmd_raw = outputs[0] if outputs else 0.0
         throttle_raw = outputs[1] if len(outputs) > 1 else 0.0
 
-        rudder_cmd = clamp(float(rudder_cmd_raw), -1.0, 1.0)
-        throttle_i = clamp(int(round(float(throttle_raw) * 2.0)), 0, 2)
+        learned_rudder_cmd = clamp(float(rudder_cmd_raw), -1.0, 1.0)
+        learned_throttle_i = clamp(int(round(float(throttle_raw) * 2.0)), 0, 2)
+
+        tcpa = float("inf")
+        dcpa = float("inf")
+        encounter = {
+            "scenario": "safe",
+            "own_role": "none",
+            "target_role": "none",
+            "own_bearing_deg": 0.0,
+            "target_bearing_deg": 0.0,
+        }
+        risk_of_collision = False
+        if stand_on_state is not None:
+            tcpa, dcpa = tcpa_dcpa(agent_state, stand_on_state)
+            encounter = classify_colregs_encounter(agent_state, stand_on_state)
+            risk_of_collision = 0.0 <= tcpa <= params.tcpa_threshold and dcpa <= params.dcpa_threshold
+
+        travelled_distance = euclidean_distance(
+            float(agent_state["x"]),
+            float(agent_state["y"]),
+            start_agent_x,
+            start_agent_y,
+        )
+        rl_takeover_active = (
+            risk_of_collision
+            and encounter.get("own_role") == "give_way"
+            and travelled_distance >= params.rl_takeover_distance
+        )
+
+        if rl_takeover_active:
+            rudder_cmd = learned_rudder_cmd
+            throttle_i = learned_throttle_i
+            control_mode = "rl_takeover"
+        else:
+            rudder_cmd = clamp(params.autopilot_rudder_cmd, -1.0, 1.0)
+            throttle_i = clamp(int(params.autopilot_throttle_cmd), 0, 2)
+            control_mode = "autopilot_risk_hold" if risk_of_collision else "autopilot_nominal"
 
         helm_label = helm_label_from_rudder_cmd(rudder_cmd)
         action = (rudder_cmd, throttle_i)
@@ -130,6 +174,14 @@ def simulate_episode(
                     "rudder_cmd": float(rudder_cmd),
                     "throttle": int(throttle_i),
                     "helm_label": helm_label,
+                    "control_mode": control_mode,
+                    "risk_of_collision": bool(risk_of_collision),
+                    "scenario": encounter.get("scenario", "safe"),
+                    "own_role": encounter.get("own_role", "none"),
+                    "target_role": encounter.get("target_role", "none"),
+                    "dcpa": float(dcpa),
+                    "tcpa": float(tcpa),
+                    "travelled_distance": float(travelled_distance),
                     "agent_state": dict(agent_state),
                     "stand_on_state": dict(stand_on_state)
                     if stand_on_state is not None
@@ -144,6 +196,18 @@ def simulate_episode(
                     "step": step_idx,
                     "rudder_cmd_for_arrow": float(rudder_cmd),
                     "rudder_cmd_raw": float(rudder_cmd_raw),
+                    "control_mode": control_mode,
+                    "risk_of_collision": bool(risk_of_collision),
+                    "scenario": encounter.get("scenario", "safe"),
+                    "own_role": encounter.get("own_role", "none"),
+                    "target_role": encounter.get("target_role", "none"),
+                    "dcpa": float(dcpa),
+                    "tcpa": float(tcpa),
+                    "own_bearing_deg": float(encounter.get("own_bearing_deg", 0.0)),
+                    "target_bearing_deg": float(encounter.get("target_bearing_deg", 0.0)),
+                    "travelled_distance": float(travelled_distance),
+                    "rl_takeover_distance": float(params.rl_takeover_distance),
+                    "rl_takeover_active": bool(rl_takeover_active),
                 }
             )
             env.render()
@@ -211,12 +275,11 @@ def simulate_episode(
                     goal_progress_bonus=goal_progress_bonus,
                 )
 
-            tcpa, dcpa = tcpa_dcpa(agent_state, stand_on_state)
-            bearing = relative_bearing_deg(agent_state, stand_on_state)
             if (
-                0.0 <= tcpa <= params.tcpa_threshold
-                and dcpa <= params.dcpa_threshold
-                and bearing <= params.angle_threshold_deg
+                risk_of_collision
+                and rl_takeover_active
+                and encounter.get("own_role") == "give_way"
+                and encounter.get("scenario") in {"crossing", "head_on"}
             ):
                 if rudder_cmd >= 0.0:
                     wrong_action_cost += params.wrong_action_penalty

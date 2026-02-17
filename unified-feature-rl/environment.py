@@ -69,8 +69,20 @@ class SingleTargetFeatureEnv:
         # per-vessel telemetry
         self.agent_steps_taken = 0
         self.target_steps_taken = 0
+        self.colregs_scenario = "safe"
+        self.agent_role = "none"
+        self.target_role = "none"
+        self.risk_of_collision = False
+        self.last_dcpa = float("inf")
+        self.last_tcpa = float("inf")
+        self.agent_rl_active = False
+        self.target_rl_active = False
+        self.agent_relative_bearing_deg = 0.0
+        self.target_relative_bearing_deg = 0.0
         self.agent_start_speed = 0.0
         self.target_start_speed = 0.0
+        self.agent_start_pos = (0.0, 0.0)
+        self.target_start_pos = (0.0, 0.0)
 
         # vessel 2 planned path and tracking state
         self.target_plan: List[Tuple[str, float, float]] = []  # (segment_kind, duration_s, cmd)
@@ -119,6 +131,118 @@ class SingleTargetFeatureEnv:
 
     def _goal_distance(self, v: Vessel) -> float:
         return math.hypot(v.goal_x - v.x, v.goal_y - v.y)
+
+    def _distance_from_start(self, v: Vessel, start_xy: Tuple[float, float]) -> float:
+        sx, sy = start_xy
+        return math.hypot(v.x - sx, v.y - sy)
+
+    def _relative_bearing_deg(self, observer: Vessel, target: Vessel) -> float:
+        dx = target.x - observer.x
+        dy = target.y - observer.y
+        ch = math.cos(observer.h)
+        sh = math.sin(observer.h)
+        x_rel = ch * dx + sh * dy
+        y_rel = -sh * dx + ch * dy
+        rel_port = (math.degrees(math.atan2(y_rel, x_rel)) + 360.0) % 360.0
+        return (360.0 - rel_port) % 360.0
+
+    def _bearing_in_sector(self, bearing_deg: float, start_deg: float, end_deg: float) -> bool:
+        b = bearing_deg % 360.0
+        s = start_deg % 360.0
+        e = end_deg % 360.0
+        if s <= e:
+            return s <= b <= e
+        return b >= s or b <= e
+
+    def _tcpa_dcpa(self, a: Vessel, b: Vessel) -> Tuple[float, float]:
+        avx = math.cos(a.h) * a.speed
+        avy = math.sin(a.h) * a.speed
+        bvx = math.cos(b.h) * b.speed
+        bvy = math.sin(b.h) * b.speed
+        rx = b.x - a.x
+        ry = b.y - a.y
+        rvx = bvx - avx
+        rvy = bvy - avy
+        rv2 = rvx * rvx + rvy * rvy
+        if rv2 <= 1e-8:
+            return float("inf"), math.hypot(rx, ry)
+        tcpa = -((rx * rvx) + (ry * rvy)) / rv2
+        if tcpa < 0.0:
+            tcpa = 0.0
+        cx = rx + rvx * tcpa
+        cy = ry + rvy * tcpa
+        dcpa = math.hypot(cx, cy)
+        return tcpa, dcpa
+
+    def _classify_colregs(self) -> Dict[str, float | str]:
+        own_bearing = self._relative_bearing_deg(self.agent, self.target)
+        tgt_bearing = self._relative_bearing_deg(self.target, self.agent)
+
+        head_on_half = self.envp.colregs_head_on_half_angle_deg
+        head_on_min = (360.0 - head_on_half) % 360.0
+        head_on_max = head_on_half
+        crossing_max = self.envp.colregs_crossing_starboard_max_deg
+        overtaking_max = self.envp.colregs_overtaking_aft_max_deg
+
+        head_on = self._bearing_in_sector(own_bearing, head_on_min, head_on_max) and self._bearing_in_sector(
+            tgt_bearing, head_on_min, head_on_max
+        )
+        if head_on:
+            return {
+                "scenario": "head_on",
+                "agent_role": "give_way",
+                "target_role": "give_way",
+                "agent_bearing_deg": own_bearing,
+                "target_bearing_deg": tgt_bearing,
+            }
+
+        speed_eps = self.envp.colregs_speed_eps
+        agent_overtaking = self._bearing_in_sector(tgt_bearing, crossing_max, overtaking_max) and (
+            self.agent.speed > self.target.speed + speed_eps
+        )
+        target_overtaking = self._bearing_in_sector(own_bearing, crossing_max, overtaking_max) and (
+            self.target.speed > self.agent.speed + speed_eps
+        )
+        if agent_overtaking and not target_overtaking:
+            return {
+                "scenario": "overtaking",
+                "agent_role": "give_way",
+                "target_role": "stand_on",
+                "agent_bearing_deg": own_bearing,
+                "target_bearing_deg": tgt_bearing,
+            }
+        if target_overtaking and not agent_overtaking:
+            return {
+                "scenario": "overtaking",
+                "agent_role": "stand_on",
+                "target_role": "give_way",
+                "agent_bearing_deg": own_bearing,
+                "target_bearing_deg": tgt_bearing,
+            }
+
+        if self._bearing_in_sector(own_bearing, head_on_half, crossing_max):
+            return {
+                "scenario": "crossing",
+                "agent_role": "give_way",
+                "target_role": "stand_on",
+                "agent_bearing_deg": own_bearing,
+                "target_bearing_deg": tgt_bearing,
+            }
+        if self._bearing_in_sector(own_bearing, overtaking_max, head_on_min):
+            return {
+                "scenario": "crossing",
+                "agent_role": "stand_on",
+                "target_role": "give_way",
+                "agent_bearing_deg": own_bearing,
+                "target_bearing_deg": tgt_bearing,
+            }
+        return {
+            "scenario": "safe",
+            "agent_role": "none",
+            "target_role": "none",
+            "agent_bearing_deg": own_bearing,
+            "target_bearing_deg": tgt_bearing,
+        }
 
     def _point_on_big_circle(self, ang: float) -> Tuple[float, float]:
         r = self.envp.target_outer_radius
@@ -329,23 +453,56 @@ class SingleTargetFeatureEnv:
         yaw_rate = (v.rudder / max(1e-6, self.envp.rudder_max_angle_rad)) * self.envp.rudder_max_yaw_rate_rad_s
         v.h = wrap_pi(v.h + yaw_rate * dt)
 
-    def _advance_agent_straight(self, dt: float) -> None:
-        if self.agent is None or self.agent_reached:
+    def _advance_straight(self, v: Vessel, reached_attr: str, dt: float) -> None:
+        if getattr(self, reached_attr):
             return
 
-        d = self._goal_distance(self.agent)
+        d = self._goal_distance(v)
         if d <= self.envp.goal_radius:
-            self.agent_reached = True
-            self.agent.speed = 0.0
+            setattr(self, reached_attr, True)
+            v.speed = 0.0
             return
 
-        travel = min(self.agent.speed * dt, d)
-        self.agent.x += math.cos(self.agent.h) * travel
-        self.agent.y += math.sin(self.agent.h) * travel
+        travel = min(v.speed * dt, d)
+        v.x += math.cos(v.h) * travel
+        v.y += math.sin(v.h) * travel
 
         if travel + 1e-9 >= d:
-            self.agent_reached = True
-            self.agent.speed = 0.0
+            setattr(self, reached_attr, True)
+            v.speed = 0.0
+
+    def _advance_controlled(self, v: Vessel, reached_attr: str, rudder_cmd: float, throttle_cmd: float, dt: float) -> None:
+        if getattr(self, reached_attr):
+            return
+
+        d = self._goal_distance(v)
+        if d <= self.envp.goal_radius:
+            setattr(self, reached_attr, True)
+            v.speed = 0.0
+            return
+
+        self._integrate_rudder_heading(v, rudder_cmd, dt)
+
+        throttle_target = clamp(throttle_cmd, -1.0, 1.0)
+        throttle_step = self.envp.throttle_slew_rate * dt
+        v.throttle = clamp(v.throttle + clamp(throttle_target - v.throttle, -throttle_step, throttle_step), -1.0, 1.0)
+
+        if abs(v.throttle) <= self.envp.throttle_deadband:
+            accel = 0.0
+        elif v.throttle > 0.0:
+            accel = self.envp.accel_rate * v.throttle
+        else:
+            accel = self.envp.decel_rate * v.throttle
+
+        v.speed = clamp(v.speed + accel * dt, self.envp.min_speed, self.envp.max_speed)
+
+        travel = min(v.speed * dt, d)
+        v.x += math.cos(v.h) * travel
+        v.y += math.sin(v.h) * travel
+
+        if travel + 1e-9 >= d:
+            setattr(self, reached_attr, True)
+            v.speed = 0.0
 
     def _advance_target_plan(self, dt: float) -> None:
         if self.target is None or self.target_reached:
@@ -479,6 +636,7 @@ class SingleTargetFeatureEnv:
         aspeed = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         self.agent = Vessel(self.start_x, self.start_y, ah, aspeed, agx, agy)
         self.agent_start_speed = aspeed
+        self.agent_start_pos = (self.agent.x, self.agent.y)
 
         # Vessel 2: random start/goal on big circle + randomized initial heading.
         start_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
@@ -494,6 +652,7 @@ class SingleTargetFeatureEnv:
         sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         self.target = Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
         self.target_start_speed = sp2
+        self.target_start_pos = (self.target.x, self.target.y)
 
         (
             self.target_plan,
@@ -516,6 +675,16 @@ class SingleTargetFeatureEnv:
         self.prev_goal_d_target = self._goal_distance(self.target)
         self.agent_steps_taken = 0
         self.target_steps_taken = 0
+        self.colregs_scenario = "safe"
+        self.agent_role = "none"
+        self.target_role = "none"
+        self.risk_of_collision = False
+        self.last_dcpa = float("inf")
+        self.last_tcpa = float("inf")
+        self.agent_rl_active = False
+        self.target_rl_active = False
+        self.agent_relative_bearing_deg = 0.0
+        self.target_relative_bearing_deg = 0.0
 
         t1 = self.prev_goal_d_agent / max(1e-6, self.agent.speed)
         planned_t2 = sum(d for _, d, _ in self.target_plan)
@@ -529,19 +698,49 @@ class SingleTargetFeatureEnv:
         return self.get_obs()
 
     def step(self, action: Union[np.ndarray, Tuple[float, float], list]) -> Tuple[np.ndarray, float, bool, Dict[str, float | str | int]]:
-        # Inputs are still consumed for compatibility, but not used for control yet.
         a = np.asarray(action, dtype=np.float32).reshape(-1)
         if a.size < 2:
             raise ValueError("Action must contain [rudder_cmd, throttle_cmd].")
-        rudder_cmd = float(a[0])
-        throttle_cmd = float(a[1])
+        rudder_cmd = clamp(float(a[0]), -1.0, 1.0)
+        throttle_cmd = clamp(float(a[1]), -1.0, 1.0)
+
+        encounter = self._classify_colregs()
+        self.colregs_scenario = str(encounter["scenario"])
+        self.agent_role = str(encounter["agent_role"])
+        self.target_role = str(encounter["target_role"])
+        self.agent_relative_bearing_deg = float(encounter["agent_bearing_deg"])
+        self.target_relative_bearing_deg = float(encounter["target_bearing_deg"])
+
+        tcpa, dcpa = self._tcpa_dcpa(self.agent, self.target)
+        self.last_tcpa = tcpa
+        self.last_dcpa = dcpa
+        self.risk_of_collision = (0.0 <= tcpa <= self.envp.tcpa_risk_threshold) and (dcpa <= self.envp.dcpa_risk_threshold)
+
+        agent_dist = self._distance_from_start(self.agent, self.agent_start_pos)
+        target_dist = self._distance_from_start(self.target, self.target_start_pos)
+
+        self.agent_rl_active = self.risk_of_collision and self.agent_role == "give_way" and agent_dist >= self.envp.rl_takeover_distance
+        self.target_rl_active = self.risk_of_collision and self.target_role == "give_way" and target_dist >= self.envp.rl_takeover_distance
 
         h = self.envp.dt / max(1, self.envp.substeps)
         was_agent_active = not self.agent_reached
         was_target_active = not self.target_reached
         for _ in range(max(1, self.envp.substeps)):
-            self._advance_agent_straight(h)
-            self._advance_target_plan(h)
+            if self.agent_role == "give_way":
+                if self.agent_rl_active:
+                    self._advance_controlled(self.agent, "agent_reached", rudder_cmd, throttle_cmd, h)
+                else:
+                    self._advance_straight(self.agent, "agent_reached", h)
+            else:
+                self._advance_straight(self.agent, "agent_reached", h)
+
+            if self.target_role == "give_way":
+                if self.target_rl_active:
+                    self._advance_controlled(self.target, "target_reached", rudder_cmd, throttle_cmd, h)
+                else:
+                    self._advance_straight(self.target, "target_reached", h)
+            else:
+                self._advance_target_plan(h)
 
         if was_agent_active:
             self.agent_steps_taken += 1
@@ -597,9 +796,20 @@ class SingleTargetFeatureEnv:
             "target_heading_deg": float(math.degrees(self.target.h)),
             "agent_rudder_deg": float(math.degrees(self.agent.rudder)),
             "target_rudder_deg": float(math.degrees(self.target.rudder)),
+            "dcpa": float(dcpa),
+            "tcpa": float(tcpa),
+            "risk_of_collision": int(self.risk_of_collision),
+            "colregs_scenario": self.colregs_scenario,
+            "agent_role": self.agent_role,
+            "target_role": self.target_role,
+            "agent_rl_active": int(self.agent_rl_active),
+            "target_rl_active": int(self.target_rl_active),
+            "agent_distance_from_start": float(agent_dist),
+            "target_distance_from_start": float(target_dist),
+            "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
+            "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
         }
         return self.get_obs(), float(reward), done, info
-
     def render(self) -> None:
         if not self.render_enabled or self._screen is None:
             return
@@ -646,6 +856,7 @@ class SingleTargetFeatureEnv:
         self._draw_vessel(self.agent, (95, 170, 255), "V1")
         self._draw_vessel(self.target, (255, 120, 120), "V2")
 
+        tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
         hud0 = self._font.render(
             f"sim_step={self.step_idx}  t={self.time:.1f}s  paths[P]={int(self.show_planned_paths)}  mode={self.target_planner_mode[:4].upper()}  word={self.target_path_word}",
             True,
@@ -653,16 +864,24 @@ class SingleTargetFeatureEnv:
         )
         hud1 = self._font.render(
             (
-                f"V1 steps={self.agent_steps_taken}  spd={self.agent.speed:.2f} (start {self.agent_start_speed:.2f})  "
-                f"hdg={math.degrees(self.agent.h):.1f}deg  rud={math.degrees(self.agent.rudder):.1f}deg"
+                f"COLREGS={self.colregs_scenario}  risk={'YES' if self.risk_of_collision else 'NO'}  "
+                f"DCPA={self.last_dcpa:.2f}m  TCPA={tcpa_txt}  BRG={self.agent_relative_bearing_deg:.1f}deg"
+            ),
+            True,
+            (255, 240, 170),
+        )
+        hud2 = self._font.render(
+            (
+                f"V1 role={self.agent_role} rl={int(self.agent_rl_active)} dist={self._distance_from_start(self.agent, self.agent_start_pos):.1f}/{self.envp.rl_takeover_distance:.1f} "
+                f"spd={self.agent.speed:.2f} hdg={math.degrees(self.agent.h):.1f} rud={math.degrees(self.agent.rudder):.1f}"
             ),
             True,
             (170, 220, 255),
         )
-        hud2 = self._font.render(
+        hud3 = self._font.render(
             (
-                f"V2 steps={self.target_steps_taken}  spd={self.target.speed:.2f} (start {self.target_start_speed:.2f})  "
-                f"hdg={math.degrees(self.target.h):.1f}deg  rud={math.degrees(self.target.rudder):.1f}deg"
+                f"V2 role={self.target_role} rl={int(self.target_rl_active)} dist={self._distance_from_start(self.target, self.target_start_pos):.1f}/{self.envp.rl_takeover_distance:.1f} "
+                f"spd={self.target.speed:.2f} hdg={math.degrees(self.target.h):.1f} rud={math.degrees(self.target.rudder):.1f}"
             ),
             True,
             (255, 190, 190),
@@ -670,6 +889,7 @@ class SingleTargetFeatureEnv:
         surf.blit(hud0, (10, 8))
         surf.blit(hud1, (10, 26))
         surf.blit(hud2, (10, 44))
+        surf.blit(hud3, (10, 62))
 
         pygame.display.flip()
         self._clock.tick(self.envp.render_fps)

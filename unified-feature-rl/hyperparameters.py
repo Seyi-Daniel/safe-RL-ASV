@@ -50,6 +50,16 @@ class EnvParams:
     dubins_heading_sweep_deg: float = 10.0
     dubins_heading_choices: int = 3
 
+    # COLREGS risk/takeover gating
+    colregs_head_on_half_angle_deg: float = 5.0
+    colregs_crossing_starboard_max_deg: float = 112.5
+    colregs_overtaking_aft_max_deg: float = 247.5
+    colregs_speed_eps: float = 0.2
+
+    dcpa_risk_threshold: float = 20.0
+    tcpa_risk_threshold: float = 90.0
+    rl_takeover_distance: float = 35.0
+
 
 @dataclass
 class RewardParams:
