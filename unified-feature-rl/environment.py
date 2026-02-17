@@ -769,12 +769,10 @@ class SingleTargetFeatureEnv:
             else:
                 self._advance_straight(self.agent, "agent_reached", h)
 
-            if self.target_role == "give_way":
-                if self.target_rl_active:
-                    self._advance_controlled(self.target, "target_reached", rudder_cmd, throttle_cmd, h)
-                else:
-                    self._advance_straight(self.target, "target_reached", h)
+            if self.target_role == "give_way" and self.target_rl_active:
+                self._advance_controlled(self.target, "target_reached", rudder_cmd, throttle_cmd, h)
             else:
+                # Keep vessel-2 on its nominal Dubins/plan path unless RL takeover is active.
                 self._advance_target_plan(h)
 
         if was_agent_active:
