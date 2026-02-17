@@ -1,25 +1,33 @@
 # unified-feature-rl
 
-Single-agent ASV training sandbox using **DDQN** (feature-based state + discrete control actions).
+Two-vessel ASV simulation/training sandbox using **DDQN-compatible** feature observations and action I/O.
 
 ## What this now implements
 
-- One learning ASV vessel (ego) plus one moving target vessel.
-- Agent always starts at the world center.
-- Agent heading is randomized each episode.
-- Agent goal is sampled on a random angle along a configurable outer ring around the start point.
-- Target vessel behavior:
-  - spawns on a large outer circle (`target_outer_radius`)
-  - picks random left/right traversal and random arc angle
-  - follows a smooth inner arc and stops at an endpoint on the same outer circle
-- Optional dotted rings rendered around the start location:
-  - `spawn_ring_radius` (inner ring)
-  - `goal_ring_radius` (outer goal ring)
-  - `vessel_outline_radius` (agent marker ring size in render)
-
+- Two vessels on a shared big circle centered at the world center.
+- Vessel 1 (agent slot):
+  - starts exactly at world center
+  - gets a random goal on the big-circle circumference
+  - travels straight from center to that goal at constant randomized speed.
+- Vessel 2 (target slot):
+  - starts at a random point on the same circumference
+  - gets a random goal on the same circumference
+  - starts with randomized heading and randomized constant speed
+  - follows a Dubins-style turn/straight/turn plan using the project turn-rate limit.
+- Vessel-2 end-heading candidates include:
+  - clockwise/counter-clockwise tangents at goal
+  - heading toward center
+  - heading along start-goal chord
+  - ± angular sweeps around each base heading.
+- Per-episode planner objective for vessel 2 is randomly sampled from:
+  - shortest path length
+  - minimum steering effort
+  - minimum curvature change
+  - closest to straight line.
+- Episode terminates when both vessels reach their goals (or safety timeout/oob fallback).
 ## State, action, and algorithm
 
-### Observation/state (10 features)
+### Observation/state (12 features)
 1. normalized agent x
 2. normalized agent y
 3. normalized agent heading
@@ -30,6 +38,8 @@ Single-agent ASV training sandbox using **DDQN** (feature-based state + discrete
 8. normalized target y
 9. normalized target heading
 10. normalized target speed
+11. normalized target goal x
+12. normalized target goal y
 
 ### Action space (9 discrete actions)
 Actions are a Cartesian product of:
