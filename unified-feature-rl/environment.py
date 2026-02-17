@@ -705,6 +705,31 @@ class SingleTargetFeatureEnv:
         rudder_cmd = clamp(float(a[0]), -1.0, 1.0)
         throttle_cmd = clamp(float(a[1]), -1.0, 1.0)
 
+
+        if self.paused:
+            info: Dict[str, float | str | int] = {
+                "reason": "paused",
+                "agent_goal_distance": self._goal_distance(self.agent),
+                "target_goal_distance": self._goal_distance(self.target),
+                "agent_reached": int(self.agent_reached),
+                "target_reached": int(self.target_reached),
+                "rudder_cmd": rudder_cmd,
+                "throttle_cmd": throttle_cmd,
+                "dcpa": float(self.last_dcpa),
+                "tcpa": float(self.last_tcpa),
+                "risk_of_collision": int(self.risk_of_collision),
+                "colregs_scenario": self.colregs_scenario,
+                "agent_role": self.agent_role,
+                "target_role": self.target_role,
+                "agent_rl_active": int(self.agent_rl_active),
+                "target_rl_active": int(self.target_rl_active),
+                "agent_distance_from_start": float(self._distance_from_start(self.agent, self.agent_start_pos)),
+                "target_distance_from_start": float(self._distance_from_start(self.target, self.target_start_pos)),
+                "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
+                "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
+            }
+            return self.get_obs(), 0.0, False, info
+
         encounter = self._classify_colregs()
         self.colregs_scenario = str(encounter["scenario"])
         self.agent_role = str(encounter["agent_role"])
