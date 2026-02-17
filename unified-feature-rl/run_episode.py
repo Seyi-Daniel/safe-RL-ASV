@@ -10,7 +10,7 @@ import torch
 
 from environment import SingleTargetFeatureEnv
 from hyperparameters import EnvParams, RewardParams
-from policy import DDQNQNet, N_ACTIONS, decode_action_idx
+from policy import DDQNQNet, N_ACTIONS
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,14 +72,15 @@ def main() -> None:
         info = {"reason": ""}
         while not done:
             if policy is None:
-                a_idx = np.random.randint(0, N_ACTIONS)
+                action = np.asarray(
+                    [np.random.uniform(-1.0, 1.0), np.random.uniform(-1.0, 1.0)],
+                    dtype=np.float32,
+                )
             else:
                 with torch.no_grad():
                     s = torch.from_numpy(obs).float().unsqueeze(0).to(device)
-                    a_idx = int(torch.argmax(policy(s), dim=1).item())
-
-            cmd = decode_action_idx(a_idx)
-            action = np.asarray([cmd.rudder, cmd.throttle], dtype=np.float32)
+                    q = policy(s).squeeze(0).detach().cpu().numpy()
+                action = np.asarray([np.tanh(q[0]), np.tanh(q[1])], dtype=np.float32)
             obs, r, done, info = env.step(action)
             total += r
             if args.render:

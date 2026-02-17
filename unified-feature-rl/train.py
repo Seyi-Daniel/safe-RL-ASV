@@ -14,7 +14,7 @@ import torch.optim as optim
 
 from environment import SingleTargetFeatureEnv
 from hyperparameters import EnvParams, RewardParams, TrainParams
-from policy import DDQNQNet, N_ACTIONS, decode_action_idx
+from policy import DDQNQNet, N_ACTIONS
 
 Transition = namedtuple("Transition", ("state", "action", "reward", "next_state", "done"))
 
@@ -89,7 +89,7 @@ class DDQNAgent:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train DDQN policy (discrete 9-action control)")
+    p = argparse.ArgumentParser(description="Train DDQN policy (continuous rudder/throttle interface; scripted boat motion)")
     p.add_argument("--episodes", type=int, default=TrainParams().episodes)
     p.add_argument("--batch-size", type=int, default=TrainParams().batch_size)
     p.add_argument("--replay-size", type=int, default=TrainParams().replay_size)
@@ -155,8 +155,11 @@ def main() -> None:
 
         while not done:
             action_idx = agent.act(obs)
-            cmd = decode_action_idx(action_idx)
-            next_obs, reward, done, _ = env.step(np.asarray([cmd.rudder, cmd.throttle], dtype=np.float32))
+            with torch.no_grad():
+                s_t = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+                q = agent.online(s_t).squeeze(0).detach().cpu().numpy()
+            action = np.asarray([np.tanh(q[0]), np.tanh(q[1])], dtype=np.float32)
+            next_obs, reward, done, _ = env.step(action)
 
             replay.push(obs, action_idx, reward, next_obs, done)
             obs = next_obs

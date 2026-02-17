@@ -43,12 +43,12 @@ class EnvParams:
     goal_ring_radius: float = 180.0
     vessel_outline_radius: float = 4.0
 
-    # moving target vessel on outer-circle to outer-circle arc
+    # shared big circle geometry (both vessel goals lie on this circumference)
     target_outer_radius: float = 180.0
     target_min_speed: float = 0.5
     target_max_speed: float = 7.0
-    target_arc_min_deg: float = 20.0
-    target_arc_max_deg: float = 110.0
+    dubins_heading_sweep_deg: float = 10.0
+    dubins_heading_choices: int = 3
 
 
 @dataclass

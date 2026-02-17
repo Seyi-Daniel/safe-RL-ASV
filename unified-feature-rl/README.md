@@ -1,25 +1,34 @@
 # unified-feature-rl
 
-Single-agent ASV training sandbox using **DDQN** (feature-based state + discrete control actions).
+Two-vessel ASV simulation/training sandbox with continuous rudder/throttle I/O.
 
 ## What this now implements
 
-- One learning ASV vessel (ego) plus one moving target vessel.
-- Agent always starts at the world center.
-- Agent heading is randomized each episode.
-- Agent goal is sampled on a random angle along a configurable outer ring around the start point.
-- Target vessel behavior:
-  - spawns on a large outer circle (`target_outer_radius`)
-  - picks random left/right traversal and random arc angle
-  - follows a smooth inner arc and stops at an endpoint on the same outer circle
-- Optional dotted rings rendered around the start location:
-  - `spawn_ring_radius` (inner ring)
-  - `goal_ring_radius` (outer goal ring)
-  - `vessel_outline_radius` (agent marker ring size in render)
-
+- Two vessels on a shared big circle centered at the world center.
+- Vessel 1 (agent slot):
+  - starts exactly at world center
+  - gets a random goal on the big-circle circumference
+  - travels straight from center to that goal at constant randomized speed.
+- Vessel 2 (target slot):
+  - starts at a random point on the same circumference
+  - gets a random goal on the same circumference
+  - starts with randomized heading and randomized constant speed
+  - follows an exact Dubins path family candidate (LSL/RSR/LSR/RSL/RLR/LRL) selected by episode objective and tracked with smooth rudder dynamics.
+- Vessel-2 end-heading candidates include:
+  - clockwise/counter-clockwise tangents at goal
+  - heading toward center
+  - heading along start-goal chord
+  - ± angular sweeps around each base heading.
+- Per-episode planner objective for vessel 2 is randomly sampled from:
+  - shortest path length
+  - minimum steering effort
+  - minimum curvature change
+  - closest to straight line.
+- Episode terminates when both vessels reach their goals (or safety timeout/oob fallback), with continuous arrival motion (no goal snap teleport).
+- Rendering includes a path visibility toggle: press `P` to show/hide both planned paths.
 ## State, action, and algorithm
 
-### Observation/state (10 features)
+### Observation/state (12 features)
 1. normalized agent x
 2. normalized agent y
 3. normalized agent heading
@@ -30,13 +39,13 @@ Single-agent ASV training sandbox using **DDQN** (feature-based state + discrete
 8. normalized target y
 9. normalized target heading
 10. normalized target speed
+11. normalized target goal x
+12. normalized target goal y
 
-### Action space (9 discrete actions)
-Actions are a Cartesian product of:
-- steer: `{none, starboard, port}`
-- throttle: `{coast, accelerate, decelerate}`
+### Action interface (continuous)
+The environment step input remains continuous `[rudder, throttle]` where each channel is expected in `[-1, 1]`.
 
-Each DDQN action index `[0..8]` is decoded into continuous control commands for the simulator (`rudder`, `throttle` in `{-1,0,1}`).
+At the moment, vessel control is scripted by the path planners (as requested), so model outputs are still produced but are not used to steer either boat during training rollouts.
 
 ### Training algorithm
 Training is now **Double DQN** (not CEM):
@@ -48,7 +57,7 @@ Training is now **Double DQN** (not CEM):
 
 ## Why this differs from the previous CEM version
 
-The RL_ASV and feature-RL-ASV subprojects are value-based DDQN-style implementations. This subproject now follows that same family so hyperparameters and behavior match expected DDQN workflows (episodes, replay, target updates, epsilon schedule) instead of population/elites.
+The RL_ASV and feature-RL-ASV subprojects are value-based DDQN-style implementations. This subproject keeps that model/replay scaffolding, while boat motion is currently scripted to validate scenario geometry/path planning before RL control is re-enabled.
 
 ## Suggested improvements included
 
