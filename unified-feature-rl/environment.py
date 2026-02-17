@@ -76,6 +76,11 @@ class SingleTargetFeatureEnv:
         self.target_plan_terminal_pos_err = 0.0
         self.target_plan_terminal_heading_err = 0.0
 
+        # render-time planned path visualization
+        self.show_planned_paths = True
+        self.agent_planned_path: List[Tuple[float, float]] = []
+        self.target_planned_path: List[Tuple[float, float]] = []
+
         self.render_enabled = render and HAS_PYGAME
         self._screen = None
         self._clock = None
@@ -383,6 +388,61 @@ class SingleTargetFeatureEnv:
                     self.target_plan_idx += 1
                     self.target_plan_elapsed = 0.0
 
+
+    def _build_agent_planned_path(self) -> None:
+        if self.agent is None:
+            self.agent_planned_path = []
+            return
+        self.agent_planned_path = [(self.start_x, self.start_y), (self.agent.goal_x, self.agent.goal_y)]
+
+    def _build_target_planned_path(self, sx: float, sy: float, sh: float, speed: float, goal_x: float, goal_y: float) -> None:
+        # Build a visualized path by replaying the same dynamics used during execution.
+        sim = Vessel(sx, sy, sh, speed, goal_x, goal_y, rudder=0.0, throttle=0.0)
+        pts: List[Tuple[float, float]] = [(sim.x, sim.y)]
+
+        local_idx = 0
+        local_elapsed = 0.0
+        dt = self.envp.dt / max(1, self.envp.substeps)
+        max_sim_steps = max(2000, int(2.0 * self.max_steps * max(1, self.envp.substeps)))
+
+        for _ in range(max_sim_steps):
+            d_goal = math.hypot(goal_x - sim.x, goal_y - sim.y)
+            if d_goal <= self.envp.goal_radius:
+                break
+
+            if local_idx < len(self.target_plan):
+                _, seg_dur, cmd = self.target_plan[local_idx]
+                seg_rem = max(0.0, seg_dur - local_elapsed)
+                if seg_rem <= 1e-9:
+                    local_idx += 1
+                    local_elapsed = 0.0
+                    continue
+                step = min(dt, seg_rem)
+                desired_cmd = cmd
+            else:
+                step = dt
+                goal_bearing = math.atan2(goal_y - sim.y, goal_x - sim.x)
+                err = wrap_pi(goal_bearing - sim.h)
+                desired_cmd = clamp(err / math.radians(25.0), -1.0, 1.0)
+
+            self._integrate_rudder_heading(sim, desired_cmd, step)
+            d_goal = math.hypot(goal_x - sim.x, goal_y - sim.y)
+            travel = min(sim.speed * step, d_goal)
+            sim.x += travel * math.cos(sim.h)
+            sim.y += travel * math.sin(sim.h)
+            pts.append((sim.x, sim.y))
+
+            if travel + 1e-9 >= d_goal:
+                break
+
+            if local_idx < len(self.target_plan):
+                local_elapsed += step
+                if local_elapsed + 1e-9 >= self.target_plan[local_idx][1]:
+                    local_idx += 1
+                    local_elapsed = 0.0
+
+        self.target_planned_path = pts
+
     def get_obs(self) -> np.ndarray:
         return np.asarray(
             [
@@ -453,6 +513,9 @@ class SingleTargetFeatureEnv:
         episode_time = max(self.envp.episode_seconds, 1.4 * max(t1, t2) + 20.0)
         self.max_steps = max(1, int(round(episode_time / self.envp.dt)))
 
+        self._build_agent_planned_path()
+        self._build_target_planned_path(sx2, sy2, sh2, sp2, gx2, gy2)
+
         return self.get_obs()
 
     def step(self, action: Union[np.ndarray, Tuple[float, float], list]) -> Tuple[np.ndarray, float, bool, Dict[str, float | str | int]]:
@@ -519,6 +582,8 @@ class SingleTargetFeatureEnv:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 raise SystemExit
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_p:
+                self.show_planned_paths = not self.show_planned_paths
 
         surf = self._screen
         surf.fill((17, 58, 92))
@@ -549,13 +614,17 @@ class SingleTargetFeatureEnv:
                 1,
             )
 
+        if self.show_planned_paths:
+            self._draw_planned_path(self.agent_planned_path, (150, 210, 255))
+            self._draw_planned_path(self.target_planned_path, (255, 170, 170))
+
         self._draw_vessel(self.agent, (95, 170, 255), "V1")
         self._draw_vessel(self.target, (255, 120, 120), "V2")
 
         hud = self._font.render(
             (
                 f"step={self.step_idx} t={self.time:.1f}s mode={self.target_planner_mode} "
-                f"word={self.target_path_word} reached=({int(self.agent_reached)},{int(self.target_reached)})"
+                f"word={self.target_path_word} reached=({int(self.agent_reached)},{int(self.target_reached)}) paths[P]={int(self.show_planned_paths)}"
             ),
             True,
             (255, 255, 255),
@@ -564,6 +633,12 @@ class SingleTargetFeatureEnv:
 
         pygame.display.flip()
         self._clock.tick(self.envp.render_fps)
+
+    def _draw_planned_path(self, pts: List[Tuple[float, float]], color: Tuple[int, int, int]) -> None:
+        if len(pts) < 2:
+            return
+        pix = [(self.sx(x), self.sy(y)) for x, y in pts]
+        pygame.draw.lines(self._screen, color, False, pix, 2)
 
     def _draw_goal(self, gx: float, gy: float, color: Tuple[int, int, int]) -> None:
         pygame.draw.circle(self._screen, color, (self.sx(gx), self.sy(gy)), 6)

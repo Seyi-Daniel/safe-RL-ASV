@@ -25,6 +25,7 @@ Two-vessel ASV simulation/training sandbox with continuous rudder/throttle I/O.
   - minimum curvature change
   - closest to straight line.
 - Episode terminates when both vessels reach their goals (or safety timeout/oob fallback), with continuous arrival motion (no goal snap teleport).
+- Rendering includes a path visibility toggle: press `P` to show/hide both planned paths.
 ## State, action, and algorithm
 
 ### Observation/state (12 features)
