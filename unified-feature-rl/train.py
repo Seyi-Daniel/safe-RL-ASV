@@ -154,6 +154,10 @@ def main() -> None:
         loss_count = 0
 
         while not done:
+            if args.render and getattr(env, "paused", False):
+                env.render()
+                continue
+
             action_idx = agent.act(obs)
             with torch.no_grad():
                 s_t = torch.from_numpy(obs).float().unsqueeze(0).to(device)

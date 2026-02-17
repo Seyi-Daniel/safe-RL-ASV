@@ -101,6 +101,10 @@ class SingleTargetFeatureEnv:
 
         self.render_enabled = render and HAS_PYGAME
         self.paused = False
+        self.risk_overlay_active = False
+        self.risk_overlay_payload: Dict[str, float | str | int] = {}
+        self.prev_agent_rl_active = False
+        self.prev_target_rl_active = False
         self._screen = None
         self._clock = None
         self._font = None
@@ -686,6 +690,11 @@ class SingleTargetFeatureEnv:
         self.target_rl_active = False
         self.agent_relative_bearing_deg = 0.0
         self.target_relative_bearing_deg = 0.0
+        self.paused = False
+        self.risk_overlay_active = False
+        self.risk_overlay_payload = {}
+        self.prev_agent_rl_active = False
+        self.prev_target_rl_active = False
 
         t1 = self.prev_goal_d_agent / max(1e-6, self.agent.speed)
         planned_t2 = sum(d for _, d, _ in self.target_plan)
@@ -835,7 +844,76 @@ class SingleTargetFeatureEnv:
             "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
             "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
         }
+
+        auto_pause_trigger = self.render_enabled and (
+            (self.agent_rl_active and not self.prev_agent_rl_active)
+            or (self.target_rl_active and not self.prev_target_rl_active)
+        )
+        if auto_pause_trigger and self.risk_of_collision:
+            self.paused = True
+            self.risk_overlay_active = True
+            self.risk_overlay_payload = {
+                "step": int(self.step_idx),
+                "time": float(self.time),
+                "scenario": self.colregs_scenario,
+                "agent_role": self.agent_role,
+                "target_role": self.target_role,
+                "dcpa": float(self.last_dcpa),
+                "tcpa": float(self.last_tcpa),
+                "agent_bearing": float(self.agent_relative_bearing_deg),
+                "target_bearing": float(self.target_relative_bearing_deg),
+                "agent_rl_active": int(self.agent_rl_active),
+                "target_rl_active": int(self.target_rl_active),
+                "agent_distance": float(agent_dist),
+                "target_distance": float(target_dist),
+                "takeover_distance": float(self.envp.rl_takeover_distance),
+            }
+
+        self.prev_agent_rl_active = self.agent_rl_active
+        self.prev_target_rl_active = self.target_rl_active
         return self.get_obs(), float(reward), done, info
+
+    def _draw_risk_overlay(self, surf) -> None:
+        if not self.risk_overlay_active or not self._font:
+            return
+
+        w = self.sx(self.envp.world_w)
+        h = self.sy(self.envp.world_h)
+        panel = pygame.Surface((w, h), pygame.SRCALPHA)
+        panel.fill((0, 0, 0, 155))
+
+        p = self.risk_overlay_payload
+        tcpa = p.get("tcpa", float("inf"))
+        tcpa_txt = "inf" if (isinstance(tcpa, float) and math.isinf(tcpa)) else f"{float(tcpa):.1f}s"
+        lines = [
+            "⚠ RL TAKEOVER TRIGGERED — RISK BRIEFING",
+            f"Step {int(p.get('step', self.step_idx))}  Time {float(p.get('time', self.time)):.1f}s",
+            f"COLREGS scenario: {p.get('scenario', self.colregs_scenario)}",
+            f"Roles: V1={p.get('agent_role', self.agent_role)}  V2={p.get('target_role', self.target_role)}",
+            f"DCPA={float(p.get('dcpa', self.last_dcpa)):.2f}m  TCPA={tcpa_txt}",
+            f"Relative bearings: V1→V2={float(p.get('agent_bearing', self.agent_relative_bearing_deg)):.1f}°  V2→V1={float(p.get('target_bearing', self.target_relative_bearing_deg)):.1f}°",
+            f"Takeover active: V1={int(p.get('agent_rl_active', self.agent_rl_active))}  V2={int(p.get('target_rl_active', self.target_rl_active))}",
+            f"Distance since start: V1={float(p.get('agent_distance', 0.0)):.1f}m  V2={float(p.get('target_distance', 0.0)):.1f}m  threshold={float(p.get('takeover_distance', self.envp.rl_takeover_distance)):.1f}m",
+            "Why paused: risk is within DCPA/TCPA thresholds and give-way vessel RL takeover has begun.",
+            "Press SPACE or ENTER to clear this overlay and continue.",
+        ]
+
+        box_w = int(0.88 * w)
+        box_h = 28 + 24 * len(lines)
+        box_x = (w - box_w) // 2
+        box_y = (h - box_h) // 2
+        pygame.draw.rect(panel, (20, 20, 28, 235), (box_x, box_y, box_w, box_h), border_radius=10)
+        pygame.draw.rect(panel, (255, 210, 90, 255), (box_x, box_y, box_w, box_h), width=2, border_radius=10)
+
+        y = box_y + 14
+        for idx, line in enumerate(lines):
+            color = (255, 230, 130) if idx == 0 else (240, 240, 240)
+            txt = self._font.render(line, True, color)
+            panel.blit(txt, (box_x + 14, y))
+            y += 24
+
+        surf.blit(panel, (0, 0))
+
     def render(self) -> None:
         if not self.render_enabled or self._screen is None:
             return
@@ -845,8 +923,13 @@ class SingleTargetFeatureEnv:
                 raise SystemExit
             if event.type == pygame.KEYDOWN and event.key == pygame.K_p:
                 self.show_planned_paths = not self.show_planned_paths
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                self.paused = not self.paused
+            if event.type == pygame.KEYDOWN and event.key in (pygame.K_SPACE, pygame.K_RETURN):
+                if self.risk_overlay_active:
+                    self.risk_overlay_active = False
+                    self.risk_overlay_payload = {}
+                    self.paused = False
+                else:
+                    self.paused = not self.paused
 
         surf = self._screen
         surf.fill((17, 58, 92))
@@ -918,6 +1001,9 @@ class SingleTargetFeatureEnv:
         surf.blit(hud1, (10, 26))
         surf.blit(hud2, (10, 44))
         surf.blit(hud3, (10, 62))
+
+        if self.risk_overlay_active:
+            self._draw_risk_overlay(surf)
 
         pygame.display.flip()
         self._clock.tick(self.envp.render_fps)
