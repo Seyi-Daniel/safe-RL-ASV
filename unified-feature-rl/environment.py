@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 
@@ -33,6 +33,8 @@ class Vessel:
     speed: float
     goal_x: float
     goal_y: float
+    rudder: float = 0.0
+    throttle: float = 0.0
 
 
 class SingleTargetFeatureEnv:
@@ -113,12 +115,27 @@ class SingleTargetFeatureEnv:
         rudder_cmd = clamp(rudder_cmd, -1.0, 1.0)
         throttle_cmd = clamp(throttle_cmd, -1.0, 1.0)
 
-        if v.speed > 1e-4:
-            v.h = wrap_pi(v.h + rudder_cmd * self.envp.turn_rate_rad_s * dt)
+        # Rudder dynamics: command -> target angle with slew limit.
+        rudder_target = rudder_cmd * self.envp.rudder_max_angle_rad
+        rudder_step = self.envp.rudder_max_rate_rad_s * dt
+        v.rudder = clamp(v.rudder + clamp(rudder_target - v.rudder, -rudder_step, rudder_step), -self.envp.rudder_max_angle_rad, self.envp.rudder_max_angle_rad)
 
-        accel = self.envp.accel_rate * max(0.0, throttle_cmd)
-        decel = self.envp.decel_rate * max(0.0, -throttle_cmd)
-        v.speed = clamp(v.speed + (accel - decel) * dt, self.envp.min_speed, self.envp.max_speed)
+        # Rudder-limited yaw: yaw rate saturates at max when rudder is at max angle.
+        yaw_rate = (v.rudder / max(1e-6, self.envp.rudder_max_angle_rad)) * self.envp.rudder_max_yaw_rate_rad_s
+        v.h = wrap_pi(v.h + yaw_rate * dt)
+
+        # Throttle stick dynamics: command -> effective throttle with slew limit.
+        thr_step = self.envp.throttle_slew_rate * dt
+        v.throttle = clamp(v.throttle + clamp(throttle_cmd - v.throttle, -thr_step, thr_step), -1.0, 1.0)
+
+        if v.throttle > self.envp.throttle_deadband:
+            accel = v.throttle * self.envp.accel_rate
+        elif v.throttle < -self.envp.throttle_deadband:
+            accel = v.throttle * self.envp.brake_rate
+        else:
+            accel = -self.envp.decel_rate
+
+        v.speed = clamp(v.speed + accel * dt, self.envp.min_speed, self.envp.max_speed)
 
         v.x += v.speed * math.cos(v.h) * dt
         v.y += v.speed * math.sin(v.h) * dt
@@ -246,9 +263,12 @@ class SingleTargetFeatureEnv:
         self.prev_goal_d = self._goal_distance(self.agent)
         return self.get_obs()
 
-    def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict[str, float | str | int]]:
-        rudder_cmd = float(action[0])
-        throttle_cmd = float(action[1])
+    def step(self, action: Union[np.ndarray, Tuple[float, float], list]) -> Tuple[np.ndarray, float, bool, Dict[str, float | str | int]]:
+        a = np.asarray(action, dtype=np.float32).reshape(-1)
+        if a.size < 2:
+            raise ValueError("Action must contain [rudder_cmd, throttle_cmd].")
+        rudder_cmd = float(a[0])
+        throttle_cmd = float(a[1])
 
         h = self.envp.dt / max(1, self.envp.substeps)
         for _ in range(max(1, self.envp.substeps)):
@@ -285,6 +305,11 @@ class SingleTargetFeatureEnv:
         info: Dict[str, float | str | int] = {
             "reason": reason,
             "agent_goal_distance": d_now,
+            "rudder_cmd": rudder_cmd,
+            "throttle_cmd": throttle_cmd,
+            "agent_rudder_angle_rad": self.agent.rudder,
+            "agent_effective_throttle": self.agent.throttle,
+            "target_speed_constant": self.target.speed,
         }
         return self.get_obs(), float(reward), done, info
 
