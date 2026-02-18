@@ -42,7 +42,7 @@ class Vessel:
 
 
 class SingleTargetFeatureEnv:
-    """Two-vessel setup: vessel-1 straight center->circle goal, vessel-2 follows Dubins-style plan."""
+    """Two-vessel setup: vessel-1 straight center->circle goal, vessel-2 follows Bézier path."""
 
     def __init__(
         self,
@@ -84,15 +84,11 @@ class SingleTargetFeatureEnv:
         self.agent_start_pos = (0.0, 0.0)
         self.target_start_pos = (0.0, 0.0)
 
-        # vessel 2 planned path and tracking state
-        self.target_plan: List[Tuple[str, float, float]] = []  # (segment_kind, duration_s, cmd)
-        self.target_plan_idx = 0
-        self.target_plan_elapsed = 0.0
-        self.target_goal_heading = 0.0
-        self.target_planner_mode = "shortest_path"
-        self.target_path_word = ""
-        self.target_plan_terminal_pos_err = 0.0
-        self.target_plan_terminal_heading_err = 0.0
+        # Bézier path state
+        self.target_bezier_waypoints: List[Tuple[float, float, float]] = []  # (x, y, heading_rad)
+        self.target_bezier_wp_idx: int = 0
+        self.target_bezier_tangent_scale: float = 1.0
+        self.target_end_heading: float = 0.0
 
         # render-time planned path visualization
         self.show_planned_paths = True
@@ -257,194 +253,125 @@ class SingleTargetFeatureEnv:
         d = abs(wrap_pi(a1 - a0))
         return min(d, abs(2.0 * math.pi - d))
 
-    def _sample_end_heading_candidates(self, sx: float, sy: float, gx: float, gy: float) -> List[float]:
+    def _inward_facing_heading(self, pos_x: float, pos_y: float) -> float:
+        """Sample a heading that points into the circle interior."""
         cx, cy = self.start_x, self.start_y
-        radx = gx - cx
-        rady = gy - cy
-        tang_cw = math.atan2(rady, radx) - 0.5 * math.pi
-        tang_ccw = math.atan2(rady, radx) + 0.5 * math.pi
-        to_center = math.atan2(cy - gy, cx - gx)
-        chord = math.atan2(gy - sy, gx - sx)
+        to_center_angle = math.atan2(cy - pos_y, cx - pos_x)
+        offset = self.rng.uniform(-0.5 * math.pi, 0.5 * math.pi)
+        return wrap_pi(to_center_angle + offset)
 
-        base = [tang_cw, tang_ccw, to_center, chord]
-        sweep = math.radians(self.envp.dubins_heading_sweep_deg)
-        n = max(0, int(self.envp.dubins_heading_choices))
+    def _cubic_bezier_point(self, t: float, p0, p1, p2, p3) -> Tuple[float, float]:
+        u = 1.0 - t
+        x = u**3 * p0[0] + 3 * u**2 * t * p1[0] + 3 * u * t**2 * p2[0] + t**3 * p3[0]
+        y = u**3 * p0[1] + 3 * u**2 * t * p1[1] + 3 * u * t**2 * p2[1] + t**3 * p3[1]
+        return x, y
 
-        out: List[float] = []
-        for b in base:
-            out.append(wrap_pi(b))
-            for k in range(1, n + 1):
-                out.append(wrap_pi(b + k * sweep))
-                out.append(wrap_pi(b - k * sweep))
-        return out
+    def _cubic_bezier_derivative(self, t: float, p0, p1, p2, p3) -> Tuple[float, float]:
+        u = 1.0 - t
+        dx = 3 * u**2 * (p1[0] - p0[0]) + 6 * u * t * (p2[0] - p1[0]) + 3 * t**2 * (p3[0] - p2[0])
+        dy = 3 * u**2 * (p1[1] - p0[1]) + 6 * u * t * (p2[1] - p1[1]) + 3 * t**2 * (p3[1] - p2[1])
+        return dx, dy
 
-    # ----- exact Dubins words in normalized coordinates -----
-    def _dubins_lsl(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        tmp = d + math.sin(alpha) - math.sin(beta)
-        p2 = 2.0 + d * d - 2.0 * math.cos(alpha - beta) + 2.0 * d * (math.sin(alpha) - math.sin(beta))
-        if p2 < 0.0:
-            return None
-        tmp2 = math.atan2(math.cos(beta) - math.cos(alpha), tmp)
-        t = mod2pi(-alpha + tmp2)
-        p = math.sqrt(p2)
-        q = mod2pi(beta - tmp2)
-        return t, p, q
+    def _cubic_bezier_second_derivative(self, t: float, p0, p1, p2, p3) -> Tuple[float, float]:
+        u = 1.0 - t
+        ddx = 6 * u * (p2[0] - 2 * p1[0] + p0[0]) + 6 * t * (p3[0] - 2 * p2[0] + p1[0])
+        ddy = 6 * u * (p2[1] - 2 * p1[1] + p0[1]) + 6 * t * (p3[1] - 2 * p2[1] + p1[1])
+        return ddx, ddy
 
-    def _dubins_rsr(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        tmp = d - math.sin(alpha) + math.sin(beta)
-        p2 = 2.0 + d * d - 2.0 * math.cos(alpha - beta) + 2.0 * d * (-math.sin(alpha) + math.sin(beta))
-        if p2 < 0.0:
-            return None
-        tmp2 = math.atan2(math.cos(alpha) - math.cos(beta), tmp)
-        t = mod2pi(alpha - tmp2)
-        p = math.sqrt(p2)
-        q = mod2pi(-beta + tmp2)
-        return t, p, q
+    def _bezier_curvature(self, t: float, p0, p1, p2, p3) -> float:
+        dx, dy = self._cubic_bezier_derivative(t, p0, p1, p2, p3)
+        ddx, ddy = self._cubic_bezier_second_derivative(t, p0, p1, p2, p3)
+        denom = (dx * dx + dy * dy) ** 1.5
+        if denom < 1e-12:
+            return 0.0
+        return abs(dx * ddy - dy * ddx) / denom
 
-    def _dubins_lsr(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        p2 = -2.0 + d * d + 2.0 * math.cos(alpha - beta) + 2.0 * d * (math.sin(alpha) + math.sin(beta))
-        if p2 < 0.0:
-            return None
-        p = math.sqrt(p2)
-        tmp2 = math.atan2(-math.cos(alpha) - math.cos(beta), d + math.sin(alpha) + math.sin(beta)) - math.atan2(-2.0, p)
-        t = mod2pi(-alpha + tmp2)
-        q = mod2pi(-beta + tmp2)
-        return t, p, q
-
-    def _dubins_rsl(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        p2 = -2.0 + d * d + 2.0 * math.cos(alpha - beta) - 2.0 * d * (math.sin(alpha) + math.sin(beta))
-        if p2 < 0.0:
-            return None
-        p = math.sqrt(p2)
-        tmp2 = math.atan2(math.cos(alpha) + math.cos(beta), d - math.sin(alpha) - math.sin(beta)) - math.atan2(2.0, p)
-        t = mod2pi(alpha - tmp2)
-        q = mod2pi(beta - tmp2)
-        return t, p, q
-
-    def _dubins_rlr(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        tmp = (6.0 - d * d + 2.0 * math.cos(alpha - beta) + 2.0 * d * (math.sin(alpha) - math.sin(beta))) / 8.0
-        if abs(tmp) > 1.0:
-            return None
-        p = mod2pi(2.0 * math.pi - math.acos(tmp))
-        t = mod2pi(alpha - math.atan2(math.cos(alpha) - math.cos(beta), d - math.sin(alpha) + math.sin(beta)) + 0.5 * p)
-        q = mod2pi(alpha - beta - t + p)
-        return t, p, q
-
-    def _dubins_lrl(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        tmp = (6.0 - d * d + 2.0 * math.cos(alpha - beta) + 2.0 * d * (-math.sin(alpha) + math.sin(beta))) / 8.0
-        if abs(tmp) > 1.0:
-            return None
-        p = mod2pi(2.0 * math.pi - math.acos(tmp))
-        t = mod2pi(-alpha - math.atan2(math.cos(alpha) - math.cos(beta), d + math.sin(alpha) - math.sin(beta)) + 0.5 * p)
-        q = mod2pi(beta - alpha - t + p)
-        return t, p, q
-
-    def _exact_dubins_candidates(self, sx: float, sy: float, sh: float, gx: float, gy: float, gh: float, radius: float) -> List[Tuple[str, Tuple[float, float, float], float]]:
-        dx = gx - sx
-        dy = gy - sy
-        D = math.hypot(dx, dy)
-        d = D / max(1e-9, radius)
-        theta = math.atan2(dy, dx)
-        alpha = mod2pi(sh - theta)
-        beta = mod2pi(gh - theta)
-
-        words = [
-            ("LSL", self._dubins_lsl),
-            ("RSR", self._dubins_rsr),
-            ("LSR", self._dubins_lsr),
-            ("RSL", self._dubins_rsl),
-            ("RLR", self._dubins_rlr),
-            ("LRL", self._dubins_lrl),
-        ]
-        out: List[Tuple[str, Tuple[float, float, float], float]] = []
-        for word, fn in words:
-            params = fn(alpha, beta, d)
-            if params is None:
-                continue
-            lengths = (params[0] * radius, params[1] * radius, params[2] * radius)
-            out.append((word, lengths, sum(lengths)))
-        return out
-
-    def _segment_cost(self, mode: str, lengths: Tuple[float, float, float], word: str, heading_err: float, pos_err: float, chord: float) -> float:
-        total_len = sum(lengths)
-        steering_len = lengths[0] + lengths[2] + (lengths[1] if word[1] in {"L", "R"} else 0.0)
-        curvature_proxy = steering_len
-        straight_dev = abs(total_len - chord)
-
-        if mode == "minimum_steering_effort":
-            return steering_len + 0.15 * total_len + 6.0 * pos_err + heading_err
-        if mode == "minimum_curvature_change":
-            return curvature_proxy + 0.2 * steering_len + 5.0 * pos_err + heading_err
-        if mode == "closest_to_straight_line":
-            return straight_dev + 0.2 * steering_len + 7.0 * pos_err + heading_err
-        return total_len + 0.25 * steering_len + 5.0 * pos_err + heading_err
-
-    def _simulate_plan_endpoint_ideal(self, sx: float, sy: float, sh: float, speed: float, plan: List[Tuple[str, float, float]]) -> Tuple[float, float, float]:
-        x, y, h = sx, sy, sh
-        yaw_rate = self.envp.rudder_max_yaw_rate_rad_s
-        for _, duration, cmd in plan:
-            t = 0.0
-            while t < duration:
-                step = min(0.05, duration - t)
-                h = wrap_pi(h + cmd * yaw_rate * step)
-                x += speed * math.cos(h) * step
-                y += speed * math.sin(h) * step
-                t += step
-        return x, y, h
-
-    def _sample_dubins_style_plan(self, sx: float, sy: float, sh: float, gx: float, gy: float, speed: float) -> Tuple[List[Tuple[str, float, float]], float, str, str, float, float]:
-        yaw_rate = self.envp.rudder_max_yaw_rate_rad_s
-        radius = max(1e-6, speed / max(1e-6, yaw_rate))
+    def _build_bezier_waypoints(
+        self,
+        sx: float,
+        sy: float,
+        sh: float,
+        gx: float,
+        gy: float,
+        gh: float,
+        speed: float,
+    ) -> List[Tuple[float, float, float]]:
         chord = math.hypot(gx - sx, gy - sy)
+        if chord < 1e-6:
+            return [(gx, gy, gh)]
 
-        modes = [
-            "shortest_path",
-            "minimum_steering_effort",
-            "minimum_curvature_change",
-            "closest_to_straight_line",
-        ]
-        mode = self.rng.choice(modes)
+        max_kappa = self.envp.rudder_max_yaw_rate_rad_s / max(speed, 1e-6)
+        max_dkappa_ds = self.envp.rudder_max_rate_rad_s / max(speed, 1e-6)
 
-        best_plan: List[Tuple[str, float, float]] = []
-        best_goal_h = sh
-        best_word = ""
-        best_pos_err = float("inf")
-        best_heading_err = float("inf")
-        best_score = float("inf")
+        f1 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, self.envp.bezier_tangent_max_fraction)
+        f2 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, self.envp.bezier_tangent_max_fraction)
+        scale = 1.0
 
-        for gh in self._sample_end_heading_candidates(sx, sy, gx, gy):
-            for word, lengths, _ in self._exact_dubins_candidates(sx, sy, sh, gx, gy, gh, radius):
-                # Convert geometric lengths to durations for constant speed execution.
-                durations = tuple(l / max(1e-6, speed) for l in lengths)
-                seg_cmd = {"L": 1.0, "R": -1.0, "S": 0.0}
-                plan = [
-                    (word[0], durations[0], seg_cmd[word[0]]),
-                    (word[1], durations[1], seg_cmd[word[1]]),
-                    (word[2], durations[2], seg_cmd[word[2]]),
-                ]
+        p0 = (sx, sy)
+        p3 = (gx, gy)
+        p1 = p0
+        p2 = p3
 
-                ex, ey, eh = self._simulate_plan_endpoint_ideal(sx, sy, sh, speed, plan)
-                pos_err = math.hypot(gx - ex, gy - ey)
-                heading_err = abs(wrap_pi(gh - eh))
-                score = self._segment_cost(mode, lengths, word, heading_err, pos_err, chord) + 20.0 * pos_err
-                if score < best_score:
-                    best_score = score
-                    best_plan = plan
-                    best_goal_h = gh
-                    best_word = word
-                    best_pos_err = pos_err
-                    best_heading_err = heading_err
+        for _ in range(self.envp.bezier_max_scale_iterations):
+            t1 = f1 * chord * scale
+            t2 = f2 * chord * scale
 
-        # Fallback (very rare): simple straight segment.
-        if not best_plan:
-            dur = chord / max(1e-6, speed)
-            best_plan = [("S", dur, 0.0)]
-            best_word = "S"
-            best_goal_h = math.atan2(gy - sy, gx - sx)
-            best_pos_err = 0.0
-            best_heading_err = abs(wrap_pi(best_goal_h - sh))
+            p1 = (sx + t1 * math.cos(sh), sy + t1 * math.sin(sh))
+            p2 = (gx - t2 * math.cos(gh), gy - t2 * math.sin(gh))
 
-        return best_plan, best_goal_h, mode, best_word, best_pos_err, best_heading_err
+            n_check = 200
+            kappas = []
+            valid = True
+            for i in range(n_check + 1):
+                t = i / n_check
+                k = self._bezier_curvature(t, p0, p1, p2, p3)
+                kappas.append(k)
+                if k > max_kappa:
+                    valid = False
+                    break
+
+            if valid:
+                for i in range(1, len(kappas)):
+                    t_mid = (i - 0.5) / n_check
+                    dx, dy = self._cubic_bezier_derivative(t_mid, p0, p1, p2, p3)
+                    ds_dt = math.hypot(dx, dy)
+                    if ds_dt < 1e-9:
+                        continue
+                    dkappa_dt = abs(kappas[i] - kappas[i - 1])
+                    dkappa_ds = dkappa_dt / ds_dt * n_check
+                    if dkappa_ds > max_dkappa_ds:
+                        valid = False
+                        break
+
+            if valid:
+                break
+
+            scale *= self.envp.bezier_curvature_scale_step
+
+        self.target_bezier_tangent_scale = scale
+
+        spacing = self.envp.bezier_waypoint_spacing_m
+        n_sample = max(500, int(chord * 10))
+        pts = []
+        for i in range(n_sample + 1):
+            t = i / n_sample
+            x, y = self._cubic_bezier_point(t, p0, p1, p2, p3)
+            dx, dy = self._cubic_bezier_derivative(t, p0, p1, p2, p3)
+            heading = math.atan2(dy, dx)
+            pts.append((x, y, heading))
+
+        waypoints = [pts[0]]
+        accumulated = 0.0
+        for i in range(1, len(pts)):
+            seg = math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+            accumulated += seg
+            if accumulated >= spacing:
+                waypoints.append(pts[i])
+                accumulated = 0.0
+        if waypoints[-1] != pts[-1]:
+            waypoints.append(pts[-1])
+
+        return waypoints
 
     def _integrate_rudder_heading(self, v: Vessel, rudder_cmd: float, dt: float) -> None:
         rudder_cmd = clamp(rudder_cmd, -1.0, 1.0)
@@ -509,53 +436,43 @@ class SingleTargetFeatureEnv:
             setattr(self, reached_attr, True)
             v.speed = 0.0
 
-    def _advance_target_plan(self, dt: float) -> None:
+    def _advance_bezier_path(self, dt: float) -> None:
         if self.target is None or self.target_reached:
             return
 
-        remaining = dt
-        while remaining > 1e-9 and not self.target_reached:
-            d_goal = self._goal_distance(self.target)
-            if d_goal <= self.envp.goal_radius:
-                self.target_reached = True
-                self.target.speed = 0.0
-                break
+        d_goal = self._goal_distance(self.target)
+        if d_goal <= self.envp.goal_radius:
+            self.target_reached = True
+            self.target.speed = 0.0
+            return
 
-            if self.target_plan_idx < len(self.target_plan):
-                seg_kind, seg_dur, cmd = self.target_plan[self.target_plan_idx]
-                seg_rem = max(0.0, seg_dur - self.target_plan_elapsed)
-                if seg_rem <= 1e-9:
-                    self.target_plan_idx += 1
-                    self.target_plan_elapsed = 0.0
-                    continue
-                step = min(remaining, seg_rem)
-                desired_cmd = cmd
+        if not self.target_bezier_waypoints:
+            self.target_reached = True
+            return
+
+        distance_this_step = self.target.speed * dt
+        remaining = distance_this_step
+
+        while remaining > 1e-9 and self.target_bezier_wp_idx < len(self.target_bezier_waypoints):
+            wp = self.target_bezier_waypoints[self.target_bezier_wp_idx]
+            dist_to_wp = math.hypot(wp[0] - self.target.x, wp[1] - self.target.y)
+
+            if dist_to_wp <= remaining:
+                self.target.x = wp[0]
+                self.target.y = wp[1]
+                self.target.h = wp[2]
+                remaining -= dist_to_wp
+                self.target_bezier_wp_idx = min(self.target_bezier_wp_idx + 1, len(self.target_bezier_waypoints) - 1)
             else:
-                # Post-plan terminal guidance: smoothly steer toward goal heading.
-                step = remaining
-                goal_bearing = math.atan2(self.target.goal_y - self.target.y, self.target.goal_x - self.target.x)
-                err = wrap_pi(goal_bearing - self.target.h)
-                desired_cmd = clamp(err / math.radians(25.0), -1.0, 1.0)
+                self.target.h = wp[2]
+                self.target.x += remaining * math.cos(self.target.h)
+                self.target.y += remaining * math.sin(self.target.h)
+                remaining = 0.0
 
-            self._integrate_rudder_heading(self.target, desired_cmd, step)
-
-            d_goal = self._goal_distance(self.target)
-            travel = min(self.target.speed * step, d_goal)
-            self.target.x += travel * math.cos(self.target.h)
-            self.target.y += travel * math.sin(self.target.h)
-
-            if travel + 1e-9 >= d_goal:
-                self.target_reached = True
-                self.target.speed = 0.0
-                break
-
-            remaining -= step
-            if self.target_plan_idx < len(self.target_plan):
-                self.target_plan_elapsed += step
-                if self.target_plan_elapsed + 1e-9 >= self.target_plan[self.target_plan_idx][1]:
-                    self.target_plan_idx += 1
-                    self.target_plan_elapsed = 0.0
-
+        d_goal = self._goal_distance(self.target)
+        if d_goal <= self.envp.goal_radius:
+            self.target_reached = True
+            self.target.speed = 0.0
 
     def _build_agent_planned_path(self) -> None:
         if self.agent is None:
@@ -563,53 +480,8 @@ class SingleTargetFeatureEnv:
             return
         self.agent_planned_path = [(self.start_x, self.start_y), (self.agent.goal_x, self.agent.goal_y)]
 
-    def _build_target_planned_path(self, sx: float, sy: float, sh: float, speed: float, goal_x: float, goal_y: float) -> None:
-        # Build a visualized path by replaying the same dynamics used during execution.
-        sim = Vessel(sx, sy, sh, speed, goal_x, goal_y, rudder=0.0, throttle=0.0)
-        pts: List[Tuple[float, float]] = [(sim.x, sim.y)]
-
-        local_idx = 0
-        local_elapsed = 0.0
-        dt = self.envp.dt / max(1, self.envp.substeps)
-        max_sim_steps = max(2000, int(2.0 * self.max_steps * max(1, self.envp.substeps)))
-
-        for _ in range(max_sim_steps):
-            d_goal = math.hypot(goal_x - sim.x, goal_y - sim.y)
-            if d_goal <= self.envp.goal_radius:
-                break
-
-            if local_idx < len(self.target_plan):
-                _, seg_dur, cmd = self.target_plan[local_idx]
-                seg_rem = max(0.0, seg_dur - local_elapsed)
-                if seg_rem <= 1e-9:
-                    local_idx += 1
-                    local_elapsed = 0.0
-                    continue
-                step = min(dt, seg_rem)
-                desired_cmd = cmd
-            else:
-                step = dt
-                goal_bearing = math.atan2(goal_y - sim.y, goal_x - sim.x)
-                err = wrap_pi(goal_bearing - sim.h)
-                desired_cmd = clamp(err / math.radians(25.0), -1.0, 1.0)
-
-            self._integrate_rudder_heading(sim, desired_cmd, step)
-            d_goal = math.hypot(goal_x - sim.x, goal_y - sim.y)
-            travel = min(sim.speed * step, d_goal)
-            sim.x += travel * math.cos(sim.h)
-            sim.y += travel * math.sin(sim.h)
-            pts.append((sim.x, sim.y))
-
-            if travel + 1e-9 >= d_goal:
-                break
-
-            if local_idx < len(self.target_plan):
-                local_elapsed += step
-                if local_elapsed + 1e-9 >= self.target_plan[local_idx][1]:
-                    local_idx += 1
-                    local_elapsed = 0.0
-
-        self.target_planned_path = pts
+    def _build_target_planned_path(self, *args, **kwargs) -> None:
+        self.target_planned_path = [(wp[0], wp[1]) for wp in self.target_bezier_waypoints]
 
     def get_obs(self) -> np.ndarray:
         return np.asarray(
@@ -653,23 +525,16 @@ class SingleTargetFeatureEnv:
 
         sx2, sy2 = self._point_on_big_circle(start_ang_2)
         gx2, gy2 = self._point_on_big_circle(goal_ang_2)
-        sh2 = self.rng.uniform(-math.pi, math.pi)
+        sh2 = self._inward_facing_heading(sx2, sy2)
+        gh2 = self.rng.uniform(-math.pi, math.pi)
+        self.target_end_heading = gh2
         sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         self.target = Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
         self.target_start_speed = sp2
         self.target_start_pos = (self.target.x, self.target.y)
 
-        (
-            self.target_plan,
-            self.target_goal_heading,
-            self.target_planner_mode,
-            self.target_path_word,
-            self.target_plan_terminal_pos_err,
-            self.target_plan_terminal_heading_err,
-        ) = self._sample_dubins_style_plan(sx2, sy2, sh2, gx2, gy2, sp2)
-
-        self.target_plan_idx = 0
-        self.target_plan_elapsed = 0.0
+        self.target_bezier_waypoints = self._build_bezier_waypoints(sx2, sy2, sh2, gx2, gy2, gh2, sp2)
+        self.target_bezier_wp_idx = 0
 
         self.time = 0.0
         self.step_idx = 0
@@ -696,14 +561,21 @@ class SingleTargetFeatureEnv:
         self.prev_agent_rl_active = False
         self.prev_target_rl_active = False
 
+        bezier_path_length = sum(
+            math.hypot(
+                self.target_bezier_waypoints[i + 1][0] - self.target_bezier_waypoints[i][0],
+                self.target_bezier_waypoints[i + 1][1] - self.target_bezier_waypoints[i][1],
+            )
+            for i in range(len(self.target_bezier_waypoints) - 1)
+        ) if len(self.target_bezier_waypoints) > 1 else self.prev_goal_d_target
+
         t1 = self.prev_goal_d_agent / max(1e-6, self.agent.speed)
-        planned_t2 = sum(d for _, d, _ in self.target_plan)
-        t2 = max(planned_t2, self.prev_goal_d_target / max(1e-6, self.target.speed))
+        t2 = bezier_path_length / max(1e-6, sp2)
         episode_time = max(self.envp.episode_seconds, 1.4 * max(t1, t2) + 20.0)
         self.max_steps = max(1, int(round(episode_time / self.envp.dt)))
 
         self._build_agent_planned_path()
-        self._build_target_planned_path(sx2, sy2, sh2, sp2, gx2, gy2)
+        self._build_target_planned_path()
 
         return self.get_obs()
 
@@ -772,8 +644,8 @@ class SingleTargetFeatureEnv:
             if self.target_role == "give_way" and self.target_rl_active:
                 self._advance_controlled(self.target, "target_reached", rudder_cmd, throttle_cmd, h)
             else:
-                # Keep vessel-2 on its nominal Dubins/plan path unless RL takeover is active.
-                self._advance_target_plan(h)
+                # Keep vessel-2 on its nominal Bézier path unless RL takeover is active.
+                self._advance_bezier_path(h)
 
         if was_agent_active:
             self.agent_steps_taken += 1
@@ -807,7 +679,6 @@ class SingleTargetFeatureEnv:
         self.prev_goal_d_agent = d_agent
         self.prev_goal_d_target = d_target
 
-        durations = ",".join(f"{d:.2f}" for _, d, _ in self.target_plan)
         info: Dict[str, float | str | int] = {
             "reason": reason,
             "agent_goal_distance": d_agent,
@@ -816,11 +687,6 @@ class SingleTargetFeatureEnv:
             "target_reached": int(self.target_reached),
             "rudder_cmd": rudder_cmd,
             "throttle_cmd": throttle_cmd,
-            "target_planner_mode": self.target_planner_mode,
-            "target_path_word": self.target_path_word,
-            "target_plan_durations": durations,
-            "target_plan_terminal_pos_err": float(self.target_plan_terminal_pos_err),
-            "target_plan_terminal_heading_err": float(self.target_plan_terminal_heading_err),
             "agent_steps_taken": int(self.agent_steps_taken),
             "target_steps_taken": int(self.target_steps_taken),
             "agent_start_speed": float(self.agent_start_speed),
@@ -967,7 +833,7 @@ class SingleTargetFeatureEnv:
 
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
         hud0 = self._font.render(
-            f"sim_step={self.step_idx}  t={self.time:.1f}s  paused={int(self.paused)}[SPACE]  paths[P]={int(self.show_planned_paths)}  mode={self.target_planner_mode[:4].upper()}  word={self.target_path_word}",
+            f"sim_step={self.step_idx}  t={self.time:.1f}s  paused={int(self.paused)}[SPACE]  paths[P]={int(self.show_planned_paths)}",
             True,
             (255, 255, 255),
         )

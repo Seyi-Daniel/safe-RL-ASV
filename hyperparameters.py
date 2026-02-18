@@ -47,8 +47,11 @@ class EnvParams:
     target_outer_radius: float = 180.0
     target_min_speed: float = 0.5
     target_max_speed: float = 7.0
-    dubins_heading_sweep_deg: float = 10.0
-    dubins_heading_choices: int = 3
+    bezier_tangent_min_fraction: float = 0.25
+    bezier_tangent_max_fraction: float = 0.70
+    bezier_waypoint_spacing_m: float = 1.0
+    bezier_curvature_scale_step: float = 1.15
+    bezier_max_scale_iterations: int = 40
 
     # COLREGS risk/takeover gating
     colregs_head_on_half_angle_deg: float = 5.0
