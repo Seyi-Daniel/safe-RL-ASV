@@ -412,6 +412,28 @@ class CrossingScenarioEnv:
                 f"{step_info.get('rudder_cmd_for_arrow', 0.0) * 35:+5.2f}  "
                 f"step: {step_info.get('step', self.step_index)}"
             )
+            lines.append(
+                f"Control mode: {step_info.get('control_mode', 'unknown')}  "
+                f"RL active: {'yes' if step_info.get('rl_takeover_active', False) else 'no'}"
+            )
+            dcpa = step_info.get('dcpa')
+            tcpa = step_info.get('tcpa')
+            if dcpa is not None and tcpa is not None:
+                risk = 'YES' if step_info.get('risk_of_collision', False) else 'NO'
+                tcpa_txt = '∞' if math.isinf(float(tcpa)) else f"{float(tcpa):5.1f}s"
+                lines.append(f"Risk of collision: {risk}  DCPA {float(dcpa):5.2f}m  TCPA {tcpa_txt}")
+            scenario = step_info.get('scenario')
+            own_role = step_info.get('own_role')
+            target_role = step_info.get('target_role')
+            if scenario is not None:
+                lines.append(f"COLREGS: {scenario}  own={own_role}  target={target_role}")
+            own_bearing = step_info.get('own_bearing_deg')
+            if own_bearing is not None:
+                lines.append(f"Relative bearing (own->target): {float(own_bearing):6.1f}°")
+            travelled = step_info.get('travelled_distance')
+            takeover_d = step_info.get('rl_takeover_distance')
+            if travelled is not None and takeover_d is not None:
+                lines.append(f"Give-way distance: {float(travelled):6.1f}m / {float(takeover_d):6.1f}m")
         scenario_kind = self._meta.get("scenario_kind")
         if scenario_kind:
             lines.append(f"Scenario kind: {scenario_kind}")
