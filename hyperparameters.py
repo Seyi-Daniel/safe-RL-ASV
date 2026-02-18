@@ -52,6 +52,8 @@ class EnvParams:
     bezier_waypoint_spacing_m: float = 1.0
     bezier_curvature_scale_step: float = 1.15
     bezier_max_scale_iterations: int = 40
+    bezier_style_straight_prob: float = 0.25
+    bezier_style_single_turn_prob: float = 0.30
 
     # COLREGS risk/takeover gating
     colregs_head_on_half_angle_deg: float = 5.0

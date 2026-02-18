@@ -303,14 +303,29 @@ class SingleTargetFeatureEnv:
         max_kappa = self.envp.rudder_max_yaw_rate_rad_s / max(speed, 1e-6)
         max_dkappa_ds = self.envp.rudder_max_rate_rad_s / max(speed, 1e-6)
 
-        f1 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, self.envp.bezier_tangent_max_fraction)
-        f2 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, self.envp.bezier_tangent_max_fraction)
+        path_style = self.rng.random()
+        single_turn_threshold = self.envp.bezier_style_straight_prob + self.envp.bezier_style_single_turn_prob
+        if path_style < self.envp.bezier_style_straight_prob:
+            f1 = self.rng.uniform(0.6, 0.9)
+            f2 = self.rng.uniform(0.6, 0.9)
+        elif path_style < single_turn_threshold:
+            if self.rng.random() < 0.5:
+                f1 = self.rng.uniform(self.envp.bezier_tangent_max_fraction, 0.85)
+                f2 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, 0.35)
+            else:
+                f1 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, 0.35)
+                f2 = self.rng.uniform(self.envp.bezier_tangent_max_fraction, 0.85)
+        else:
+            f1 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, self.envp.bezier_tangent_max_fraction)
+            f2 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, self.envp.bezier_tangent_max_fraction)
+
         scale = 1.0
 
         p0 = (sx, sy)
         p3 = (gx, gy)
         p1 = p0
         p2 = p3
+        n_check = 200
 
         for _ in range(self.envp.bezier_max_scale_iterations):
             t1 = f1 * chord * scale
@@ -319,7 +334,6 @@ class SingleTargetFeatureEnv:
             p1 = (sx + t1 * math.cos(sh), sy + t1 * math.sin(sh))
             p2 = (gx - t2 * math.cos(gh), gy - t2 * math.sin(gh))
 
-            n_check = 200
             kappas = []
             valid = True
             for i in range(n_check + 1):
@@ -344,22 +358,57 @@ class SingleTargetFeatureEnv:
                         break
 
             if valid:
+                cx, cy = self.start_x, self.start_y
+                r = self.envp.target_outer_radius
+                for i in range(n_check + 1):
+                    t = i / n_check
+                    px, py = self._cubic_bezier_point(t, p0, p1, p2, p3)
+                    if math.hypot(px - cx, py - cy) > r + 0.5:
+                        valid = False
+                        break
+
+            if valid:
                 break
 
             scale *= self.envp.bezier_curvature_scale_step
 
         self.target_bezier_tangent_scale = scale
 
-        spacing = self.envp.bezier_waypoint_spacing_m
-        n_sample = max(500, int(chord * 10))
-        pts = []
-        for i in range(n_sample + 1):
-            t = i / n_sample
-            x, y = self._cubic_bezier_point(t, p0, p1, p2, p3)
-            dx, dy = self._cubic_bezier_derivative(t, p0, p1, p2, p3)
-            heading = math.atan2(dy, dx)
-            pts.append((x, y, heading))
+        t1 = f1 * chord * scale
+        t2 = f2 * chord * scale
+        p1 = (sx + t1 * math.cos(sh), sy + t1 * math.sin(sh))
+        p2 = (gx - t2 * math.cos(gh), gy - t2 * math.sin(gh))
 
+        use_straight = False
+        for i in range(n_check + 1):
+            t = i / n_check
+            px, py = self._cubic_bezier_point(t, p0, p1, p2, p3)
+            if math.hypot(px - self.start_x, py - self.start_y) > self.envp.target_outer_radius + 0.5:
+                use_straight = True
+                break
+
+        if use_straight:
+            n_straight = max(10, int(chord / self.envp.bezier_waypoint_spacing_m))
+            straight_heading = math.atan2(gy - sy, gx - sx)
+            pts = [
+                (
+                    sx + (gx - sx) * i / n_straight,
+                    sy + (gy - sy) * i / n_straight,
+                    straight_heading,
+                )
+                for i in range(n_straight + 1)
+            ]
+        else:
+            n_sample = max(500, int(chord * 10))
+            pts = []
+            for i in range(n_sample + 1):
+                t = i / n_sample
+                x, y = self._cubic_bezier_point(t, p0, p1, p2, p3)
+                dx, dy = self._cubic_bezier_derivative(t, p0, p1, p2, p3)
+                heading = math.atan2(dy, dx)
+                pts.append((x, y, heading))
+
+        spacing = self.envp.bezier_waypoint_spacing_m
         waypoints = [pts[0]]
         accumulated = 0.0
         for i in range(1, len(pts)):
@@ -526,7 +575,7 @@ class SingleTargetFeatureEnv:
         sx2, sy2 = self._point_on_big_circle(start_ang_2)
         gx2, gy2 = self._point_on_big_circle(goal_ang_2)
         sh2 = self._inward_facing_heading(sx2, sy2)
-        gh2 = self.rng.uniform(-math.pi, math.pi)
+        gh2 = self._inward_facing_heading(gx2, gy2)
         self.target_end_heading = gh2
         sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         self.target = Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
