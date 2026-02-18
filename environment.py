@@ -99,6 +99,8 @@ class SingleTargetFeatureEnv:
         self.paused = False
         self.risk_overlay_active = False
         self.risk_overlay_payload: Dict[str, float | str | int] = {}
+        self.rl_ever_triggered: bool = False  # latches True when RL first activates, never resets within episode
+        self.rl_overlay_shown: bool = False  # True after overlay has been shown once this episode
         self.prev_agent_rl_active = False
         self.prev_target_rl_active = False
         self._screen = None
@@ -176,6 +178,16 @@ class SingleTargetFeatureEnv:
         return tcpa, dcpa
 
     def _classify_colregs(self) -> Dict[str, float | str]:
+        # Do not classify if either vessel has already reached its goal.
+        if self.agent_reached or self.target_reached:
+            return {
+                "scenario": "safe",
+                "agent_role": "none",
+                "target_role": "none",
+                "agent_bearing_deg": 0.0,
+                "target_bearing_deg": 0.0,
+            }
+
         own_bearing = self._relative_bearing_deg(self.agent, self.target)
         tgt_bearing = self._relative_bearing_deg(self.target, self.agent)
 
@@ -221,6 +233,7 @@ class SingleTargetFeatureEnv:
                 "target_bearing_deg": tgt_bearing,
             }
 
+        # Crossing: target on agent's starboard bow (agent gives way per Rule 15).
         if self._bearing_in_sector(own_bearing, head_on_half, crossing_max):
             return {
                 "scenario": "crossing",
@@ -229,7 +242,9 @@ class SingleTargetFeatureEnv:
                 "agent_bearing_deg": own_bearing,
                 "target_bearing_deg": tgt_bearing,
             }
-        if self._bearing_in_sector(own_bearing, overtaking_max, head_on_min):
+
+        # Crossing: target on agent's port bow (agent stands on, target gives way per Rule 15).
+        if self._bearing_in_sector(own_bearing, 360.0 - crossing_max, head_on_min):
             return {
                 "scenario": "crossing",
                 "agent_role": "stand_on",
@@ -358,55 +373,25 @@ class SingleTargetFeatureEnv:
                         break
 
             if valid:
-                cx, cy = self.start_x, self.start_y
-                r = self.envp.target_outer_radius
-                for i in range(n_check + 1):
-                    t = i / n_check
-                    px, py = self._cubic_bezier_point(t, p0, p1, p2, p3)
-                    if math.hypot(px - cx, py - cy) > r + 0.5:
-                        valid = False
-                        break
-
-            if valid:
                 break
 
             scale *= self.envp.bezier_curvature_scale_step
 
         self.target_bezier_tangent_scale = scale
 
-        t1 = f1 * chord * scale
-        t2 = f2 * chord * scale
-        p1 = (sx + t1 * math.cos(sh), sy + t1 * math.sin(sh))
-        p2 = (gx - t2 * math.cos(gh), gy - t2 * math.sin(gh))
+        t1_final = f1 * chord * scale
+        t2_final = f2 * chord * scale
+        p1 = (sx + t1_final * math.cos(sh), sy + t1_final * math.sin(sh))
+        p2 = (gx - t2_final * math.cos(gh), gy - t2_final * math.sin(gh))
 
-        use_straight = False
-        for i in range(n_check + 1):
-            t = i / n_check
-            px, py = self._cubic_bezier_point(t, p0, p1, p2, p3)
-            if math.hypot(px - self.start_x, py - self.start_y) > self.envp.target_outer_radius + 0.5:
-                use_straight = True
-                break
-
-        if use_straight:
-            n_straight = max(10, int(chord / self.envp.bezier_waypoint_spacing_m))
-            straight_heading = math.atan2(gy - sy, gx - sx)
-            pts = [
-                (
-                    sx + (gx - sx) * i / n_straight,
-                    sy + (gy - sy) * i / n_straight,
-                    straight_heading,
-                )
-                for i in range(n_straight + 1)
-            ]
-        else:
-            n_sample = max(500, int(chord * 10))
-            pts = []
-            for i in range(n_sample + 1):
-                t = i / n_sample
-                x, y = self._cubic_bezier_point(t, p0, p1, p2, p3)
-                dx, dy = self._cubic_bezier_derivative(t, p0, p1, p2, p3)
-                heading = math.atan2(dy, dx)
-                pts.append((x, y, heading))
+        n_sample = max(500, int(chord * 10))
+        pts = []
+        for i in range(n_sample + 1):
+            t = i / n_sample
+            x, y = self._cubic_bezier_point(t, p0, p1, p2, p3)
+            dx, dy = self._cubic_bezier_derivative(t, p0, p1, p2, p3)
+            heading = math.atan2(dy, dx) if (abs(dx) > 1e-9 or abs(dy) > 1e-9) else sh
+            pts.append((x, y, heading))
 
         spacing = self.envp.bezier_waypoint_spacing_m
         waypoints = [pts[0]]
@@ -607,6 +592,8 @@ class SingleTargetFeatureEnv:
         self.paused = False
         self.risk_overlay_active = False
         self.risk_overlay_payload = {}
+        self.rl_ever_triggered = False
+        self.rl_overlay_shown = False
         self.prev_agent_rl_active = False
         self.prev_target_rl_active = False
 
@@ -675,8 +662,26 @@ class SingleTargetFeatureEnv:
         agent_dist = self._distance_from_start(self.agent, self.agent_start_pos)
         target_dist = self._distance_from_start(self.target, self.target_start_pos)
 
-        self.agent_rl_active = self.risk_of_collision and self.agent_role == "give_way" and agent_dist >= self.envp.rl_takeover_distance
-        self.target_rl_active = self.risk_of_collision and self.target_role == "give_way" and target_dist >= self.envp.rl_takeover_distance
+        # Compute whether RL should trigger this step (un-latched).
+        agent_rl_trigger = (
+            self.risk_of_collision
+            and self.agent_role == "give_way"
+            and agent_dist >= self.envp.rl_takeover_distance
+            and not self.agent_reached
+        )
+        target_rl_trigger = (
+            self.risk_of_collision
+            and self.target_role == "give_way"
+            and target_dist >= self.envp.rl_takeover_distance
+            and not self.target_reached
+        )
+
+        # Latch: once RL activates for the first time, it stays active until episode end.
+        if agent_rl_trigger or target_rl_trigger:
+            self.rl_ever_triggered = True
+
+        self.agent_rl_active = self.rl_ever_triggered and not self.agent_reached
+        self.target_rl_active = self.rl_ever_triggered and not self.target_reached
 
         h = self.envp.dt / max(1, self.envp.substeps)
         was_agent_active = not self.agent_reached
@@ -758,11 +763,14 @@ class SingleTargetFeatureEnv:
             "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
         }
 
-        auto_pause_trigger = self.render_enabled and (
-            (self.agent_rl_active and not self.prev_agent_rl_active)
-            or (self.target_rl_active and not self.prev_target_rl_active)
-        )
-        if auto_pause_trigger and self.risk_of_collision:
+        # Show the RL takeover overlay exactly once per episode, on the first step RL activates.
+        if (
+            self.render_enabled
+            and not self.rl_overlay_shown
+            and self.rl_ever_triggered
+            and (self.agent_rl_active or self.target_rl_active)
+        ):
+            self.rl_overlay_shown = True
             self.paused = True
             self.risk_overlay_active = True
             self.risk_overlay_payload = {
@@ -798,17 +806,16 @@ class SingleTargetFeatureEnv:
         p = self.risk_overlay_payload
         tcpa = p.get("tcpa", float("inf"))
         tcpa_txt = "inf" if (isinstance(tcpa, float) and math.isinf(tcpa)) else f"{float(tcpa):.1f}s"
+        give_way_vessel = "V1 (agent)" if p.get("agent_rl_active", 0) else "V2 (target)" if p.get("target_rl_active", 0) else "unknown"
         lines = [
-            "⚠ RL TAKEOVER TRIGGERED — RISK BRIEFING",
-            f"Step {int(p.get('step', self.step_idx))}  Time {float(p.get('time', self.time)):.1f}s",
-            f"COLREGS scenario: {p.get('scenario', self.colregs_scenario)}",
-            f"Roles: V1={p.get('agent_role', self.agent_role)}  V2={p.get('target_role', self.target_role)}",
-            f"DCPA={float(p.get('dcpa', self.last_dcpa)):.2f}m  TCPA={tcpa_txt}",
-            f"Relative bearings: V1→V2={float(p.get('agent_bearing', self.agent_relative_bearing_deg)):.1f}°  V2→V1={float(p.get('target_bearing', self.target_relative_bearing_deg)):.1f}°",
-            f"Takeover active: V1={int(p.get('agent_rl_active', self.agent_rl_active))}  V2={int(p.get('target_rl_active', self.target_rl_active))}",
-            f"Distance since start: V1={float(p.get('agent_distance', 0.0)):.1f}m  V2={float(p.get('target_distance', 0.0)):.1f}m  threshold={float(p.get('takeover_distance', self.envp.rl_takeover_distance)):.1f}m",
-            "Why paused: risk is within DCPA/TCPA thresholds and give-way vessel RL takeover has begun.",
-            "Press SPACE or ENTER to clear this overlay and continue.",
+            "⚠  RL TAKEOVER — COLLISION AVOIDANCE ACTIVE",
+            f"Step {int(p.get('step', self.step_idx))}   Sim time {float(p.get('time', self.time)):.1f}s",
+            f"COLREGS scenario: {p.get('scenario', self.colregs_scenario).upper()}",
+            f"Give-way vessel: {give_way_vessel}   Stand-on vessel: {'V2 (target)' if p.get('agent_rl_active', 0) else 'V1 (agent)'}",
+            f"DCPA = {float(p.get('dcpa', self.last_dcpa)):.1f}m   TCPA = {tcpa_txt}",
+            f"V1→V2 bearing = {float(p.get('agent_bearing', self.agent_relative_bearing_deg)):.1f}°   V2→V1 bearing = {float(p.get('target_bearing', self.target_relative_bearing_deg)):.1f}°",
+            "RL model now controls give-way vessel for remainder of episode.",
+            "Press SPACE or ENTER to dismiss and continue.",
         ]
 
         box_w = int(0.88 * w)
@@ -881,34 +888,22 @@ class SingleTargetFeatureEnv:
         self._draw_vessel(self.target, (255, 120, 120), "V2")
 
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
+
         hud0 = self._font.render(
-            f"sim_step={self.step_idx}  t={self.time:.1f}s  paused={int(self.paused)}[SPACE]  paths[P]={int(self.show_planned_paths)}",
-            True,
-            (255, 255, 255),
+            f"step={self.step_idx}  t={self.time:.1f}s  paused={int(self.paused)}[SPACE]  paths[P]={int(self.show_planned_paths)}  rl_latched={int(self.rl_ever_triggered)}",
+            True, (255, 255, 255),
         )
         hud1 = self._font.render(
-            (
-                f"COLREGS={self.colregs_scenario}  risk={'YES' if self.risk_of_collision else 'NO'}  "
-                f"DCPA={self.last_dcpa:.2f}m  TCPA={tcpa_txt}  BRG={self.agent_relative_bearing_deg:.1f}deg"
-            ),
-            True,
-            (255, 240, 170),
+            f"COLREGS={self.colregs_scenario}  risk={'YES' if self.risk_of_collision else 'NO'}  DCPA={self.last_dcpa:.1f}m  TCPA={tcpa_txt}  V1→V2_BRG={self.agent_relative_bearing_deg:.1f}°  V2→V1_BRG={self.target_relative_bearing_deg:.1f}°",
+            True, (255, 240, 170),
         )
         hud2 = self._font.render(
-            (
-                f"V1 role={self.agent_role} rl={int(self.agent_rl_active)} dist={self._distance_from_start(self.agent, self.agent_start_pos):.1f}/{self.envp.rl_takeover_distance:.1f} "
-                f"spd={self.agent.speed:.2f} hdg={math.degrees(self.agent.h):.1f} rud={math.degrees(self.agent.rudder):.1f}"
-            ),
-            True,
-            (170, 220, 255),
+            f"V1(agent) role={self.agent_role}  rl_active={int(self.agent_rl_active)}  reached={int(self.agent_reached)}  spd={self.agent.speed:.2f}m/s  hdg={math.degrees(self.agent.h):.1f}°",
+            True, (170, 220, 255),
         )
         hud3 = self._font.render(
-            (
-                f"V2 role={self.target_role} rl={int(self.target_rl_active)} dist={self._distance_from_start(self.target, self.target_start_pos):.1f}/{self.envp.rl_takeover_distance:.1f} "
-                f"spd={self.target.speed:.2f} hdg={math.degrees(self.target.h):.1f} rud={math.degrees(self.target.rudder):.1f}"
-            ),
-            True,
-            (255, 190, 190),
+            f"V2(target) role={self.target_role}  rl_active={int(self.target_rl_active)}  reached={int(self.target_reached)}  spd={self.target.speed:.2f}m/s  hdg={math.degrees(self.target.h):.1f}°",
+            True, (255, 190, 190),
         )
         surf.blit(hud0, (10, 8))
         surf.blit(hud1, (10, 26))
