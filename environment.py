@@ -275,6 +275,14 @@ class SingleTargetFeatureEnv:
         offset = self.rng.uniform(-0.5 * math.pi, 0.5 * math.pi)
         return wrap_pi(to_center_angle + offset)
 
+    def _outward_facing_heading(self, pos_x: float, pos_y: float) -> float:
+        """Sample a heading that approaches the boundary point from inside the circle."""
+        cx, cy = self.start_x, self.start_y
+        from_center_angle = math.atan2(pos_y - cy, pos_x - cx)
+        offset = self.rng.uniform(-0.5 * math.pi, 0.5 * math.pi)
+        return wrap_pi(from_center_angle + offset)
+
+
     def _cubic_bezier_point(self, t: float, p0, p1, p2, p3) -> Tuple[float, float]:
         u = 1.0 - t
         x = u**3 * p0[0] + 3 * u**2 * t * p1[0] + 3 * u * t**2 * p2[0] + t**3 * p3[0]
@@ -334,66 +342,86 @@ class SingleTargetFeatureEnv:
             f1 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, self.envp.bezier_tangent_max_fraction)
             f2 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, self.envp.bezier_tangent_max_fraction)
 
-        scale = 1.0
-
         p0 = (sx, sy)
         p3 = (gx, gy)
-        p1 = p0
-        p2 = p3
         n_check = 200
+        cx, cy = self.start_x, self.start_y
+        r = self.envp.target_outer_radius
 
-        for _ in range(self.envp.bezier_max_scale_iterations):
+        def _check_scale(scale: float) -> Tuple[bool, Tuple[float, float], Tuple[float, float]]:
             t1 = f1 * chord * scale
             t2 = f2 * chord * scale
-
             p1 = (sx + t1 * math.cos(sh), sy + t1 * math.sin(sh))
             p2 = (gx - t2 * math.cos(gh), gy - t2 * math.sin(gh))
 
-            kappas = []
-            valid = True
+            kappas: List[float] = []
             for i in range(n_check + 1):
                 t = i / n_check
                 k = self._bezier_curvature(t, p0, p1, p2, p3)
                 kappas.append(k)
                 if k > max_kappa:
-                    valid = False
-                    break
+                    return False, p1, p2
 
-            if valid:
-                for i in range(1, len(kappas)):
-                    t_mid = (i - 0.5) / n_check
-                    dx, dy = self._cubic_bezier_derivative(t_mid, p0, p1, p2, p3)
-                    ds_dt = math.hypot(dx, dy)
-                    if ds_dt < 1e-9:
-                        continue
-                    dkappa_dt = abs(kappas[i] - kappas[i - 1])
-                    dkappa_ds = dkappa_dt / ds_dt * n_check
-                    if dkappa_ds > max_dkappa_ds:
-                        valid = False
-                        break
+            for i in range(1, len(kappas)):
+                t_mid = (i - 0.5) / n_check
+                dx, dy = self._cubic_bezier_derivative(t_mid, p0, p1, p2, p3)
+                ds_dt = math.hypot(dx, dy)
+                if ds_dt < 1e-9:
+                    continue
+                dkappa_dt = abs(kappas[i] - kappas[i - 1])
+                dkappa_ds = dkappa_dt / ds_dt * n_check
+                if dkappa_ds > max_dkappa_ds:
+                    return False, p1, p2
 
+            for i in range(n_check + 1):
+                t = i / n_check
+                px, py = self._cubic_bezier_point(t, p0, p1, p2, p3)
+                if math.hypot(px - cx, py - cy) > r + 1e-6:
+                    return False, p1, p2
+
+            return True, p1, p2
+
+        step = self.envp.bezier_curvature_scale_step
+        scales: List[float] = [1.0]
+        for k in range(1, self.envp.bezier_max_scale_iterations + 1):
+            scales.append(step**k)
+            scales.append(step**(-k))
+
+        selected_scale = None
+        selected_p1 = p0
+        selected_p2 = p3
+        for scale in scales[: self.envp.bezier_max_scale_iterations]:
+            valid, p1, p2 = _check_scale(scale)
             if valid:
+                selected_scale = scale
+                selected_p1 = p1
+                selected_p2 = p2
                 break
 
-            scale *= self.envp.bezier_curvature_scale_step
-
-        self.target_bezier_tangent_scale = scale
-
-        t1_final = f1 * chord * scale
-        t2_final = f2 * chord * scale
-        p1 = (sx + t1_final * math.cos(sh), sy + t1_final * math.sin(sh))
-        p2 = (gx - t2_final * math.cos(gh), gy - t2_final * math.sin(gh))
-
-        n_sample = max(500, int(chord * 10))
-        pts = []
-        for i in range(n_sample + 1):
-            t = i / n_sample
-            x, y = self._cubic_bezier_point(t, p0, p1, p2, p3)
-            dx, dy = self._cubic_bezier_derivative(t, p0, p1, p2, p3)
-            heading = math.atan2(dy, dx) if (abs(dx) > 1e-9 or abs(dy) > 1e-9) else sh
-            pts.append((x, y, heading))
-
         spacing = self.envp.bezier_waypoint_spacing_m
+        if selected_scale is None:
+            self.target_bezier_tangent_scale = 1.0
+            n_straight = max(10, int(chord / max(1e-6, spacing)))
+            straight_heading = math.atan2(gy - sy, gx - sx)
+            pts = [
+                (
+                    sx + (gx - sx) * i / n_straight,
+                    sy + (gy - sy) * i / n_straight,
+                    straight_heading,
+                )
+                for i in range(n_straight + 1)
+            ]
+        else:
+            self.target_bezier_tangent_scale = selected_scale
+            n_sample = max(500, int(chord * 10))
+            pts = []
+            for i in range(n_sample + 1):
+                t = i / n_sample
+                x, y = self._cubic_bezier_point(t, p0, selected_p1, selected_p2, p3)
+                dx, dy = self._cubic_bezier_derivative(t, p0, selected_p1, selected_p2, p3)
+                heading = math.atan2(dy, dx) if (abs(dx) > 1e-9 or abs(dy) > 1e-9) else sh
+                pts.append((x, y, heading))
+
         waypoints = [pts[0]]
         accumulated = 0.0
         for i in range(1, len(pts)):
@@ -560,7 +588,7 @@ class SingleTargetFeatureEnv:
         sx2, sy2 = self._point_on_big_circle(start_ang_2)
         gx2, gy2 = self._point_on_big_circle(goal_ang_2)
         sh2 = self._inward_facing_heading(sx2, sy2)
-        gh2 = self._inward_facing_heading(gx2, gy2)
+        gh2 = self._outward_facing_heading(gx2, gy2)
         self.target_end_heading = gh2
         sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         self.target = Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
