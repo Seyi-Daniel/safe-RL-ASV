@@ -93,6 +93,9 @@ class SingleTargetFeatureEnv:
         self.target_start_x = 0.0
         self.target_start_y = 0.0
         self.target_cruise_speed = 0.0
+        self.target_arc_t_samples: List[float] = []
+        self.target_arc_s_samples: List[float] = []
+        self.target_arc_total_length: float = 0.0
 
         # render-time planned path visualization
         self.show_planned_paths = True
@@ -290,86 +293,165 @@ class SingleTargetFeatureEnv:
         ty = 2.0 * (1.0 - t) * (cy - sy) + 2.0 * t * (ey - cy)
         return tx, ty
 
+    def _quadratic_bezier_curvature(self, t: float, sx: float, sy: float, cx: float, cy: float, ex: float, ey: float) -> float:
+        dx, dy = self._bezier_tangent(t, sx, sy, cx, cy, ex, ey)
+        ddx = 2.0 * (ex - 2.0 * cx + sx)
+        ddy = 2.0 * (ey - 2.0 * cy + sy)
+        denom = (dx * dx + dy * dy) ** 1.5
+        if denom < 1e-12:
+            return 0.0
+        return abs(dx * ddy - dy * ddx) / denom
+
+    def _build_target_arc_length_lookup(self, sx: float, sy: float, cx: float, cy: float, ex: float, ey: float) -> None:
+        n = 101
+        t_samples = [i / (n - 1) for i in range(n)]
+        s_samples = [0.0]
+        px_prev, py_prev = self._bezier_point(0.0, sx, sy, cx, cy, ex, ey)
+        total = 0.0
+        for t in t_samples[1:]:
+            px, py = self._bezier_point(t, sx, sy, cx, cy, ex, ey)
+            total += math.hypot(px - px_prev, py - py_prev)
+            s_samples.append(total)
+            px_prev, py_prev = px, py
+        self.target_arc_t_samples = t_samples
+        self.target_arc_s_samples = s_samples
+        self.target_arc_total_length = total
+
+    def _target_desired_heading(self, prog: float, goal_x: float, goal_y: float) -> float:
+        lookahead = 0.02
+        t_ref = clamp(prog + lookahead, 0.0, 1.0)
+        tx, ty = self._bezier_tangent(
+            t_ref,
+            self.target_start_x,
+            self.target_start_y,
+            self.target_ctrl_x,
+            self.target_ctrl_y,
+            goal_x,
+            goal_y,
+        )
+        if abs(tx) < 1e-9 and abs(ty) < 1e-9:
+            return self.target.h
+        return math.atan2(ty, tx)
+
     def _sample_target_arc(self) -> Vessel:
         cxw = 0.5 * self.envp.world_w
         cyw = 0.5 * self.envp.world_h
         radius = self.envp.target_outer_radius
+        yaw_max = self.envp.rudder_max_yaw_rate_rad_s
+        safety_margin = 0.9
 
-        start_ang = self.rng.uniform(0.0, 2.0 * math.pi)
-        turn_sign = self.rng.choice([-1.0, 1.0])
-        arc_deg = self.rng.uniform(self.envp.target_arc_min_deg, self.envp.target_arc_max_deg)
-        end_ang = start_ang + turn_sign * math.radians(arc_deg)
+        max_attempts = 50
+        for _ in range(max_attempts):
+            start_ang = self.rng.uniform(0.0, 2.0 * math.pi)
+            turn_sign = self.rng.choice([-1.0, 1.0])
+            arc_deg = self.rng.uniform(self.envp.target_arc_min_deg, self.envp.target_arc_max_deg)
+            end_ang = start_ang + turn_sign * math.radians(arc_deg)
 
-        sx = cxw + radius * math.cos(start_ang)
-        sy = cyw + radius * math.sin(start_ang)
-        ex = cxw + radius * math.cos(end_ang)
-        ey = cyw + radius * math.sin(end_ang)
+            sx = cxw + radius * math.cos(start_ang)
+            sy = cyw + radius * math.sin(start_ang)
+            ex = cxw + radius * math.cos(end_ang)
+            ey = cyw + radius * math.sin(end_ang)
 
-        mid_ang = 0.5 * (start_ang + end_ang)
-        inner_radius = self.rng.uniform(0.2 * radius, 0.8 * radius)
-        self.target_ctrl_x = cxw + inner_radius * math.cos(mid_ang)
-        self.target_ctrl_y = cyw + inner_radius * math.sin(mid_ang)
+            mid_ang = 0.5 * (start_ang + end_ang)
+            inner_radius = self.rng.uniform(0.2 * radius, 0.8 * radius)
+            ctrl_x = cxw + inner_radius * math.cos(mid_ang)
+            ctrl_y = cyw + inner_radius * math.sin(mid_ang)
 
+            speed = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
+
+            kappa_max = 0.0
+            for i in range(21):
+                t = i / 20.0
+                kappa_max = max(kappa_max, self._quadratic_bezier_curvature(t, sx, sy, ctrl_x, ctrl_y, ex, ey))
+
+            feasible_speed = speed
+            if kappa_max > 1e-9:
+                v_max = yaw_max * safety_margin / kappa_max
+                feasible_speed = min(speed, v_max)
+
+            if feasible_speed < self.envp.target_min_speed:
+                continue
+
+            self.target_ctrl_x = ctrl_x
+            self.target_ctrl_y = ctrl_y
+            self.target_prog = 0.0
+            self.target_cruise_speed = feasible_speed
+
+            tanx0, tany0 = self._bezier_tangent(0.0, sx, sy, self.target_ctrl_x, self.target_ctrl_y, ex, ey)
+            heading = math.atan2(tany0, tanx0)
+            tanx1, tany1 = self._bezier_tangent(1.0, sx, sy, self.target_ctrl_x, self.target_ctrl_y, ex, ey)
+            self.target_end_heading = math.atan2(tany1, tanx1)
+
+            self.target_start_x = sx
+            self.target_start_y = sy
+            self._build_target_arc_length_lookup(sx, sy, self.target_ctrl_x, self.target_ctrl_y, ex, ey)
+            return Vessel(sx, sy, wrap_pi(heading), feasible_speed, ex, ey)
+
+        # Fallback: feasible shallow arc with minimum speed.
+        sx = cxw + radius
+        sy = cyw
+        ex = cxw + radius * math.cos(math.radians(20.0))
+        ey = cyw + radius * math.sin(math.radians(20.0))
+        self.target_ctrl_x = cxw + 0.6 * radius
+        self.target_ctrl_y = cyw + 0.1 * radius
         self.target_prog = 0.0
-        speed = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
-        self.target_cruise_speed = speed
-        # Coarse conversion to normalized bezier progress / second
-        chord = math.hypot(ex - sx, ey - sy)
-        travel_dist = max(0.35 * radius, chord)
-        self.target_prog_rate = clamp(speed / max(1e-6, travel_dist), 0.05, 0.5)
-
+        self.target_cruise_speed = self.envp.target_min_speed
         tanx0, tany0 = self._bezier_tangent(0.0, sx, sy, self.target_ctrl_x, self.target_ctrl_y, ex, ey)
-        heading = math.atan2(tany0, tanx0)
         tanx1, tany1 = self._bezier_tangent(1.0, sx, sy, self.target_ctrl_x, self.target_ctrl_y, ex, ey)
         self.target_end_heading = math.atan2(tany1, tanx1)
-
         self.target_start_x = sx
         self.target_start_y = sy
-        return Vessel(sx, sy, wrap_pi(heading), speed, ex, ey)
+        self._build_target_arc_length_lookup(sx, sy, self.target_ctrl_x, self.target_ctrl_y, ex, ey)
+        return Vessel(sx, sy, wrap_pi(math.atan2(tany0, tanx0)), self.target_cruise_speed, ex, ey)
 
     def _advance_target(self, dt: float) -> None:
         if self.target is None or self.target_reached:
             return
 
-        if self.target_prog >= 1.0:
+        d_goal = self._goal_distance(self.target)
+        if self.target_prog >= 1.0 or d_goal <= self.envp.goal_radius:
             self.target.h = wrap_pi(self.target_end_heading)
             self.target.speed = 0.0
             self.target_reached = True
             return
 
-        ex, ey = self.target.goal_x, self.target.goal_y
-        next_prog = clamp(self.target_prog + self.target_prog_rate * dt, 0.0, 1.0)
-        px, py = self._bezier_point(
-            next_prog,
-            self.target_start_x,
-            self.target_start_y,
-            self.target_ctrl_x,
-            self.target_ctrl_y,
-            ex,
-            ey,
-        )
-        tx, ty = self._bezier_tangent(
-            next_prog,
-            self.target_start_x,
-            self.target_start_y,
-            self.target_ctrl_x,
-            self.target_ctrl_y,
-            ex,
-            ey,
-        )
+        # (A) Use rudder-limited dynamics (no heading teleporting).
+        desired_h = self._target_desired_heading(self.target_prog, self.target.goal_x, self.target.goal_y)
+        heading_err = wrap_pi(desired_h - self.target.h)
+        kp = 1.5
+        rudder_cmd = clamp(kp * heading_err / max(1e-6, self.envp.rudder_max_angle_rad), -1.0, 1.0)
+        self._integrate_rudder_heading(self.target, rudder_cmd, dt)
 
-        self.target.x = px
-        self.target.y = py
-        self.target.h = wrap_pi(math.atan2(ty, tx))
-        self.target.speed = self.target_cruise_speed if next_prog < 1.0 else 0.0
-        self.target_prog = next_prog
+        # (B) Speed-hold so displacement is governed by speed * dt.
+        speed_err = self.target_cruise_speed - self.target.speed
+        throttle_cmd = clamp(speed_err / max(1e-6, 0.5 * self.envp.max_speed), -1.0, 1.0)
+        throttle_step = self.envp.throttle_slew_rate * dt
+        self.target.throttle = clamp(
+            self.target.throttle + clamp(throttle_cmd - self.target.throttle, -throttle_step, throttle_step),
+            -1.0,
+            1.0,
+        )
+        if abs(self.target.throttle) <= self.envp.throttle_deadband:
+            accel = 0.0
+        elif self.target.throttle > 0.0:
+            accel = self.envp.accel_rate * self.target.throttle
+        else:
+            accel = self.envp.decel_rate * self.target.throttle
+        self.target.speed = clamp(self.target.speed + accel * dt, self.envp.min_speed, self.envp.max_speed)
 
-        if self.target_prog >= 1.0:
-            self.target.x = ex
-            self.target.y = ey
-            self.target.h = wrap_pi(self.target_end_heading)
-            self.target.speed = 0.0
+        old_x, old_y = self.target.x, self.target.y
+        d_goal = self._goal_distance(self.target)
+        travel = min(self.target.speed * dt, d_goal)
+        self.target.x += travel * math.cos(self.target.h)
+        self.target.y += travel * math.sin(self.target.h)
+
+        ds = math.hypot(self.target.x - old_x, self.target.y - old_y)
+        if self.target_arc_total_length > 1e-6:
+            self.target_prog = clamp(self.target_prog + ds / self.target_arc_total_length, 0.0, 1.0)
+
+        if self.target_prog >= 1.0 or self._goal_distance(self.target) <= self.envp.goal_radius:
             self.target_reached = True
+            self.target.speed = 0.0
 
     def _integrate_rudder_heading(self, v: Vessel, rudder_cmd: float, dt: float) -> None:
         rudder_cmd = clamp(rudder_cmd, -1.0, 1.0)
@@ -441,27 +523,47 @@ class SingleTargetFeatureEnv:
         self.agent_planned_path = [(self.start_x, self.start_y), (self.agent.goal_x, self.agent.goal_y)]
 
     def _build_target_planned_path(self, sx: float, sy: float, sh: float, speed: float, goal_x: float, goal_y: float) -> None:
+        sim = Vessel(sx, sy, sh, speed, goal_x, goal_y, rudder=0.0, throttle=0.0)
         pts: List[Tuple[float, float]] = [(sx, sy)]
         prog = 0.0
         dt = self.envp.dt / max(1, self.envp.substeps)
         max_sim_steps = max(2000, int(2.0 * self.max_steps * max(1, self.envp.substeps)))
 
         for _ in range(max_sim_steps):
-            if prog >= 1.0:
+            d_goal = math.hypot(goal_x - sim.x, goal_y - sim.y)
+            if prog >= 1.0 or d_goal <= self.envp.goal_radius:
                 break
-            next_prog = clamp(prog + self.target_prog_rate * dt, 0.0, 1.0)
-            px, py = self._bezier_point(
-                next_prog,
-                sx,
-                sy,
-                self.target_ctrl_x,
-                self.target_ctrl_y,
-                goal_x,
-                goal_y,
-            )
-            pts.append((px, py))
-            prog = next_prog
-            if prog >= 1.0:
+
+            desired_h = self._target_desired_heading(prog, goal_x, goal_y)
+            heading_err = wrap_pi(desired_h - sim.h)
+            kp = 1.5
+            rudder_cmd = clamp(kp * heading_err / max(1e-6, self.envp.rudder_max_angle_rad), -1.0, 1.0)
+            self._integrate_rudder_heading(sim, rudder_cmd, dt)
+
+            speed_err = self.target_cruise_speed - sim.speed
+            throttle_cmd = clamp(speed_err / max(1e-6, 0.5 * self.envp.max_speed), -1.0, 1.0)
+            throttle_step = self.envp.throttle_slew_rate * dt
+            sim.throttle = clamp(sim.throttle + clamp(throttle_cmd - sim.throttle, -throttle_step, throttle_step), -1.0, 1.0)
+            if abs(sim.throttle) <= self.envp.throttle_deadband:
+                accel = 0.0
+            elif sim.throttle > 0.0:
+                accel = self.envp.accel_rate * sim.throttle
+            else:
+                accel = self.envp.decel_rate * sim.throttle
+            sim.speed = clamp(sim.speed + accel * dt, self.envp.min_speed, self.envp.max_speed)
+
+            old_x, old_y = sim.x, sim.y
+            d_goal = math.hypot(goal_x - sim.x, goal_y - sim.y)
+            travel = min(sim.speed * dt, d_goal)
+            sim.x += travel * math.cos(sim.h)
+            sim.y += travel * math.sin(sim.h)
+            pts.append((sim.x, sim.y))
+
+            ds = math.hypot(sim.x - old_x, sim.y - old_y)
+            if self.target_arc_total_length > 1e-6:
+                prog = clamp(prog + ds / self.target_arc_total_length, 0.0, 1.0)
+
+            if travel + 1e-9 >= d_goal:
                 break
 
         self.target_planned_path = pts
