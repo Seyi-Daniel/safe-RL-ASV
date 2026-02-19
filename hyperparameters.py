@@ -47,13 +47,11 @@ class EnvParams:
     target_outer_radius: float = 180.0
     target_min_speed: float = 0.5
     target_max_speed: float = 7.0
-    bezier_tangent_min_fraction: float = 0.25
-    bezier_tangent_max_fraction: float = 0.70
-    bezier_waypoint_spacing_m: float = 1.0
-    bezier_curvature_scale_step: float = 1.15
-    bezier_max_scale_iterations: int = 40
-    bezier_style_straight_prob: float = 0.25
-    bezier_style_single_turn_prob: float = 0.30
+    # pure pursuit controller parameters for vessel 2 scripted path
+    pp_lookahead_factor: float = 2.0      # lookahead distance = factor × turning_radius
+    pp_transition_factor: float = 2.0     # near-phase begins at factor × turning_radius from goal
+    pp_approach_factor: float = 1.0       # virtual approach point at factor × turning_radius behind goal
+    pp_heading_gain_deg: float = 25.0     # proportional gain divisor for heading error -> rudder cmd
 
     # COLREGS risk/takeover gating
     colregs_head_on_half_angle_deg: float = 5.0

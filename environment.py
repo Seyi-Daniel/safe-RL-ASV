@@ -42,7 +42,7 @@ class Vessel:
 
 
 class SingleTargetFeatureEnv:
-    """Two-vessel setup: vessel-1 straight center->circle goal, vessel-2 follows Bézier path."""
+    """Two-vessel setup: vessel-1 straight center->circle goal, vessel-2 follows pure pursuit path."""
 
     def __init__(
         self,
@@ -84,10 +84,7 @@ class SingleTargetFeatureEnv:
         self.agent_start_pos = (0.0, 0.0)
         self.target_start_pos = (0.0, 0.0)
 
-        # Bézier path state
-        self.target_bezier_waypoints: List[Tuple[float, float, float]] = []  # (x, y, heading_rad)
-        self.target_bezier_wp_idx: int = 0
-        self.target_bezier_tangent_scale: float = 1.0
+        # Vessel-2 scripted path state
         self.target_end_heading: float = 0.0
 
         # render-time planned path visualization
@@ -275,165 +272,46 @@ class SingleTargetFeatureEnv:
         offset = self.rng.uniform(-0.5 * math.pi, 0.5 * math.pi)
         return wrap_pi(to_center_angle + offset)
 
-    def _outward_facing_heading(self, pos_x: float, pos_y: float) -> float:
-        """Sample a heading that approaches the boundary point from inside the circle."""
-        cx, cy = self.start_x, self.start_y
-        from_center_angle = math.atan2(pos_y - cy, pos_x - cx)
-        offset = self.rng.uniform(-0.5 * math.pi, 0.5 * math.pi)
-        return wrap_pi(from_center_angle + offset)
+    def _pure_pursuit_rudder_cmd(self, v: Vessel, goal_x: float, goal_y: float, end_heading: float) -> float:
+        """
+        Two-phase pure pursuit rudder command.
+        Far phase: steer toward goal position directly.
+        Near phase: steer toward a virtual approach point placed behind the goal
+                    along the end_heading direction, so the vessel arrives with
+                    roughly the correct heading.
+        """
+        turning_radius = v.speed / max(self.envp.rudder_max_yaw_rate_rad_s, 1e-6)
+        chord = math.hypot(goal_x - v.x, goal_y - v.y)
 
+        # Cap transition and approach distances to avoid conflict on short crossings.
+        transition_dist = min(
+            self.envp.pp_transition_factor * turning_radius,
+            0.5 * chord,
+        )
+        approach_dist = min(
+            self.envp.pp_approach_factor * turning_radius,
+            0.25 * chord,
+        )
 
-    def _cubic_bezier_point(self, t: float, p0, p1, p2, p3) -> Tuple[float, float]:
-        u = 1.0 - t
-        x = u**3 * p0[0] + 3 * u**2 * t * p1[0] + 3 * u * t**2 * p2[0] + t**3 * p3[0]
-        y = u**3 * p0[1] + 3 * u**2 * t * p1[1] + 3 * u * t**2 * p2[1] + t**3 * p3[1]
-        return x, y
+        _lookahead_dist = self.envp.pp_lookahead_factor * turning_radius
 
-    def _cubic_bezier_derivative(self, t: float, p0, p1, p2, p3) -> Tuple[float, float]:
-        u = 1.0 - t
-        dx = 3 * u**2 * (p1[0] - p0[0]) + 6 * u * t * (p2[0] - p1[0]) + 3 * t**2 * (p3[0] - p2[0])
-        dy = 3 * u**2 * (p1[1] - p0[1]) + 6 * u * t * (p2[1] - p1[1]) + 3 * t**2 * (p3[1] - p2[1])
-        return dx, dy
+        d_goal = math.hypot(goal_x - v.x, goal_y - v.y)
 
-    def _cubic_bezier_second_derivative(self, t: float, p0, p1, p2, p3) -> Tuple[float, float]:
-        u = 1.0 - t
-        ddx = 6 * u * (p2[0] - 2 * p1[0] + p0[0]) + 6 * t * (p3[0] - 2 * p2[0] + p1[0])
-        ddy = 6 * u * (p2[1] - 2 * p1[1] + p0[1]) + 6 * t * (p3[1] - 2 * p2[1] + p1[1])
-        return ddx, ddy
-
-    def _bezier_curvature(self, t: float, p0, p1, p2, p3) -> float:
-        dx, dy = self._cubic_bezier_derivative(t, p0, p1, p2, p3)
-        ddx, ddy = self._cubic_bezier_second_derivative(t, p0, p1, p2, p3)
-        denom = (dx * dx + dy * dy) ** 1.5
-        if denom < 1e-12:
-            return 0.0
-        return abs(dx * ddy - dy * ddx) / denom
-
-    def _build_bezier_waypoints(
-        self,
-        sx: float,
-        sy: float,
-        sh: float,
-        gx: float,
-        gy: float,
-        gh: float,
-        speed: float,
-    ) -> List[Tuple[float, float, float]]:
-        chord = math.hypot(gx - sx, gy - sy)
-        if chord < 1e-6:
-            return [(gx, gy, gh)]
-
-        max_kappa = self.envp.rudder_max_yaw_rate_rad_s / max(speed, 1e-6)
-        max_dkappa_ds = self.envp.rudder_max_rate_rad_s / max(speed, 1e-6)
-
-        path_style = self.rng.random()
-        single_turn_threshold = self.envp.bezier_style_straight_prob + self.envp.bezier_style_single_turn_prob
-        if path_style < self.envp.bezier_style_straight_prob:
-            f1 = self.rng.uniform(0.6, 0.9)
-            f2 = self.rng.uniform(0.6, 0.9)
-        elif path_style < single_turn_threshold:
-            if self.rng.random() < 0.5:
-                f1 = self.rng.uniform(self.envp.bezier_tangent_max_fraction, 0.85)
-                f2 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, 0.35)
-            else:
-                f1 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, 0.35)
-                f2 = self.rng.uniform(self.envp.bezier_tangent_max_fraction, 0.85)
+        if d_goal > transition_dist:
+            # Far phase: steer directly toward the goal.
+            target_x, target_y = goal_x, goal_y
         else:
-            f1 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, self.envp.bezier_tangent_max_fraction)
-            f2 = self.rng.uniform(self.envp.bezier_tangent_min_fraction, self.envp.bezier_tangent_max_fraction)
+            # Near phase: steer toward virtual approach point behind goal.
+            target_x = goal_x - approach_dist * math.cos(end_heading)
+            target_y = goal_y - approach_dist * math.sin(end_heading)
 
-        p0 = (sx, sy)
-        p3 = (gx, gy)
-        n_check = 200
-        cx, cy = self.start_x, self.start_y
-        r = self.envp.target_outer_radius
-
-        def _check_scale(scale: float) -> Tuple[bool, Tuple[float, float], Tuple[float, float]]:
-            t1 = f1 * chord * scale
-            t2 = f2 * chord * scale
-            p1 = (sx + t1 * math.cos(sh), sy + t1 * math.sin(sh))
-            p2 = (gx - t2 * math.cos(gh), gy - t2 * math.sin(gh))
-
-            kappas: List[float] = []
-            for i in range(n_check + 1):
-                t = i / n_check
-                k = self._bezier_curvature(t, p0, p1, p2, p3)
-                kappas.append(k)
-                if k > max_kappa:
-                    return False, p1, p2
-
-            for i in range(1, len(kappas)):
-                t_mid = (i - 0.5) / n_check
-                dx, dy = self._cubic_bezier_derivative(t_mid, p0, p1, p2, p3)
-                ds_dt = math.hypot(dx, dy)
-                if ds_dt < 1e-9:
-                    continue
-                dkappa_dt = abs(kappas[i] - kappas[i - 1])
-                dkappa_ds = dkappa_dt / ds_dt * n_check
-                if dkappa_ds > max_dkappa_ds:
-                    return False, p1, p2
-
-            for i in range(n_check + 1):
-                t = i / n_check
-                px, py = self._cubic_bezier_point(t, p0, p1, p2, p3)
-                if math.hypot(px - cx, py - cy) > r + 1e-6:
-                    return False, p1, p2
-
-            return True, p1, p2
-
-        step = self.envp.bezier_curvature_scale_step
-        scales: List[float] = [1.0]
-        for k in range(1, self.envp.bezier_max_scale_iterations + 1):
-            scales.append(step**k)
-            scales.append(step**(-k))
-
-        selected_scale = None
-        selected_p1 = p0
-        selected_p2 = p3
-        for scale in scales[: self.envp.bezier_max_scale_iterations]:
-            valid, p1, p2 = _check_scale(scale)
-            if valid:
-                selected_scale = scale
-                selected_p1 = p1
-                selected_p2 = p2
-                break
-
-        spacing = self.envp.bezier_waypoint_spacing_m
-        if selected_scale is None:
-            self.target_bezier_tangent_scale = 1.0
-            n_straight = max(10, int(chord / max(1e-6, spacing)))
-            straight_heading = math.atan2(gy - sy, gx - sx)
-            pts = [
-                (
-                    sx + (gx - sx) * i / n_straight,
-                    sy + (gy - sy) * i / n_straight,
-                    straight_heading,
-                )
-                for i in range(n_straight + 1)
-            ]
-        else:
-            self.target_bezier_tangent_scale = selected_scale
-            n_sample = max(500, int(chord * 10))
-            pts = []
-            for i in range(n_sample + 1):
-                t = i / n_sample
-                x, y = self._cubic_bezier_point(t, p0, selected_p1, selected_p2, p3)
-                dx, dy = self._cubic_bezier_derivative(t, p0, selected_p1, selected_p2, p3)
-                heading = math.atan2(dy, dx) if (abs(dx) > 1e-9 or abs(dy) > 1e-9) else sh
-                pts.append((x, y, heading))
-
-        waypoints = [pts[0]]
-        accumulated = 0.0
-        for i in range(1, len(pts)):
-            seg = math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
-            accumulated += seg
-            if accumulated >= spacing:
-                waypoints.append(pts[i])
-                accumulated = 0.0
-        if waypoints[-1] != pts[-1]:
-            waypoints.append(pts[-1])
-
-        return waypoints
+        bearing = math.atan2(target_y - v.y, target_x - v.x)
+        heading_error = wrap_pi(bearing - v.h)
+        return clamp(
+            heading_error / math.radians(self.envp.pp_heading_gain_deg),
+            -1.0,
+            1.0,
+        )
 
     def _integrate_rudder_heading(self, v: Vessel, rudder_cmd: float, dt: float) -> None:
         rudder_cmd = clamp(rudder_cmd, -1.0, 1.0)
@@ -498,7 +376,7 @@ class SingleTargetFeatureEnv:
             setattr(self, reached_attr, True)
             v.speed = 0.0
 
-    def _advance_bezier_path(self, dt: float) -> None:
+    def _advance_pure_pursuit(self, dt: float) -> None:
         if self.target is None or self.target_reached:
             return
 
@@ -508,31 +386,21 @@ class SingleTargetFeatureEnv:
             self.target.speed = 0.0
             return
 
-        if not self.target_bezier_waypoints:
-            self.target_reached = True
-            return
+        rudder_cmd = self._pure_pursuit_rudder_cmd(
+            self.target,
+            self.target.goal_x,
+            self.target.goal_y,
+            self.target_end_heading,
+        )
 
-        distance_this_step = self.target.speed * dt
-        remaining = distance_this_step
-
-        while remaining > 1e-9 and self.target_bezier_wp_idx < len(self.target_bezier_waypoints):
-            wp = self.target_bezier_waypoints[self.target_bezier_wp_idx]
-            dist_to_wp = math.hypot(wp[0] - self.target.x, wp[1] - self.target.y)
-
-            if dist_to_wp <= remaining:
-                self.target.x = wp[0]
-                self.target.y = wp[1]
-                self.target.h = wp[2]
-                remaining -= dist_to_wp
-                self.target_bezier_wp_idx = min(self.target_bezier_wp_idx + 1, len(self.target_bezier_waypoints) - 1)
-            else:
-                self.target.h = wp[2]
-                self.target.x += remaining * math.cos(self.target.h)
-                self.target.y += remaining * math.sin(self.target.h)
-                remaining = 0.0
+        self._integrate_rudder_heading(self.target, rudder_cmd, dt)
 
         d_goal = self._goal_distance(self.target)
-        if d_goal <= self.envp.goal_radius:
+        travel = min(self.target.speed * dt, d_goal)
+        self.target.x += travel * math.cos(self.target.h)
+        self.target.y += travel * math.sin(self.target.h)
+
+        if travel + 1e-9 >= d_goal or self._goal_distance(self.target) <= self.envp.goal_radius:
             self.target_reached = True
             self.target.speed = 0.0
 
@@ -542,8 +410,31 @@ class SingleTargetFeatureEnv:
             return
         self.agent_planned_path = [(self.start_x, self.start_y), (self.agent.goal_x, self.agent.goal_y)]
 
-    def _build_target_planned_path(self, *args, **kwargs) -> None:
-        self.target_planned_path = [(wp[0], wp[1]) for wp in self.target_bezier_waypoints]
+    def _build_target_planned_path(self, sx: float, sy: float, sh: float, speed: float, goal_x: float, goal_y: float) -> None:
+        sim = Vessel(sx, sy, sh, speed, goal_x, goal_y, rudder=0.0, throttle=0.0)
+        pts: List[Tuple[float, float]] = [(sim.x, sim.y)]
+        dt = self.envp.dt / max(1, self.envp.substeps)
+        max_sim_steps = max(2000, int(2.0 * self.max_steps * max(1, self.envp.substeps)))
+
+        for _ in range(max_sim_steps):
+            d_goal = math.hypot(goal_x - sim.x, goal_y - sim.y)
+            if d_goal <= self.envp.goal_radius:
+                break
+
+            rudder_cmd = self._pure_pursuit_rudder_cmd(
+                sim, goal_x, goal_y, self.target_end_heading
+            )
+            self._integrate_rudder_heading(sim, rudder_cmd, dt)
+
+            travel = min(sim.speed * dt, d_goal)
+            sim.x += travel * math.cos(sim.h)
+            sim.y += travel * math.sin(sim.h)
+            pts.append((sim.x, sim.y))
+
+            if travel + 1e-9 >= d_goal:
+                break
+
+        self.target_planned_path = pts
 
     def get_obs(self) -> np.ndarray:
         return np.asarray(
@@ -588,15 +479,13 @@ class SingleTargetFeatureEnv:
         sx2, sy2 = self._point_on_big_circle(start_ang_2)
         gx2, gy2 = self._point_on_big_circle(goal_ang_2)
         sh2 = self._inward_facing_heading(sx2, sy2)
-        gh2 = self._outward_facing_heading(gx2, gy2)
+        gh2 = self._inward_facing_heading(gx2, gy2)
         self.target_end_heading = gh2
         sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         self.target = Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
         self.target_start_speed = sp2
         self.target_start_pos = (self.target.x, self.target.y)
 
-        self.target_bezier_waypoints = self._build_bezier_waypoints(sx2, sy2, sh2, gx2, gy2, gh2, sp2)
-        self.target_bezier_wp_idx = 0
 
         self.time = 0.0
         self.step_idx = 0
@@ -625,21 +514,13 @@ class SingleTargetFeatureEnv:
         self.prev_agent_rl_active = False
         self.prev_target_rl_active = False
 
-        bezier_path_length = sum(
-            math.hypot(
-                self.target_bezier_waypoints[i + 1][0] - self.target_bezier_waypoints[i][0],
-                self.target_bezier_waypoints[i + 1][1] - self.target_bezier_waypoints[i][1],
-            )
-            for i in range(len(self.target_bezier_waypoints) - 1)
-        ) if len(self.target_bezier_waypoints) > 1 else self.prev_goal_d_target
-
         t1 = self.prev_goal_d_agent / max(1e-6, self.agent.speed)
-        t2 = bezier_path_length / max(1e-6, sp2)
-        episode_time = max(self.envp.episode_seconds, 1.4 * max(t1, t2) + 20.0)
+        t2 = self.prev_goal_d_target / max(1e-6, sp2)
+        episode_time = max(self.envp.episode_seconds, 1.8 * max(t1, t2) + 20.0)
         self.max_steps = max(1, int(round(episode_time / self.envp.dt)))
 
         self._build_agent_planned_path()
-        self._build_target_planned_path()
+        self._build_target_planned_path(sx2, sy2, sh2, sp2, gx2, gy2)
 
         return self.get_obs()
 
@@ -726,8 +607,8 @@ class SingleTargetFeatureEnv:
             if self.target_role == "give_way" and self.target_rl_active:
                 self._advance_controlled(self.target, "target_reached", rudder_cmd, throttle_cmd, h)
             else:
-                # Keep vessel-2 on its nominal Bézier path unless RL takeover is active.
-                self._advance_bezier_path(h)
+                # Keep vessel-2 on its nominal pure pursuit path unless RL takeover is active.
+                self._advance_pure_pursuit(h)
 
         if was_agent_active:
             self.agent_steps_taken += 1
