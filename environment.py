@@ -42,7 +42,7 @@ class Vessel:
 
 
 class SingleTargetFeatureEnv:
-    """Two-vessel setup: vessel-1 straight center->circle goal, vessel-2 follows pure pursuit path."""
+    """Two-vessel setup: vessel-1 straight center->circle goal, vessel-2 traverses an inner arc."""
 
     def __init__(
         self,
@@ -84,9 +84,15 @@ class SingleTargetFeatureEnv:
         self.agent_start_pos = (0.0, 0.0)
         self.target_start_pos = (0.0, 0.0)
 
-        # Vessel-2 scripted path state
-        self.target_end_heading: float = 0.0
-        self.target_path_chord: float = 0.0  # fixed start-to-goal distance for vessel 2, set at reset
+        # target arc trajectory state (quadratic bezier)
+        self.target_ctrl_x = 0.0
+        self.target_ctrl_y = 0.0
+        self.target_end_heading = 0.0
+        self.target_prog = 0.0
+        self.target_prog_rate = 0.0
+        self.target_start_x = 0.0
+        self.target_start_y = 0.0
+        self.target_cruise_speed = 0.0
 
         # render-time planned path visualization
         self.show_planned_paths = True
@@ -273,46 +279,97 @@ class SingleTargetFeatureEnv:
         offset = self.rng.uniform(-0.5 * math.pi, 0.5 * math.pi)
         return wrap_pi(to_center_angle + offset)
 
-    def _pure_pursuit_rudder_cmd(self, v: Vessel, goal_x: float, goal_y: float, end_heading: float) -> float:
-        """
-        Two-phase pure pursuit rudder command.
-        Far phase: steer toward goal position directly.
-        Near phase: steer toward a virtual approach point placed behind the goal
-                    along the end_heading direction, so the vessel arrives with
-                    roughly the correct heading.
-        """
-        turning_radius = v.speed / max(self.envp.rudder_max_yaw_rate_rad_s, 1e-6)
-        chord = max(self.target_path_chord, 1e-6)
+    def _bezier_point(self, t: float, sx: float, sy: float, cx: float, cy: float, ex: float, ey: float) -> Tuple[float, float]:
+        u = 1.0 - t
+        x = u * u * sx + 2.0 * u * t * cx + t * t * ex
+        y = u * u * sy + 2.0 * u * t * cy + t * t * ey
+        return x, y
 
-        # Cap transition and approach distances to avoid conflict on short crossings.
-        transition_dist = min(
-            self.envp.pp_transition_factor * turning_radius,
-            0.5 * chord,
+    def _bezier_tangent(self, t: float, sx: float, sy: float, cx: float, cy: float, ex: float, ey: float) -> Tuple[float, float]:
+        tx = 2.0 * (1.0 - t) * (cx - sx) + 2.0 * t * (ex - cx)
+        ty = 2.0 * (1.0 - t) * (cy - sy) + 2.0 * t * (ey - cy)
+        return tx, ty
+
+    def _sample_target_arc(self) -> Vessel:
+        cxw = 0.5 * self.envp.world_w
+        cyw = 0.5 * self.envp.world_h
+        radius = self.envp.target_outer_radius
+
+        start_ang = self.rng.uniform(0.0, 2.0 * math.pi)
+        turn_sign = self.rng.choice([-1.0, 1.0])
+        arc_deg = self.rng.uniform(self.envp.target_arc_min_deg, self.envp.target_arc_max_deg)
+        end_ang = start_ang + turn_sign * math.radians(arc_deg)
+
+        sx = cxw + radius * math.cos(start_ang)
+        sy = cyw + radius * math.sin(start_ang)
+        ex = cxw + radius * math.cos(end_ang)
+        ey = cyw + radius * math.sin(end_ang)
+
+        mid_ang = 0.5 * (start_ang + end_ang)
+        inner_radius = self.rng.uniform(0.2 * radius, 0.8 * radius)
+        self.target_ctrl_x = cxw + inner_radius * math.cos(mid_ang)
+        self.target_ctrl_y = cyw + inner_radius * math.sin(mid_ang)
+
+        self.target_prog = 0.0
+        speed = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
+        self.target_cruise_speed = speed
+        # Coarse conversion to normalized bezier progress / second
+        chord = math.hypot(ex - sx, ey - sy)
+        travel_dist = max(0.35 * radius, chord)
+        self.target_prog_rate = clamp(speed / max(1e-6, travel_dist), 0.05, 0.5)
+
+        tanx0, tany0 = self._bezier_tangent(0.0, sx, sy, self.target_ctrl_x, self.target_ctrl_y, ex, ey)
+        heading = math.atan2(tany0, tanx0)
+        tanx1, tany1 = self._bezier_tangent(1.0, sx, sy, self.target_ctrl_x, self.target_ctrl_y, ex, ey)
+        self.target_end_heading = math.atan2(tany1, tanx1)
+
+        self.target_start_x = sx
+        self.target_start_y = sy
+        return Vessel(sx, sy, wrap_pi(heading), speed, ex, ey)
+
+    def _advance_target(self, dt: float) -> None:
+        if self.target is None or self.target_reached:
+            return
+
+        if self.target_prog >= 1.0:
+            self.target.h = wrap_pi(self.target_end_heading)
+            self.target.speed = 0.0
+            self.target_reached = True
+            return
+
+        ex, ey = self.target.goal_x, self.target.goal_y
+        next_prog = clamp(self.target_prog + self.target_prog_rate * dt, 0.0, 1.0)
+        px, py = self._bezier_point(
+            next_prog,
+            self.target_start_x,
+            self.target_start_y,
+            self.target_ctrl_x,
+            self.target_ctrl_y,
+            ex,
+            ey,
         )
-        approach_dist = min(
-            self.envp.pp_approach_factor * turning_radius,
-            0.25 * chord,
+        tx, ty = self._bezier_tangent(
+            next_prog,
+            self.target_start_x,
+            self.target_start_y,
+            self.target_ctrl_x,
+            self.target_ctrl_y,
+            ex,
+            ey,
         )
 
-        _lookahead_dist = self.envp.pp_lookahead_factor * turning_radius
+        self.target.x = px
+        self.target.y = py
+        self.target.h = wrap_pi(math.atan2(ty, tx))
+        self.target.speed = self.target_cruise_speed if next_prog < 1.0 else 0.0
+        self.target_prog = next_prog
 
-        d_goal = math.hypot(goal_x - v.x, goal_y - v.y)
-
-        if d_goal > transition_dist:
-            # Far phase: steer directly toward the goal.
-            target_x, target_y = goal_x, goal_y
-        else:
-            # Near phase: steer toward virtual approach point behind goal.
-            target_x = goal_x - approach_dist * math.cos(end_heading)
-            target_y = goal_y - approach_dist * math.sin(end_heading)
-
-        bearing = math.atan2(target_y - v.y, target_x - v.x)
-        heading_error = wrap_pi(bearing - v.h)
-        return clamp(
-            heading_error / math.radians(self.envp.pp_heading_gain_deg),
-            -1.0,
-            1.0,
-        )
+        if self.target_prog >= 1.0:
+            self.target.x = ex
+            self.target.y = ey
+            self.target.h = wrap_pi(self.target_end_heading)
+            self.target.speed = 0.0
+            self.target_reached = True
 
     def _integrate_rudder_heading(self, v: Vessel, rudder_cmd: float, dt: float) -> None:
         rudder_cmd = clamp(rudder_cmd, -1.0, 1.0)
@@ -377,34 +434,6 @@ class SingleTargetFeatureEnv:
             setattr(self, reached_attr, True)
             v.speed = 0.0
 
-    def _advance_pure_pursuit(self, dt: float) -> None:
-        if self.target is None or self.target_reached:
-            return
-
-        d_goal = self._goal_distance(self.target)
-        if d_goal <= self.envp.goal_radius:
-            self.target_reached = True
-            self.target.speed = 0.0
-            return
-
-        rudder_cmd = self._pure_pursuit_rudder_cmd(
-            self.target,
-            self.target.goal_x,
-            self.target.goal_y,
-            self.target_end_heading,
-        )
-
-        self._integrate_rudder_heading(self.target, rudder_cmd, dt)
-
-        d_goal = self._goal_distance(self.target)
-        travel = min(self.target.speed * dt, d_goal)
-        self.target.x += travel * math.cos(self.target.h)
-        self.target.y += travel * math.sin(self.target.h)
-
-        if travel + 1e-9 >= d_goal or self._goal_distance(self.target) <= self.envp.goal_radius:
-            self.target_reached = True
-            self.target.speed = 0.0
-
     def _build_agent_planned_path(self) -> None:
         if self.agent is None:
             self.agent_planned_path = []
@@ -412,27 +441,27 @@ class SingleTargetFeatureEnv:
         self.agent_planned_path = [(self.start_x, self.start_y), (self.agent.goal_x, self.agent.goal_y)]
 
     def _build_target_planned_path(self, sx: float, sy: float, sh: float, speed: float, goal_x: float, goal_y: float) -> None:
-        sim = Vessel(sx, sy, sh, speed, goal_x, goal_y, rudder=0.0, throttle=0.0)
-        pts: List[Tuple[float, float]] = [(sim.x, sim.y)]
+        pts: List[Tuple[float, float]] = [(sx, sy)]
+        prog = 0.0
         dt = self.envp.dt / max(1, self.envp.substeps)
         max_sim_steps = max(2000, int(2.0 * self.max_steps * max(1, self.envp.substeps)))
 
         for _ in range(max_sim_steps):
-            d_goal = math.hypot(goal_x - sim.x, goal_y - sim.y)
-            if d_goal <= self.envp.goal_radius:
+            if prog >= 1.0:
                 break
-
-            rudder_cmd = self._pure_pursuit_rudder_cmd(
-                sim, goal_x, goal_y, self.target_end_heading
+            next_prog = clamp(prog + self.target_prog_rate * dt, 0.0, 1.0)
+            px, py = self._bezier_point(
+                next_prog,
+                sx,
+                sy,
+                self.target_ctrl_x,
+                self.target_ctrl_y,
+                goal_x,
+                goal_y,
             )
-            self._integrate_rudder_heading(sim, rudder_cmd, dt)
-
-            travel = min(sim.speed * dt, d_goal)
-            sim.x += travel * math.cos(sim.h)
-            sim.y += travel * math.sin(sim.h)
-            pts.append((sim.x, sim.y))
-
-            if travel + 1e-9 >= d_goal:
+            pts.append((px, py))
+            prog = next_prog
+            if prog >= 1.0:
                 break
 
         self.target_planned_path = pts
@@ -469,22 +498,12 @@ class SingleTargetFeatureEnv:
         self.agent_start_speed = aspeed
         self.agent_start_pos = (self.agent.x, self.agent.y)
 
-        # Vessel 2: random start/goal on big circle + randomized initial heading.
-        start_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
-        goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
-        tries = 0
-        while self._arc_gap(start_ang_2, goal_ang_2) < math.radians(20.0) and tries < 40:
-            goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
-            tries += 1
-
-        sx2, sy2 = self._point_on_big_circle(start_ang_2)
-        gx2, gy2 = self._point_on_big_circle(goal_ang_2)
-        sh2 = self._inward_facing_heading(sx2, sy2)
-        gh2 = self._inward_facing_heading(gx2, gy2)
-        self.target_end_heading = gh2
-        sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
-        self.target = Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
-        self.target_path_chord = math.hypot(gx2 - sx2, gy2 - sy2)
+        # Vessel 2: sampled quadratic-bezier arc on outer circle.
+        self.target = self._sample_target_arc()
+        sx2, sy2 = self.target_start_x, self.target_start_y
+        sh2 = self.target.h
+        sp2 = self.target_cruise_speed
+        gx2, gy2 = self.target.goal_x, self.target.goal_y
         self.target_start_speed = sp2
         self.target_start_pos = (self.target.x, self.target.y)
 
@@ -609,8 +628,8 @@ class SingleTargetFeatureEnv:
             if self.target_role == "give_way" and self.target_rl_active:
                 self._advance_controlled(self.target, "target_reached", rudder_cmd, throttle_cmd, h)
             else:
-                # Keep vessel-2 on its nominal pure pursuit path unless RL takeover is active.
-                self._advance_pure_pursuit(h)
+                # Keep vessel-2 on its nominal arc path unless RL takeover is active.
+                self._advance_target(h)
 
         if was_agent_active:
             self.agent_steps_taken += 1

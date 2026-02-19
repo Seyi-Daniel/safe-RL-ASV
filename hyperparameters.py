@@ -47,11 +47,9 @@ class EnvParams:
     target_outer_radius: float = 180.0
     target_min_speed: float = 0.5
     target_max_speed: float = 7.0
-    # pure pursuit controller parameters for vessel 2 scripted path
-    pp_lookahead_factor: float = 2.0      # lookahead distance = factor × turning_radius
-    pp_transition_factor: float = 2.0     # near-phase begins at factor × turning_radius from goal
-    pp_approach_factor: float = 1.0       # virtual approach point at factor × turning_radius behind goal
-    pp_heading_gain_deg: float = 25.0     # proportional gain divisor for heading error -> rudder cmd
+    # moving target vessel on outer-circle to outer-circle arc
+    target_arc_min_deg: float = 20.0
+    target_arc_max_deg: float = 110.0
 
     # COLREGS risk/takeover gating
     colregs_head_on_half_angle_deg: float = 5.0
