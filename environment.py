@@ -86,6 +86,7 @@ class SingleTargetFeatureEnv:
 
         # Vessel-2 scripted path state
         self.target_end_heading: float = 0.0
+        self.target_path_chord: float = 0.0  # fixed start-to-goal distance for vessel 2, set at reset
 
         # render-time planned path visualization
         self.show_planned_paths = True
@@ -281,7 +282,7 @@ class SingleTargetFeatureEnv:
                     roughly the correct heading.
         """
         turning_radius = v.speed / max(self.envp.rudder_max_yaw_rate_rad_s, 1e-6)
-        chord = math.hypot(goal_x - v.x, goal_y - v.y)
+        chord = max(self.target_path_chord, 1e-6)
 
         # Cap transition and approach distances to avoid conflict on short crossings.
         transition_dist = min(
@@ -483,6 +484,7 @@ class SingleTargetFeatureEnv:
         self.target_end_heading = gh2
         sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         self.target = Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
+        self.target_path_chord = math.hypot(gx2 - sx2, gy2 - sy2)
         self.target_start_speed = sp2
         self.target_start_pos = (self.target.x, self.target.y)
 
