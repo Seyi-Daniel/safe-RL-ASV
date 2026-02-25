@@ -317,21 +317,60 @@ class SingleTargetFeatureEnv:
         self.target_arc_s_samples = s_samples
         self.target_arc_total_length = total
 
-    def _target_desired_heading(self, prog: float, goal_x: float, goal_y: float) -> float:
-        lookahead = 0.02
-        t_ref = clamp(prog + lookahead, 0.0, 1.0)
-        tx, ty = self._bezier_tangent(
+    def _arc_progress_from_position(self, x: float, y: float) -> float:
+        """Approximate closest progress on reference arc from current position."""
+        if not self.target_arc_t_samples:
+            return self.target_prog
+        best_t = self.target_prog
+        best_d2 = float("inf")
+        ex = self.target.goal_x
+        ey = self.target.goal_y
+        sx = self.target_start_x
+        sy = self.target_start_y
+        cx = self.target_ctrl_x
+        cy = self.target_ctrl_y
+        for t in self.target_arc_t_samples:
+            px, py = self._bezier_point(t, sx, sy, cx, cy, ex, ey)
+            d2 = (px - x) * (px - x) + (py - y) * (py - y)
+            if d2 < best_d2:
+                best_d2 = d2
+                best_t = t
+        return best_t
+
+    def _arc_t_at_distance(self, s_query: float) -> float:
+        """Map arc-length distance (meters) to curve parameter t by linear interpolation."""
+        if not self.target_arc_s_samples or self.target_arc_total_length <= 1e-9:
+            return self.target_prog
+        s = clamp(s_query, 0.0, self.target_arc_total_length)
+        s_samples = self.target_arc_s_samples
+        t_samples = self.target_arc_t_samples
+        for i in range(1, len(s_samples)):
+            if s <= s_samples[i]:
+                s0, s1 = s_samples[i - 1], s_samples[i]
+                t0, t1 = t_samples[i - 1], t_samples[i]
+                if s1 - s0 <= 1e-12:
+                    return t1
+                alpha = (s - s0) / (s1 - s0)
+                return t0 + alpha * (t1 - t0)
+        return 1.0
+
+    def _pure_pursuit_reference_heading(self, x: float, y: float) -> Tuple[float, float]:
+        """Return desired heading and projected progress from simple pure pursuit."""
+        prog_here = self._arc_progress_from_position(x, y)
+        s_here = prog_here * self.target_arc_total_length
+        lookahead_m = 10.0
+        t_ref = self._arc_t_at_distance(s_here + lookahead_m)
+        px, py = self._bezier_point(
             t_ref,
             self.target_start_x,
             self.target_start_y,
             self.target_ctrl_x,
             self.target_ctrl_y,
-            goal_x,
-            goal_y,
+            self.target.goal_x,
+            self.target.goal_y,
         )
-        if abs(tx) < 1e-9 and abs(ty) < 1e-9:
-            return self.target.h
-        return math.atan2(ty, tx)
+        desired_h = math.atan2(py - y, px - x)
+        return desired_h, prog_here
 
     def _sample_target_arc(self) -> Vessel:
         cxw = 0.5 * self.envp.world_w
@@ -415,8 +454,8 @@ class SingleTargetFeatureEnv:
             self.target_reached = True
             return
 
-        # (A) Use rudder-limited dynamics (no heading teleporting).
-        desired_h = self._target_desired_heading(self.target_prog, self.target.goal_x, self.target.goal_y)
+        # (A) Simple pure pursuit: steer toward a lookahead point on the reference arc.
+        desired_h, prog_here = self._pure_pursuit_reference_heading(self.target.x, self.target.y)
         heading_err = wrap_pi(desired_h - self.target.h)
         kp = 1.5
         rudder_cmd = clamp(kp * heading_err / max(1e-6, self.envp.rudder_max_angle_rad), -1.0, 1.0)
@@ -447,7 +486,7 @@ class SingleTargetFeatureEnv:
 
         ds = math.hypot(self.target.x - old_x, self.target.y - old_y)
         if self.target_arc_total_length > 1e-6:
-            self.target_prog = clamp(self.target_prog + ds / self.target_arc_total_length, 0.0, 1.0)
+            self.target_prog = clamp(max(prog_here, self.target_prog) + ds / self.target_arc_total_length, 0.0, 1.0)
 
         if self.target_prog >= 1.0 or self._goal_distance(self.target) <= self.envp.goal_radius:
             self.target_reached = True
@@ -534,7 +573,20 @@ class SingleTargetFeatureEnv:
             if prog >= 1.0 or d_goal <= self.envp.goal_radius:
                 break
 
-            desired_h = self._target_desired_heading(prog, goal_x, goal_y)
+            # Simple pure pursuit lookahead toward the reference arc.
+            s_here = prog * self.target_arc_total_length
+            lookahead_m = 10.0
+            t_ref = self._arc_t_at_distance(s_here + lookahead_m)
+            px_ref, py_ref = self._bezier_point(
+                t_ref,
+                sx,
+                sy,
+                self.target_ctrl_x,
+                self.target_ctrl_y,
+                goal_x,
+                goal_y,
+            )
+            desired_h = math.atan2(py_ref - sim.y, px_ref - sim.x)
             heading_err = wrap_pi(desired_h - sim.h)
             kp = 1.5
             rudder_cmd = clamp(kp * heading_err / max(1e-6, self.envp.rudder_max_angle_rad), -1.0, 1.0)
