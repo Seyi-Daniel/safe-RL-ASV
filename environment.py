@@ -325,13 +325,6 @@ class SingleTargetFeatureEnv:
         self.target.x += travel * math.cos(self.target.h)
         self.target.y += travel * math.sin(self.target.h)
 
-        if travel + 1e-9 >= d_goal:
-            self.target.x = self.target.goal_x
-            self.target.y = self.target.goal_y
-            self.target_reached = True
-            self.target.speed = 0.0
-            return
-
         if self._goal_distance(self.target) <= self.envp.goal_radius:
             self.target_reached = True
             self.target.speed = 0.0
@@ -361,13 +354,6 @@ class SingleTargetFeatureEnv:
         travel = min(v.speed * dt, d)
         v.x += math.cos(v.h) * travel
         v.y += math.sin(v.h) * travel
-
-        if travel + 1e-9 >= d:
-            v.x = v.goal_x
-            v.y = v.goal_y
-            setattr(self, reached_attr, True)
-            v.speed = 0.0
-            return
 
         if self._goal_distance(v) <= self.envp.goal_radius:
             setattr(self, reached_attr, True)
@@ -402,13 +388,6 @@ class SingleTargetFeatureEnv:
         v.x += math.cos(v.h) * travel
         v.y += math.sin(v.h) * travel
 
-        if travel + 1e-9 >= d:
-            v.x = v.goal_x
-            v.y = v.goal_y
-            setattr(self, reached_attr, True)
-            v.speed = 0.0
-            return
-
         if self._goal_distance(v) <= self.envp.goal_radius:
             setattr(self, reached_attr, True)
             v.speed = 0.0
@@ -439,8 +418,6 @@ class SingleTargetFeatureEnv:
             pts.append((sim.x, sim.y))
 
             if travel + 1e-9 >= d_goal:
-                sim.x, sim.y = goal_x, goal_y
-                pts.append((sim.x, sim.y))
                 break
 
         self.target_planned_path = pts
