@@ -449,7 +449,8 @@ class SingleTargetFeatureEnv:
         goal_ang_1 = self.rng.uniform(0.0, 2.0 * math.pi)
         agx, agy = self._point_on_big_circle(goal_ang_1)
         ah = math.atan2(agy - self.start_y, agx - self.start_x)
-        aspeed = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
+        # Vessel-1 samples from its own speed limits (agent dynamics), not target limits.
+        aspeed = self.rng.uniform(self.envp.min_speed, self.envp.max_speed)
         self.agent = Vessel(self.start_x, self.start_y, ah, aspeed, agx, agy)
         self.agent_start_speed = aspeed
         self.agent_start_pos = (self.agent.x, self.agent.y)
