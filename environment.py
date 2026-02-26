@@ -112,6 +112,10 @@ class SingleTargetFeatureEnv:
         self.target_standon_risk_steps = 0
         self.agent_control_source = "straight"
         self.target_control_source = "pure_pursuit"
+        self.agent_rl_latched = False
+        self.target_rl_latched = False
+        self.any_rl_ever_triggered = False
+        self.secondary_policy_fn = None
         self._screen = None
         self._clock = None
         self._font = None
@@ -131,6 +135,9 @@ class SingleTargetFeatureEnv:
         if self._screen is not None:
             pygame.quit()
             self._screen = None
+
+    def set_secondary_policy(self, fn) -> None:
+        self.secondary_policy_fn = fn
 
     def sx(self, x: float) -> int:
         return int(round(x * self.envp.pixels_per_meter))
@@ -652,24 +659,35 @@ class SingleTargetFeatureEnv:
 
         self.target_planned_path = pts
 
-    def get_obs(self) -> np.ndarray:
+    def _get_obs_for_perspective(self, own: Vessel, other: Vessel, own_is_agent: bool) -> np.ndarray:
+        own_speed_den = self.envp.max_speed if own_is_agent else self.envp.target_max_speed
+        other_speed_den = self.envp.target_max_speed if own_is_agent else self.envp.max_speed
         return np.asarray(
             [
-                self.agent.x / self.envp.world_w,
-                self.agent.y / self.envp.world_h,
-                self.agent.h / math.pi,
-                self.agent.speed / self.envp.max_speed,
-                self.agent.goal_x / self.envp.world_w,
-                self.agent.goal_y / self.envp.world_h,
-                self.target.x / self.envp.world_w,
-                self.target.y / self.envp.world_h,
-                self.target.h / math.pi,
-                self.target.speed / self.envp.target_max_speed,
-                self.target.goal_x / self.envp.world_w,
-                self.target.goal_y / self.envp.world_h,
+                own.x / self.envp.world_w,
+                own.y / self.envp.world_h,
+                own.h / math.pi,
+                own.speed / own_speed_den,
+                own.goal_x / self.envp.world_w,
+                own.goal_y / self.envp.world_h,
+                other.x / self.envp.world_w,
+                other.y / self.envp.world_h,
+                other.h / math.pi,
+                other.speed / other_speed_den,
+                other.goal_x / self.envp.world_w,
+                other.goal_y / self.envp.world_h,
             ],
             dtype=np.float32,
         )
+
+    def _get_obs_agent_perspective(self) -> np.ndarray:
+        return self._get_obs_for_perspective(self.agent, self.target, own_is_agent=True)
+
+    def _get_obs_target_perspective(self) -> np.ndarray:
+        return self._get_obs_for_perspective(self.target, self.agent, own_is_agent=False)
+
+    def get_obs(self) -> np.ndarray:
+        return self._get_obs_agent_perspective()
 
     def reset(self, seed: Optional[int] = None) -> np.ndarray:
         if seed is not None:
@@ -747,6 +765,9 @@ class SingleTargetFeatureEnv:
         self.target_standon_risk_steps = 0
         self.agent_control_source = "straight"
         self.target_control_source = "pure_pursuit"
+        self.agent_rl_latched = False
+        self.target_rl_latched = False
+        self.any_rl_ever_triggered = False
 
         # Episode termination is fixed-time or both-reached (whichever occurs first).
         self.max_steps = max(1, int(round(self.envp.episode_seconds / self.envp.dt)))
@@ -755,6 +776,26 @@ class SingleTargetFeatureEnv:
         self._build_target_planned_path(sx2, sy2, sh2, sp2, gx2, gy2)
 
         return self.get_obs()
+
+    def _select_rl_action_for_vessel(
+        self, vessel_name: str, external_action: np.ndarray
+    ) -> Tuple[Optional[Tuple[float, float]], str]:
+        if vessel_name == "agent":
+            if not self.agent_rl_active:
+                return None, ""
+            a = np.asarray(external_action, dtype=np.float32).reshape(-1)
+            if a.size < 2:
+                return None, ""
+            return (clamp(float(a[0]), -1.0, 1.0), clamp(float(a[1]), -1.0, 1.0)), "rl_external"
+
+        if not self.target_rl_active:
+            return None, ""
+        if self.secondary_policy_fn is None:
+            return None, ""
+        a = np.asarray(self.secondary_policy_fn(self._get_obs_target_perspective()), dtype=np.float32).reshape(-1)
+        if a.size < 2:
+            return None, ""
+        return (clamp(float(a[0]), -1.0, 1.0), clamp(float(a[1]), -1.0, 1.0)), "rl_internal"
 
     def step(self, action: Union[np.ndarray, Tuple[float, float], list]) -> Tuple[np.ndarray, float, bool, Dict[str, float | str | int]]:
         a = np.asarray(action, dtype=np.float32).reshape(-1)
@@ -855,15 +896,18 @@ class SingleTargetFeatureEnv:
             and not self.target_reached
         )
 
-        # Latch: once RL activates for the first time, it stays active until episode end.
-        if agent_rl_trigger or target_rl_trigger:
-            self.rl_ever_triggered = True
+        if agent_rl_trigger:
+            self.agent_rl_latched = True
+        if target_rl_trigger:
+            self.target_rl_latched = True
 
-        self.agent_rl_active = self.rl_ever_triggered and not self.agent_reached
-        self.target_rl_active = self.rl_ever_triggered and not self.target_reached
+        self.agent_rl_active = self.agent_rl_latched and not self.agent_reached
+        self.target_rl_active = self.target_rl_latched and not self.target_reached
+        self.any_rl_ever_triggered = self.any_rl_ever_triggered or self.agent_rl_latched or self.target_rl_latched
+        self.rl_ever_triggered = self.any_rl_ever_triggered
 
         early_cutoff_steps = max(1, int(self.envp.no_takeover_early_done_steps))
-        if (not self.reset_has_takeover_path) and (not self.rl_ever_triggered) and (self.step_idx + 1) >= early_cutoff_steps:
+        if (not self.reset_has_takeover_path) and (not self.any_rl_ever_triggered) and (self.step_idx + 1) >= early_cutoff_steps:
             self.step_idx += 1
             self.time += self.envp.dt
             d_agent = self._goal_distance(self.agent)
@@ -910,9 +954,10 @@ class SingleTargetFeatureEnv:
         was_agent_active = not self.agent_reached
         was_target_active = not self.target_reached
         for _ in range(max(1, self.envp.substeps)):
-            if self.agent_rl_active:
-                self.agent_control_source = "rl"
-                self._advance_controlled(self.agent, "agent_reached", rudder_cmd, throttle_cmd, h)
+            agent_rl_cmd, agent_rl_src = self._select_rl_action_for_vessel("agent", a)
+            if agent_rl_cmd is not None:
+                self.agent_control_source = agent_rl_src
+                self._advance_controlled(self.agent, "agent_reached", agent_rl_cmd[0], agent_rl_cmd[1], h)
             else:
                 ar, at, asrc = self._fallback_colregs_action(
                     "agent", self.colregs_scenario, self.agent_role, self.agent_standon_escalated
@@ -925,9 +970,10 @@ class SingleTargetFeatureEnv:
                 else:
                     self._advance_straight(self.agent, "agent_reached", h)
 
-            if self.target_rl_active:
-                self.target_control_source = "rl"
-                self._advance_controlled(self.target, "target_reached", rudder_cmd, throttle_cmd, h)
+            target_rl_cmd, target_rl_src = self._select_rl_action_for_vessel("target", a)
+            if target_rl_cmd is not None:
+                self.target_control_source = target_rl_src
+                self._advance_controlled(self.target, "target_reached", target_rl_cmd[0], target_rl_cmd[1], h)
             else:
                 tr, tt, tsrc = self._fallback_colregs_action(
                     "target", self.colregs_scenario, self.target_role, self.target_standon_escalated
