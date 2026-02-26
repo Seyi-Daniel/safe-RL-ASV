@@ -106,6 +106,12 @@ class SingleTargetFeatureEnv:
         self.overtaking_clear_steps = 0
         self.encounter_latched = False
         self.geometry_scenario = "none"
+        self.agent_standon_escalated = False
+        self.target_standon_escalated = False
+        self.agent_standon_risk_steps = 0
+        self.target_standon_risk_steps = 0
+        self.agent_control_source = "straight"
+        self.target_control_source = "pure_pursuit"
         self._screen = None
         self._clock = None
         self._font = None
@@ -543,6 +549,46 @@ class SingleTargetFeatureEnv:
             setattr(self, reached_attr, True)
             v.speed = 0.0
 
+    def _advance_hold_course_speed(self, v: Vessel, reached_attr: str, dt: float) -> None:
+        if getattr(self, reached_attr):
+            return
+
+        d = self._goal_distance(v)
+        if d <= self.envp.goal_radius:
+            setattr(self, reached_attr, True)
+            v.speed = 0.0
+            return
+
+        travel = min(v.speed * dt, d)
+        v.x += math.cos(v.h) * travel
+        v.y += math.sin(v.h) * travel
+
+        if self._goal_distance(v) <= self.envp.goal_radius:
+            setattr(self, reached_attr, True)
+            v.speed = 0.0
+
+    def _fallback_colregs_action(self, vessel_name: str, scenario: str, role: str, standon_escalated: bool) -> Tuple[float, float, str]:
+        if scenario == "head_on":
+            return self.envp.fallback_starboard_rudder_cmd, self.envp.fallback_headon_throttle_cmd, "starboard_avoid"
+
+        if scenario == "crossing" and role == "give_way":
+            return self.envp.fallback_starboard_rudder_cmd, self.envp.fallback_crossing_throttle_cmd, "starboard_avoid"
+
+        if scenario == "crossing" and role == "stand_on":
+            if standon_escalated:
+                return self.envp.fallback_starboard_rudder_cmd, self.envp.fallback_crossing_throttle_cmd, "standon_escalation"
+            return 0.0, 0.0, "hold_course_speed"
+
+        if scenario == "overtaking" and role == "give_way":
+            return self.envp.fallback_starboard_rudder_cmd, self.envp.fallback_crossing_throttle_cmd, "starboard_avoid"
+
+        if scenario == "overtaking" and role == "stand_on":
+            return 0.0, 0.0, "hold_course_speed"
+
+        if vessel_name == "target":
+            return 0.0, 0.0, "pure_pursuit"
+        return 0.0, 0.0, "straight"
+
     def _advance_controlled(self, v: Vessel, reached_attr: str, rudder_cmd: float, throttle_cmd: float, dt: float) -> None:
         if getattr(self, reached_attr):
             return
@@ -695,6 +741,12 @@ class SingleTargetFeatureEnv:
         self.overtaking_clear_steps = 0
         self.encounter_latched = False
         self.geometry_scenario = "none"
+        self.agent_standon_escalated = False
+        self.target_standon_escalated = False
+        self.agent_standon_risk_steps = 0
+        self.target_standon_risk_steps = 0
+        self.agent_control_source = "straight"
+        self.target_control_source = "pure_pursuit"
 
         # Episode termination is fixed-time or both-reached (whichever occurs first).
         self.max_steps = max(1, int(round(self.envp.episode_seconds / self.envp.dt)))
@@ -733,6 +785,8 @@ class SingleTargetFeatureEnv:
                 "target_distance_from_start": float(self._distance_from_start(self.target, self.target_start_pos)),
                 "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
                 "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
+                "agent_control_source": self.agent_control_source,
+                "target_control_source": self.target_control_source,
             }
             return self.get_obs(), 0.0, False, info
 
@@ -752,6 +806,40 @@ class SingleTargetFeatureEnv:
 
         agent_dist = self._distance_from_start(self.agent, self.agent_start_pos)
         target_dist = self._distance_from_start(self.target, self.target_start_pos)
+
+        standon_active = self.colregs_scenario in {"crossing", "overtaking"}
+        agent_standon_risk_now = (
+            standon_active
+            and self.agent_role == "stand_on"
+            and self.risk_of_collision
+            and tcpa <= self.envp.standon_escalation_tcpa
+            and dcpa <= self.envp.standon_escalation_dcpa
+        )
+        target_standon_risk_now = (
+            standon_active
+            and self.target_role == "stand_on"
+            and self.risk_of_collision
+            and tcpa <= self.envp.standon_escalation_tcpa
+            and dcpa <= self.envp.standon_escalation_dcpa
+        )
+
+        if agent_standon_risk_now:
+            self.agent_standon_risk_steps += 1
+            if self.agent_standon_risk_steps >= max(1, int(self.envp.standon_escalation_persistence_steps)):
+                self.agent_standon_escalated = True
+        else:
+            self.agent_standon_risk_steps = 0
+            if not standon_active or self.agent_role != "stand_on":
+                self.agent_standon_escalated = False
+
+        if target_standon_risk_now:
+            self.target_standon_risk_steps += 1
+            if self.target_standon_risk_steps >= max(1, int(self.envp.standon_escalation_persistence_steps)):
+                self.target_standon_escalated = True
+        else:
+            self.target_standon_risk_steps = 0
+            if not standon_active or self.target_role != "stand_on":
+                self.target_standon_escalated = False
 
         # Compute whether RL should trigger this step (un-latched).
         agent_rl_trigger = (
@@ -822,19 +910,37 @@ class SingleTargetFeatureEnv:
         was_agent_active = not self.agent_reached
         was_target_active = not self.target_reached
         for _ in range(max(1, self.envp.substeps)):
-            if self.agent_role == "give_way":
-                if self.agent_rl_active:
-                    self._advance_controlled(self.agent, "agent_reached", rudder_cmd, throttle_cmd, h)
+            if self.agent_rl_active:
+                self.agent_control_source = "rl"
+                self._advance_controlled(self.agent, "agent_reached", rudder_cmd, throttle_cmd, h)
+            else:
+                ar, at, asrc = self._fallback_colregs_action(
+                    "agent", self.colregs_scenario, self.agent_role, self.agent_standon_escalated
+                )
+                self.agent_control_source = asrc
+                if asrc in {"starboard_avoid", "standon_escalation"}:
+                    self._advance_controlled(self.agent, "agent_reached", ar, at, h)
+                elif asrc == "hold_course_speed":
+                    self._advance_hold_course_speed(self.agent, "agent_reached", h)
                 else:
                     self._advance_straight(self.agent, "agent_reached", h)
-            else:
-                self._advance_straight(self.agent, "agent_reached", h)
 
-            if self.target_role == "give_way" and self.target_rl_active:
+            if self.target_rl_active:
+                self.target_control_source = "rl"
                 self._advance_controlled(self.target, "target_reached", rudder_cmd, throttle_cmd, h)
             else:
-                # Keep vessel-2 on its nominal pure pursuit path unless RL takeover is active.
-                self._advance_target(h)
+                tr, tt, tsrc = self._fallback_colregs_action(
+                    "target", self.colregs_scenario, self.target_role, self.target_standon_escalated
+                )
+                self.target_control_source = tsrc
+                if tsrc in {"starboard_avoid", "standon_escalation"}:
+                    self._advance_controlled(self.target, "target_reached", tr, tt, h)
+                elif tsrc == "hold_course_speed":
+                    self._advance_hold_course_speed(self.target, "target_reached", h)
+                elif tsrc == "pure_pursuit":
+                    self._advance_target(h)
+                else:
+                    self._advance_straight(self.target, "target_reached", h)
 
         if was_agent_active:
             self.agent_steps_taken += 1
@@ -896,6 +1002,8 @@ class SingleTargetFeatureEnv:
             "target_distance_from_start": float(target_dist),
             "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
             "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
+            "agent_control_source": self.agent_control_source,
+            "target_control_source": self.target_control_source,
         }
 
         # Show the RL takeover overlay exactly once per episode, on the first step RL activates.

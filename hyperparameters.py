@@ -65,6 +65,13 @@ class EnvParams:
     overtaking_clear_distance: float = 40.0
     overtaking_clear_steps_required: int = 5
 
+    fallback_starboard_rudder_cmd: float = 0.6
+    fallback_headon_throttle_cmd: float = -0.15
+    fallback_crossing_throttle_cmd: float = -0.05
+    standon_escalation_tcpa: float = 20.0
+    standon_escalation_dcpa: float = 12.0
+    standon_escalation_persistence_steps: int = 3
+
 
 @dataclass
 class RewardParams:
