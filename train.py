@@ -130,6 +130,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save-every", type=int, default=TrainParams().save_every)
     p.add_argument("--out-dir", type=str, default=TrainParams().out_dir)
     p.add_argument("--render", action="store_true", help="render during training")
+    p.add_argument("--shared-dual-control", action="store_true", help="reuse actor as secondary internal policy during training")
     p.add_argument("--no-render", dest="render", action="store_false")
     p.set_defaults(render=False)
     return p.parse_args()
@@ -167,6 +168,12 @@ def main() -> None:
 
     agent = DDPGAgent(in_dim=obs_dim, hp=train_hp, device=device)
     replay = ReplayBuffer(train_hp.replay_size)
+
+    if args.shared_dual_control:
+        def _secondary_policy(obs: np.ndarray) -> np.ndarray:
+            return agent.act(obs, greedy=False)
+
+        env.set_secondary_policy(_secondary_policy)
 
     out_dir = Path(train_hp.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -71,6 +71,11 @@ class EnvParams:
     standon_escalation_tcpa: float = 20.0
     standon_escalation_dcpa: float = 12.0
     standon_escalation_persistence_steps: int = 3
+    encounter_enter_persistence_steps: int = 2
+    encounter_exit_persistence_steps: int = 3
+    collision_distance: float = 8.0
+    near_miss_distance: float = 15.0
+    safe_pass_distance: float = 25.0
 
 
 @dataclass
@@ -82,6 +87,16 @@ class RewardParams:
 
     # terminal safety
     out_of_bounds_penalty: float = -8.0
+    collision_penalty: float = -20.0
+    near_miss_penalty: float = -2.5
+    unsafe_proximity_penalty_weight: float = 0.05
+    safe_pass_bonus: float = 0.5
+    give_way_early_action_bonus: float = 0.2
+    late_action_penalty: float = -0.4
+    stand_on_hold_bonus: float = 0.1
+    stand_on_unnecessary_action_penalty: float = -0.2
+    crossing_ahead_penalty: float = -0.5
+    oscillation_penalty_weight: float = 0.02
 
 
 @dataclass
