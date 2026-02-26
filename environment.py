@@ -818,16 +818,23 @@ class SingleTargetFeatureEnv:
                 "tcpa": float(self.last_tcpa),
                 "risk_of_collision": int(self.risk_of_collision),
                 "colregs_scenario": self.colregs_scenario,
+                "geometry_scenario": self.geometry_scenario,
+                "encounter_latched": int(self.encounter_latched),
+                "overtaking_latched": int(self.overtaking_latched),
                 "agent_role": self.agent_role,
                 "target_role": self.target_role,
                 "agent_rl_active": int(self.agent_rl_active),
                 "target_rl_active": int(self.target_rl_active),
+                "agent_rl_latched": int(self.agent_rl_latched),
+                "target_rl_latched": int(self.target_rl_latched),
                 "agent_distance_from_start": float(self._distance_from_start(self.agent, self.agent_start_pos)),
                 "target_distance_from_start": float(self._distance_from_start(self.target, self.target_start_pos)),
                 "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
                 "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
                 "agent_control_source": self.agent_control_source,
                 "target_control_source": self.target_control_source,
+                "agent_standon_escalated": int(self.agent_standon_escalated),
+                "target_standon_escalated": int(self.target_standon_escalated),
             }
             return self.get_obs(), 0.0, False, info
 
@@ -837,6 +844,7 @@ class SingleTargetFeatureEnv:
         self.agent_role = str(encounter["agent_role"])
         self.target_role = str(encounter["target_role"])
         self.overtaking_latched = bool(encounter["overtaking_latched"])
+        self.encounter_latched = bool(encounter["encounter_latched"])
         self.agent_relative_bearing_deg = float(encounter["agent_bearing_deg"])
         self.target_relative_bearing_deg = float(encounter["target_bearing_deg"])
         self.last_tcpa = float(encounter["tcpa"])
@@ -937,14 +945,23 @@ class SingleTargetFeatureEnv:
                 "tcpa": float(tcpa),
                 "risk_of_collision": int(self.risk_of_collision),
                 "colregs_scenario": self.colregs_scenario,
+                "geometry_scenario": self.geometry_scenario,
+                "encounter_latched": int(self.encounter_latched),
+                "overtaking_latched": int(self.overtaking_latched),
                 "agent_role": self.agent_role,
                 "target_role": self.target_role,
                 "agent_rl_active": int(self.agent_rl_active),
                 "target_rl_active": int(self.target_rl_active),
+                "agent_rl_latched": int(self.agent_rl_latched),
+                "target_rl_latched": int(self.target_rl_latched),
                 "agent_distance_from_start": float(agent_dist),
                 "target_distance_from_start": float(target_dist),
                 "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
                 "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
+                "agent_control_source": self.agent_control_source,
+                "target_control_source": self.target_control_source,
+                "agent_standon_escalated": int(self.agent_standon_escalated),
+                "target_standon_escalated": int(self.target_standon_escalated),
             }
             self.prev_agent_rl_active = self.agent_rl_active
             self.prev_target_rl_active = self.target_rl_active
@@ -1040,16 +1057,23 @@ class SingleTargetFeatureEnv:
             "tcpa": float(tcpa),
             "risk_of_collision": int(self.risk_of_collision),
             "colregs_scenario": self.colregs_scenario,
+            "geometry_scenario": self.geometry_scenario,
+            "encounter_latched": int(self.encounter_latched),
+            "overtaking_latched": int(self.overtaking_latched),
             "agent_role": self.agent_role,
             "target_role": self.target_role,
             "agent_rl_active": int(self.agent_rl_active),
             "target_rl_active": int(self.target_rl_active),
+            "agent_rl_latched": int(self.agent_rl_latched),
+            "target_rl_latched": int(self.target_rl_latched),
             "agent_distance_from_start": float(agent_dist),
             "target_distance_from_start": float(target_dist),
             "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
             "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
             "agent_control_source": self.agent_control_source,
             "target_control_source": self.target_control_source,
+            "agent_standon_escalated": int(self.agent_standon_escalated),
+            "target_standon_escalated": int(self.target_standon_escalated),
         }
 
         # Show the RL takeover overlay exactly once per episode, on the first step RL activates.
@@ -1065,7 +1089,11 @@ class SingleTargetFeatureEnv:
             self.risk_overlay_payload = {
                 "step": int(self.step_idx),
                 "time": float(self.time),
+                "geometry": self.geometry_scenario,
                 "scenario": self.colregs_scenario,
+                "risk_of_collision": int(self.risk_of_collision),
+                "encounter_latched": int(self.encounter_latched),
+                "overtaking_latched": int(self.overtaking_latched),
                 "agent_role": self.agent_role,
                 "target_role": self.target_role,
                 "dcpa": float(self.last_dcpa),
@@ -1074,6 +1102,12 @@ class SingleTargetFeatureEnv:
                 "target_bearing": float(self.target_relative_bearing_deg),
                 "agent_rl_active": int(self.agent_rl_active),
                 "target_rl_active": int(self.target_rl_active),
+                "agent_rl_latched": int(self.agent_rl_latched),
+                "target_rl_latched": int(self.target_rl_latched),
+                "agent_control_source": self.agent_control_source,
+                "target_control_source": self.target_control_source,
+                "agent_standon_escalated": int(self.agent_standon_escalated),
+                "target_standon_escalated": int(self.target_standon_escalated),
                 "agent_distance": float(agent_dist),
                 "target_distance": float(target_dist),
                 "takeover_distance": float(self.envp.rl_takeover_distance),
@@ -1093,17 +1127,29 @@ class SingleTargetFeatureEnv:
         panel.fill((0, 0, 0, 155))
 
         p = self.risk_overlay_payload
-        tcpa = p.get("tcpa", float("inf"))
-        tcpa_txt = "inf" if (isinstance(tcpa, float) and math.isinf(tcpa)) else f"{float(tcpa):.1f}s"
-        give_way_vessel = "V1 (agent)" if p.get("agent_rl_active", 0) else "V2 (target)" if p.get("target_rl_active", 0) else "unknown"
+        tcpa = float(p.get("tcpa", float("inf")))
+        tcpa_txt = "inf" if math.isinf(tcpa) else f"{tcpa:.1f}s"
+        agent_active = int(p.get("agent_rl_active", 0))
+        target_active = int(p.get("target_rl_active", 0))
+        if agent_active and target_active:
+            rl_summary = "RL control active on BOTH vessels"
+        elif agent_active:
+            rl_summary = "RL control active on V1(agent); V2 uses fallback"
+        elif target_active:
+            rl_summary = "RL control active on V2(target); V1 uses fallback"
+        else:
+            rl_summary = "No vessel currently under RL control"
+
         lines = [
-            "⚠  RL TAKEOVER — COLLISION AVOIDANCE ACTIVE",
+            "⚠  RL TAKEOVER / ENCOUNTER STATUS",
             f"Step {int(p.get('step', self.step_idx))}   Sim time {float(p.get('time', self.time)):.1f}s",
-            f"COLREGS scenario: {p.get('scenario', self.colregs_scenario).upper()}",
-            f"Give-way vessel: {give_way_vessel}   Stand-on vessel: {'V2 (target)' if p.get('agent_rl_active', 0) else 'V1 (agent)'}",
-            f"DCPA = {float(p.get('dcpa', self.last_dcpa)):.1f}m   TCPA = {tcpa_txt}",
-            f"V1→V2 bearing = {float(p.get('agent_bearing', self.agent_relative_bearing_deg)):.1f}°   V2→V1 bearing = {float(p.get('target_bearing', self.target_relative_bearing_deg)):.1f}°",
-            "RL model now controls give-way vessel for remainder of episode.",
+            f"Geometry={str(p.get('geometry', self.geometry_scenario)).upper()}   Scenario={str(p.get('scenario', self.colregs_scenario)).upper()}   Risk={int(p.get('risk_of_collision', int(self.risk_of_collision)))}",
+            f"Encounter latched={int(p.get('encounter_latched', int(self.encounter_latched)))}   Overtaking latched={int(p.get('overtaking_latched', int(self.overtaking_latched)))}",
+            f"V1 role={p.get('agent_role', self.agent_role)}  rl_active={agent_active}  rl_latched={int(p.get('agent_rl_latched', int(self.agent_rl_latched)))}  src={p.get('agent_control_source', self.agent_control_source)}  escalated={int(p.get('agent_standon_escalated', int(self.agent_standon_escalated)))}",
+            f"V2 role={p.get('target_role', self.target_role)}  rl_active={target_active}  rl_latched={int(p.get('target_rl_latched', int(self.target_rl_latched)))}  src={p.get('target_control_source', self.target_control_source)}  escalated={int(p.get('target_standon_escalated', int(self.target_standon_escalated)))}",
+            f"DCPA={float(p.get('dcpa', self.last_dcpa)):.1f}m  TCPA={tcpa_txt}  V1→V2={float(p.get('agent_bearing', self.agent_relative_bearing_deg)):.1f}°  V2→V1={float(p.get('target_bearing', self.target_relative_bearing_deg)):.1f}°",
+            f"Distances from start: V1={float(p.get('agent_distance', 0.0)):.1f}m  V2={float(p.get('target_distance', 0.0)):.1f}m  takeover>= {float(p.get('takeover_distance', self.envp.rl_takeover_distance)):.1f}m",
+            rl_summary,
             "Press SPACE or ENTER to dismiss and continue.",
         ]
 
@@ -1179,19 +1225,19 @@ class SingleTargetFeatureEnv:
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
 
         hud0 = self._font.render(
-            f"step={self.step_idx}  t={self.time:.1f}s  paused={int(self.paused)}[SPACE]  paths[P]={int(self.show_planned_paths)}  rl_latched={int(self.rl_ever_triggered)}",
+            f"step={self.step_idx} t={self.time:.1f}s pause={int(self.paused)}[SPACE] paths[P]={int(self.show_planned_paths)} any_rl={int(self.any_rl_ever_triggered)} ovtk_latched={int(self.overtaking_latched)}",
             True, (255, 255, 255),
         )
         hud1 = self._font.render(
-            f"COLREGS={self.colregs_scenario}  risk={'YES' if self.risk_of_collision else 'NO'}  DCPA={self.last_dcpa:.1f}m  TCPA={tcpa_txt}  V1→V2_BRG={self.agent_relative_bearing_deg:.1f}°  V2→V1_BRG={self.target_relative_bearing_deg:.1f}°",
+            f"geom={self.geometry_scenario} scen={self.colregs_scenario} risk={'YES' if self.risk_of_collision else 'NO'} latched={int(self.encounter_latched)} DCPA={self.last_dcpa:.1f}m TCPA={tcpa_txt} BRG V1→V2={self.agent_relative_bearing_deg:.1f}° V2→V1={self.target_relative_bearing_deg:.1f}°",
             True, (255, 240, 170),
         )
         hud2 = self._font.render(
-            f"V1(agent) role={self.agent_role}  rl_active={int(self.agent_rl_active)}  reached={int(self.agent_reached)}  spd={self.agent.speed:.2f}m/s  hdg={math.degrees(self.agent.h):.1f}°",
+            f"V1 role={self.agent_role} rl_act={int(self.agent_rl_active)} rl_lat={int(self.agent_rl_latched)} ctrl={self.agent_control_source} esc={int(self.agent_standon_escalated)} reached={int(self.agent_reached)} spd={self.agent.speed:.2f}",
             True, (170, 220, 255),
         )
         hud3 = self._font.render(
-            f"V2(target) role={self.target_role}  rl_active={int(self.target_rl_active)}  reached={int(self.target_reached)}  spd={self.target.speed:.2f}m/s  hdg={math.degrees(self.target.h):.1f}°",
+            f"V2 role={self.target_role} rl_act={int(self.target_rl_active)} rl_lat={int(self.target_rl_latched)} ctrl={self.target_control_source} esc={int(self.target_standon_escalated)} reached={int(self.target_reached)} spd={self.target.speed:.2f}",
             True, (255, 190, 190),
         )
         surf.blit(hud0, (10, 8))
