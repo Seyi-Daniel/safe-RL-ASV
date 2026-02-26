@@ -492,10 +492,8 @@ class SingleTargetFeatureEnv:
         self.prev_agent_rl_active = False
         self.prev_target_rl_active = False
 
-        t1 = self.prev_goal_d_agent / max(1e-6, self.agent.speed)
-        t2 = self.prev_goal_d_target / max(1e-6, sp2)
-        episode_time = max(self.envp.episode_seconds, 1.8 * max(t1, t2) + 20.0)
-        self.max_steps = max(1, int(round(episode_time / self.envp.dt)))
+        # Episode termination is fixed-time or both-reached (whichever occurs first).
+        self.max_steps = max(1, int(round(self.envp.episode_seconds / self.envp.dt)))
 
         self._build_agent_planned_path()
         self._build_target_planned_path(sx2, sy2, sh2, sp2, gx2, gy2)
