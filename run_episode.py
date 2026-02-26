@@ -73,6 +73,13 @@ def main() -> None:
         policy.load_state_dict(state)
         policy.eval()
 
+        def _secondary_policy(obs: np.ndarray) -> np.ndarray:
+            with torch.no_grad():
+                s = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+                return policy(s).squeeze(0).detach().cpu().numpy().astype(np.float32)
+
+        env.set_secondary_policy(_secondary_policy)
+
     summaries = []
     for ep in range(1, args.episodes + 1):
         obs = env.reset(seed=args.seed + ep)
