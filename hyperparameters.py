@@ -60,6 +60,8 @@ class EnvParams:
     dcpa_risk_threshold: float = 20.0
     tcpa_risk_threshold: float = 90.0
     rl_takeover_distance: float = 35.0
+    reset_viable_episode_max_tries: int = 80
+    no_takeover_early_done_steps: int = 1
 
 
 @dataclass

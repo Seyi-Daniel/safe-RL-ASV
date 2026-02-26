@@ -173,19 +173,9 @@ class SingleTargetFeatureEnv:
         dcpa = math.hypot(cx, cy)
         return tcpa, dcpa
 
-    def _classify_colregs(self) -> Dict[str, float | str]:
-        # Do not classify if either vessel has already reached its goal.
-        if self.agent_reached or self.target_reached:
-            return {
-                "scenario": "safe",
-                "agent_role": "none",
-                "target_role": "none",
-                "agent_bearing_deg": 0.0,
-                "target_bearing_deg": 0.0,
-            }
-
-        own_bearing = self._relative_bearing_deg(self.agent, self.target)
-        tgt_bearing = self._relative_bearing_deg(self.target, self.agent)
+    def _classify_pair_colregs(self, agent: Vessel, target: Vessel) -> Dict[str, float | str]:
+        own_bearing = self._relative_bearing_deg(agent, target)
+        tgt_bearing = self._relative_bearing_deg(target, agent)
 
         head_on_half = self.envp.colregs_head_on_half_angle_deg
         head_on_min = (360.0 - head_on_half) % 360.0
@@ -207,10 +197,10 @@ class SingleTargetFeatureEnv:
 
         speed_eps = self.envp.colregs_speed_eps
         agent_overtaking = self._bearing_in_sector(tgt_bearing, crossing_max, overtaking_max) and (
-            self.agent.speed > self.target.speed + speed_eps
+            agent.speed > target.speed + speed_eps
         )
         target_overtaking = self._bearing_in_sector(own_bearing, crossing_max, overtaking_max) and (
-            self.target.speed > self.agent.speed + speed_eps
+            target.speed > agent.speed + speed_eps
         )
         if agent_overtaking and not target_overtaking:
             return {
@@ -229,7 +219,6 @@ class SingleTargetFeatureEnv:
                 "target_bearing_deg": tgt_bearing,
             }
 
-        # Crossing: target on agent's starboard bow (agent gives way per Rule 15).
         if self._bearing_in_sector(own_bearing, head_on_half, crossing_max):
             return {
                 "scenario": "crossing",
@@ -239,7 +228,6 @@ class SingleTargetFeatureEnv:
                 "target_bearing_deg": tgt_bearing,
             }
 
-        # Crossing: target on agent's port bow (agent stands on, target gives way per Rule 15).
         if self._bearing_in_sector(own_bearing, 360.0 - crossing_max, head_on_min):
             return {
                 "scenario": "crossing",
@@ -255,6 +243,91 @@ class SingleTargetFeatureEnv:
             "agent_bearing_deg": own_bearing,
             "target_bearing_deg": tgt_bearing,
         }
+
+    def _classify_colregs(self) -> Dict[str, float | str]:
+        # Do not classify if either vessel has already reached its goal.
+        if self.agent_reached or self.target_reached:
+            return {
+                "scenario": "safe",
+                "agent_role": "none",
+                "target_role": "none",
+                "agent_bearing_deg": 0.0,
+                "target_bearing_deg": 0.0,
+            }
+        return self._classify_pair_colregs(self.agent, self.target)
+
+    def _reset_sample_triggers_takeover(self, agent: Vessel, target: Vessel) -> bool:
+        agent_sim = Vessel(agent.x, agent.y, agent.h, agent.speed, agent.goal_x, agent.goal_y, agent.rudder, agent.throttle)
+        target_sim = Vessel(target.x, target.y, target.h, target.speed, target.goal_x, target.goal_y, target.rudder, target.throttle)
+
+        agent_reached = False
+        target_reached = False
+        agent_start = (agent_sim.x, agent_sim.y)
+        target_start = (target_sim.x, target_sim.y)
+        h = self.envp.dt / max(1, self.envp.substeps)
+
+        for _ in range(self.max_steps):
+            if agent_reached or target_reached:
+                encounter = {
+                    "agent_role": "none",
+                    "target_role": "none",
+                }
+            else:
+                encounter = self._classify_pair_colregs(agent_sim, target_sim)
+
+            tcpa, dcpa = self._tcpa_dcpa(agent_sim, target_sim)
+            risk = (0.0 <= tcpa <= self.envp.tcpa_risk_threshold) and (dcpa <= self.envp.dcpa_risk_threshold)
+            agent_dist = self._distance_from_start(agent_sim, agent_start)
+            target_dist = self._distance_from_start(target_sim, target_start)
+            if (
+                risk
+                and encounter["agent_role"] == "give_way"
+                and not agent_reached
+                and agent_dist >= self.envp.rl_takeover_distance
+            ):
+                return True
+            if (
+                risk
+                and encounter["target_role"] == "give_way"
+                and not target_reached
+                and target_dist >= self.envp.rl_takeover_distance
+            ):
+                return True
+
+            for _ in range(max(1, self.envp.substeps)):
+                if not agent_reached:
+                    d_agent = math.hypot(agent_sim.goal_x - agent_sim.x, agent_sim.goal_y - agent_sim.y)
+                    if d_agent <= self.envp.goal_radius:
+                        agent_reached = True
+                        agent_sim.speed = 0.0
+                    else:
+                        travel = min(agent_sim.speed * h, d_agent)
+                        agent_sim.x += math.cos(agent_sim.h) * travel
+                        agent_sim.y += math.sin(agent_sim.h) * travel
+                        if math.hypot(agent_sim.goal_x - agent_sim.x, agent_sim.goal_y - agent_sim.y) <= self.envp.goal_radius:
+                            agent_reached = True
+                            agent_sim.speed = 0.0
+
+                if not target_reached:
+                    d_target = math.hypot(target_sim.goal_x - target_sim.x, target_sim.goal_y - target_sim.y)
+                    if d_target <= self.envp.goal_radius:
+                        target_reached = True
+                        target_sim.speed = 0.0
+                    else:
+                        rudder_cmd = self._pure_pursuit_rudder_cmd(target_sim, target_sim.goal_x, target_sim.goal_y)
+                        self._integrate_rudder_heading(target_sim, rudder_cmd, h)
+                        target_sim.speed = clamp(target_sim.speed, self.envp.target_min_speed, self.envp.target_max_speed)
+                        travel = min(target_sim.speed * h, d_target)
+                        target_sim.x += travel * math.cos(target_sim.h)
+                        target_sim.y += travel * math.sin(target_sim.h)
+                        if math.hypot(target_sim.goal_x - target_sim.x, target_sim.goal_y - target_sim.y) <= self.envp.goal_radius:
+                            target_reached = True
+                            target_sim.speed = 0.0
+
+            if (agent_reached and target_reached) or self._outside(agent_sim) or self._outside(target_sim):
+                break
+
+        return False
 
     def _point_on_big_circle(self, ang: float) -> Tuple[float, float]:
         r = self.envp.target_outer_radius
@@ -445,25 +518,38 @@ class SingleTargetFeatureEnv:
         if seed is not None:
             self.rng.seed(seed)
 
-        # Vessel 1: center -> random point on big circle, straight-line heading.
-        goal_ang_1 = self.rng.uniform(0.0, 2.0 * math.pi)
-        agx, agy = self._point_on_big_circle(goal_ang_1)
-        ah = math.atan2(agy - self.start_y, agx - self.start_x)
-        # Vessel-1 samples from its own speed limits (agent dynamics), not target limits.
-        aspeed = self.rng.uniform(self.envp.min_speed, self.envp.max_speed)
-        self.agent = Vessel(self.start_x, self.start_y, ah, aspeed, agx, agy)
-        self.agent_start_speed = aspeed
-        self.agent_start_pos = (self.agent.x, self.agent.y)
+        max_tries = max(1, int(self.envp.reset_viable_episode_max_tries))
+        sampled_agent: Vessel | None = None
+        sampled_target: Vessel | None = None
+        for _ in range(max_tries):
+            goal_ang_1 = self.rng.uniform(0.0, 2.0 * math.pi)
+            agx, agy = self._point_on_big_circle(goal_ang_1)
+            ah = math.atan2(agy - self.start_y, agx - self.start_x)
+            aspeed = self.rng.uniform(self.envp.min_speed, self.envp.max_speed)
+            candidate_agent = Vessel(self.start_x, self.start_y, ah, aspeed, agx, agy)
+            candidate_target = self._sample_target_path()
+            if self._reset_sample_triggers_takeover(candidate_agent, candidate_target):
+                sampled_agent = candidate_agent
+                sampled_target = candidate_target
+                break
 
-        # Vessel 2: sampled pure-pursuit path endpoints on outer circle.
-        self.target = self._sample_target_path()
+        self.reset_has_takeover_path = sampled_agent is not None and sampled_target is not None
+        if sampled_agent is None or sampled_target is None:
+            sampled_agent = candidate_agent
+            sampled_target = candidate_target
+
+        self.agent = sampled_agent
+        self.target = sampled_target
+
         sx2, sy2 = self.target.x, self.target.y
         sh2 = self.target.h
         sp2 = self.target.speed
         gx2, gy2 = self.target.goal_x, self.target.goal_y
+
+        self.agent_start_speed = self.agent.speed
+        self.agent_start_pos = (self.agent.x, self.agent.y)
         self.target_start_speed = sp2
         self.target_start_pos = (self.target.x, self.target.y)
-
 
         self.time = 0.0
         self.step_idx = 0
@@ -567,6 +653,50 @@ class SingleTargetFeatureEnv:
 
         self.agent_rl_active = self.rl_ever_triggered and not self.agent_reached
         self.target_rl_active = self.rl_ever_triggered and not self.target_reached
+
+        early_cutoff_steps = max(1, int(self.envp.no_takeover_early_done_steps))
+        if (not self.reset_has_takeover_path) and (not self.rl_ever_triggered) and (self.step_idx + 1) >= early_cutoff_steps:
+            self.step_idx += 1
+            self.time += self.envp.dt
+            d_agent = self._goal_distance(self.agent)
+            d_target = self._goal_distance(self.target)
+            reward = self.rewp.living_penalty
+            reward += self.rewp.progress_weight * (self.prev_goal_d_agent - d_agent)
+            reward += self.rewp.progress_weight * (self.prev_goal_d_target - d_target)
+            self.prev_goal_d_agent = d_agent
+            self.prev_goal_d_target = d_target
+            info: Dict[str, float | str | int] = {
+                "reason": "no_takeover_trigger",
+                "agent_goal_distance": d_agent,
+                "target_goal_distance": d_target,
+                "agent_reached": int(self.agent_reached),
+                "target_reached": int(self.target_reached),
+                "rudder_cmd": rudder_cmd,
+                "throttle_cmd": throttle_cmd,
+                "agent_steps_taken": int(self.agent_steps_taken),
+                "target_steps_taken": int(self.target_steps_taken),
+                "agent_start_speed": float(self.agent_start_speed),
+                "target_start_speed": float(self.target_start_speed),
+                "agent_heading_deg": float(math.degrees(self.agent.h)),
+                "target_heading_deg": float(math.degrees(self.target.h)),
+                "agent_rudder_deg": float(math.degrees(self.agent.rudder)),
+                "target_rudder_deg": float(math.degrees(self.target.rudder)),
+                "dcpa": float(dcpa),
+                "tcpa": float(tcpa),
+                "risk_of_collision": int(self.risk_of_collision),
+                "colregs_scenario": self.colregs_scenario,
+                "agent_role": self.agent_role,
+                "target_role": self.target_role,
+                "agent_rl_active": int(self.agent_rl_active),
+                "target_rl_active": int(self.target_rl_active),
+                "agent_distance_from_start": float(agent_dist),
+                "target_distance_from_start": float(target_dist),
+                "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
+                "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
+            }
+            self.prev_agent_rl_active = self.agent_rl_active
+            self.prev_target_rl_active = self.target_rl_active
+            return self.get_obs(), float(reward), True, info
 
         h = self.envp.dt / max(1, self.envp.substeps)
         was_agent_active = not self.agent_reached
