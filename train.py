@@ -159,6 +159,7 @@ def main() -> None:
     )
 
     env = SingleTargetFeatureEnv(EnvParams(seed=args.seed), RewardParams(), render=args.render)
+    # Single source of truth for observation dimension: infer directly from environment output.
     obs_dim = int(env.reset(seed=args.seed).shape[0])
 
     agent = DDPGAgent(in_dim=obs_dim, hp=train_hp, device=device)

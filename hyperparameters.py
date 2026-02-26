@@ -77,7 +77,7 @@ class RewardParams:
 
 @dataclass
 class TrainParams:
-    # DDQN training
+    # DDPG-style continuous-control training
     episodes: int = 600
     batch_size: int = 256
     replay_size: int = 200_000
@@ -86,12 +86,12 @@ class TrainParams:
     learning_rate: float = 2e-4
     target_update: int = 4000
 
-    # epsilon schedule (linear in global environment steps)
+    # exploration noise schedule (linear in global environment steps)
     eps_start: float = 1.0
     eps_end: float = 0.05
     eps_decay_steps: int = 300_000
 
-    # network architecture: 10 -> hidden -> hidden -> 9 actions
+    # network backbone: obs_dim(=12 from env by default) -> hidden -> hidden -> 2 continuous actions
     hidden_dim: int = 256
 
     # reproducibility / checkpoints

@@ -10,7 +10,7 @@ import torch
 
 from environment import SingleTargetFeatureEnv
 from hyperparameters import EnvParams, RewardParams
-from policy import ACTION_DIM, ContinuousActor
+from policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,7 +54,8 @@ def main() -> None:
 
     if args.policy:
         ckpt = torch.load(args.policy, map_location=device)
-        obs_dim = int(ckpt.get("obs_dim", 12))
+        # Fallback dimension matches SingleTargetFeatureEnv.get_obs() default feature shape.
+        obs_dim = int(ckpt.get("obs_dim", DEFAULT_OBS_DIM))
         hidden_dim = int(ckpt.get("hidden_dim", args.hidden_dim))
         action_dim = int(ckpt.get("action_dim", ACTION_DIM))
         if action_dim != ACTION_DIM:
