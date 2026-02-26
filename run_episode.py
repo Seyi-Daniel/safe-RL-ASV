@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +39,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
     envp = EnvParams(
         world_w=args.world_w,
@@ -79,6 +84,7 @@ def main() -> None:
                 env.render()
                 continue
             if policy is None:
+                # Reproducible fallback actions because NumPy RNG is seeded at startup.
                 action = np.asarray(
                     [np.random.uniform(-1.0, 1.0), np.random.uniform(-1.0, 1.0)],
                     dtype=np.float32,
