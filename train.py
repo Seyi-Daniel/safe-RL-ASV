@@ -14,7 +14,7 @@ import torch.optim as optim
 
 from environment import SingleTargetFeatureEnv
 from hyperparameters import EnvParams, RewardParams, TrainParams
-from policy import DDQNQNet, N_ACTIONS
+from policy import ACTION_DIM, ContinuousActor, ContinuousCritic
 
 Transition = namedtuple("Transition", ("state", "action", "reward", "next_state", "done"))
 
@@ -34,62 +34,84 @@ class ReplayBuffer:
         return len(self.buf)
 
 
-class DDQNAgent:
+class DDPGAgent:
     def __init__(self, in_dim: int, hp: TrainParams, device: torch.device):
-        self.online = DDQNQNet(in_dim=in_dim, hidden_dim=hp.hidden_dim, n_actions=N_ACTIONS).to(device)
-        self.target = DDQNQNet(in_dim=in_dim, hidden_dim=hp.hidden_dim, n_actions=N_ACTIONS).to(device)
-        self.target.load_state_dict(self.online.state_dict())
+        self.actor = ContinuousActor(in_dim=in_dim, hidden_dim=hp.hidden_dim, action_dim=ACTION_DIM).to(device)
+        self.actor_tgt = ContinuousActor(in_dim=in_dim, hidden_dim=hp.hidden_dim, action_dim=ACTION_DIM).to(device)
+        self.actor_tgt.load_state_dict(self.actor.state_dict())
 
-        self.optimizer = optim.Adam(self.online.parameters(), lr=hp.learning_rate)
+        self.critic = ContinuousCritic(in_dim=in_dim, hidden_dim=hp.hidden_dim, action_dim=ACTION_DIM).to(device)
+        self.critic_tgt = ContinuousCritic(in_dim=in_dim, hidden_dim=hp.hidden_dim, action_dim=ACTION_DIM).to(device)
+        self.critic_tgt.load_state_dict(self.critic.state_dict())
+
+        self.actor_opt = optim.Adam(self.actor.parameters(), lr=hp.learning_rate)
+        self.critic_opt = optim.Adam(self.critic.parameters(), lr=hp.learning_rate)
+
         self.gamma = hp.gamma
         self.device = device
         self.eps_start = hp.eps_start
         self.eps_end = hp.eps_end
         self.eps_decay_steps = hp.eps_decay_steps
-
+        self.tau = 0.005
         self.global_step = 0
 
     def epsilon(self) -> float:
         frac = min(1.0, self.global_step / max(1, self.eps_decay_steps))
         return self.eps_start + frac * (self.eps_end - self.eps_start)
 
-    def act(self, obs: np.ndarray, greedy: bool = False) -> int:
-        if not greedy and random.random() < self.epsilon():
-            return random.randrange(N_ACTIONS)
+    def act(self, obs: np.ndarray, greedy: bool = False) -> np.ndarray:
         with torch.no_grad():
             s = torch.from_numpy(obs).float().unsqueeze(0).to(self.device)
-            return int(torch.argmax(self.online(s), dim=1).item())
+            a = self.actor(s).squeeze(0).cpu().numpy()
+        if not greedy:
+            noise_scale = self.epsilon()
+            a = a + noise_scale * np.random.normal(0.0, 0.25, size=(ACTION_DIM,)).astype(np.float32)
+        return np.clip(a, -1.0, 1.0).astype(np.float32)
 
-    def update(self, replay: ReplayBuffer, batch_size: int) -> float | None:
+    def _soft_update(self, src: torch.nn.Module, tgt: torch.nn.Module) -> None:
+        with torch.no_grad():
+            for p, tp in zip(src.parameters(), tgt.parameters()):
+                tp.data.mul_(1.0 - self.tau)
+                tp.data.add_(self.tau * p.data)
+
+    def update(self, replay: ReplayBuffer, batch_size: int) -> tuple[float, float] | None:
         if len(replay) < batch_size:
             return None
 
         batch = replay.sample(batch_size)
         s = torch.from_numpy(np.stack(batch.state)).float().to(self.device)
-        a = torch.tensor(batch.action, dtype=torch.long, device=self.device).unsqueeze(1)
+        a = torch.from_numpy(np.stack(batch.action)).float().to(self.device)
         r = torch.tensor(batch.reward, dtype=torch.float32, device=self.device).unsqueeze(1)
         ns = torch.from_numpy(np.stack(batch.next_state)).float().to(self.device)
         d = torch.tensor(batch.done, dtype=torch.float32, device=self.device).unsqueeze(1)
 
-        q_sa = self.online(s).gather(1, a)
         with torch.no_grad():
-            next_online_a = torch.argmax(self.online(ns), dim=1, keepdim=True)
-            next_target_q = self.target(ns).gather(1, next_online_a)
-            target = r + (1.0 - d) * self.gamma * next_target_q
+            next_a = self.actor_tgt(ns)
+            target_q = self.critic_tgt(ns, next_a)
+            y = r + (1.0 - d) * self.gamma * target_q
 
-        loss = F.smooth_l1_loss(q_sa, target)
-        self.optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.online.parameters(), 5.0)
-        self.optimizer.step()
-        return float(loss.item())
+        q = self.critic(s, a)
+        critic_loss = F.smooth_l1_loss(q, y)
+        self.critic_opt.zero_grad()
+        critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 5.0)
+        self.critic_opt.step()
 
-    def sync_target(self) -> None:
-        self.target.load_state_dict(self.online.state_dict())
+        pred_a = self.actor(s)
+        actor_loss = -self.critic(s, pred_a).mean()
+        self.actor_opt.zero_grad()
+        actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 5.0)
+        self.actor_opt.step()
+
+        self._soft_update(self.actor, self.actor_tgt)
+        self._soft_update(self.critic, self.critic_tgt)
+
+        return float(actor_loss.item()), float(critic_loss.item())
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train DDQN policy (continuous rudder/throttle interface; scripted boat motion)")
+    p = argparse.ArgumentParser(description="Train continuous-control policy (DDPG-style)")
     p.add_argument("--episodes", type=int, default=TrainParams().episodes)
     p.add_argument("--batch-size", type=int, default=TrainParams().batch_size)
     p.add_argument("--replay-size", type=int, default=TrainParams().replay_size)
@@ -139,7 +161,7 @@ def main() -> None:
     env = SingleTargetFeatureEnv(EnvParams(seed=args.seed), RewardParams(), render=args.render)
     obs_dim = int(env.reset(seed=args.seed).shape[0])
 
-    agent = DDQNAgent(in_dim=obs_dim, hp=train_hp, device=device)
+    agent = DDPGAgent(in_dim=obs_dim, hp=train_hp, device=device)
     replay = ReplayBuffer(train_hp.replay_size)
 
     out_dir = Path(train_hp.out_dir)
@@ -150,7 +172,8 @@ def main() -> None:
         obs = env.reset(seed=args.seed + ep)
         done = False
         ep_return = 0.0
-        ep_loss = 0.0
+        ep_actor_loss = 0.0
+        ep_critic_loss = 0.0
         loss_count = 0
 
         while not done:
@@ -158,31 +181,27 @@ def main() -> None:
                 env.render()
                 continue
 
-            action_idx = agent.act(obs)
-            with torch.no_grad():
-                s_t = torch.from_numpy(obs).float().unsqueeze(0).to(device)
-                q = agent.online(s_t).squeeze(0).detach().cpu().numpy()
-            action = np.asarray([np.tanh(q[0]), np.tanh(q[1])], dtype=np.float32)
+            action = agent.act(obs)
             next_obs, reward, done, _ = env.step(action)
 
-            replay.push(obs, action_idx, reward, next_obs, done)
+            replay.push(obs, action, reward, next_obs, done)
             obs = next_obs
             ep_return += reward
             agent.global_step += 1
 
             if len(replay) >= train_hp.min_replay:
-                loss = agent.update(replay, train_hp.batch_size)
-                if loss is not None:
-                    ep_loss += loss
+                losses = agent.update(replay, train_hp.batch_size)
+                if losses is not None:
+                    a_loss, c_loss = losses
+                    ep_actor_loss += a_loss
+                    ep_critic_loss += c_loss
                     loss_count += 1
-
-            if agent.global_step % train_hp.target_update == 0:
-                agent.sync_target()
 
             if args.render:
                 env.render()
 
-        mean_loss = ep_loss / max(1, loss_count)
+        mean_actor_loss = ep_actor_loss / max(1, loss_count)
+        mean_critic_loss = ep_critic_loss / max(1, loss_count)
         eps_now = agent.epsilon()
         history.append(
             {
@@ -190,21 +209,24 @@ def main() -> None:
                 "return": float(ep_return),
                 "steps": env.step_idx,
                 "epsilon": float(eps_now),
-                "mean_loss": float(mean_loss),
+                "mean_actor_loss": float(mean_actor_loss),
+                "mean_critic_loss": float(mean_critic_loss),
             }
         )
         print(
             f"ep={ep:04d} return={ep_return:8.3f} steps={env.step_idx:4d} "
-            f"eps={eps_now:0.3f} loss={mean_loss:0.4f} replay={len(replay)}"
+            f"eps={eps_now:0.3f} actor_loss={mean_actor_loss:0.4f} critic_loss={mean_critic_loss:0.4f} replay={len(replay)}"
         )
 
         if ep % train_hp.save_every == 0 or ep == train_hp.episodes:
             torch.save(
                 {
-                    "online_state_dict": agent.online.state_dict(),
+                    "actor_state_dict": agent.actor.state_dict(),
+                    "critic_state_dict": agent.critic.state_dict(),
                     "obs_dim": obs_dim,
                     "hidden_dim": train_hp.hidden_dim,
-                    "n_actions": N_ACTIONS,
+                    "action_dim": ACTION_DIM,
+                    "algo": "ddpg_style",
                     "train_args": vars(args),
                 },
                 out_dir / "ddqn_policy.pt",

@@ -10,14 +10,14 @@ import torch
 
 from environment import SingleTargetFeatureEnv
 from hyperparameters import EnvParams, RewardParams
-from policy import DDQNQNet, N_ACTIONS
+from policy import ACTION_DIM, ContinuousActor
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run episodes with DDQN policy")
+    p = argparse.ArgumentParser(description="Run episodes with continuous policy")
     p.add_argument("--episodes", type=int, default=5)
     p.add_argument("--seed", type=int, default=7)
-    p.add_argument("--policy", type=str, default="", help=".pt DDQN checkpoint from training")
+    p.add_argument("--policy", type=str, default="", help=".pt checkpoint from training")
     p.add_argument("--hidden-dim", type=int, default=256)
 
     p.add_argument("--render", action="store_true", help="enable pygame visualization")
@@ -54,14 +54,17 @@ def main() -> None:
 
     if args.policy:
         ckpt = torch.load(args.policy, map_location=device)
-        obs_dim = int(ckpt.get("obs_dim", 6))
+        obs_dim = int(ckpt.get("obs_dim", 12))
         hidden_dim = int(ckpt.get("hidden_dim", args.hidden_dim))
-        n_actions = int(ckpt.get("n_actions", N_ACTIONS))
-        if n_actions != N_ACTIONS:
-            raise ValueError(f"unsupported action count in checkpoint: {n_actions}")
+        action_dim = int(ckpt.get("action_dim", ACTION_DIM))
+        if action_dim != ACTION_DIM:
+            raise ValueError(f"unsupported action count in checkpoint: {action_dim}")
 
-        policy = DDQNQNet(in_dim=obs_dim, hidden_dim=hidden_dim, n_actions=n_actions).to(device)
-        policy.load_state_dict(ckpt["online_state_dict"])
+        policy = ContinuousActor(in_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(device)
+        state = ckpt.get("actor_state_dict") or ckpt.get("online_state_dict")
+        if state is None:
+            raise ValueError("checkpoint missing actor/online state dict")
+        policy.load_state_dict(state)
         policy.eval()
 
     summaries = []
@@ -82,8 +85,7 @@ def main() -> None:
             else:
                 with torch.no_grad():
                     s = torch.from_numpy(obs).float().unsqueeze(0).to(device)
-                    q = policy(s).squeeze(0).detach().cpu().numpy()
-                action = np.asarray([np.tanh(q[0]), np.tanh(q[1])], dtype=np.float32)
+                    action = policy(s).squeeze(0).detach().cpu().numpy().astype(np.float32)
             obs, r, done, info = env.step(action)
             total += r
             if args.render:
