@@ -49,22 +49,22 @@ class DDPGAgent:
 
         self.gamma = hp.gamma
         self.device = device
-        self.exploration_noise_start = hp.exploration_noise_start
-        self.exploration_noise_end = hp.exploration_noise_end
-        self.exploration_decay_steps = hp.exploration_decay_steps
+        self.eps_start = hp.eps_start
+        self.eps_end = hp.eps_end
+        self.eps_decay_steps = hp.eps_decay_steps
         self.tau = 0.005
         self.global_step = 0
 
-    def exploration_scale(self) -> float:
-        frac = min(1.0, self.global_step / max(1, self.exploration_decay_steps))
-        return self.exploration_noise_start + frac * (self.exploration_noise_end - self.exploration_noise_start)
+    def epsilon(self) -> float:
+        frac = min(1.0, self.global_step / max(1, self.eps_decay_steps))
+        return self.eps_start + frac * (self.eps_end - self.eps_start)
 
     def act(self, obs: np.ndarray, greedy: bool = False) -> np.ndarray:
         with torch.no_grad():
             s = torch.from_numpy(obs).float().unsqueeze(0).to(self.device)
             a = self.actor(s).squeeze(0).cpu().numpy()
         if not greedy:
-            noise_scale = self.exploration_scale()
+            noise_scale = self.epsilon()
             a = a + noise_scale * np.random.normal(0.0, 0.25, size=(ACTION_DIM,)).astype(np.float32)
         return np.clip(a, -1.0, 1.0).astype(np.float32)
 
@@ -119,9 +119,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gamma", type=float, default=TrainParams().gamma)
     p.add_argument("--learning-rate", type=float, default=TrainParams().learning_rate)
     p.add_argument("--target-update", type=int, default=TrainParams().target_update)
-    p.add_argument("--exploration-noise-start", "--eps-start", dest="exploration_noise_start", type=float, default=TrainParams().exploration_noise_start)
-    p.add_argument("--exploration-noise-end", "--eps-end", dest="exploration_noise_end", type=float, default=TrainParams().exploration_noise_end)
-    p.add_argument("--exploration-decay-steps", "--eps-decay-steps", dest="exploration_decay_steps", type=int, default=TrainParams().exploration_decay_steps)
+    p.add_argument("--eps-start", type=float, default=TrainParams().eps_start,
+                   help="exploration noise scale at step 0 (continuous control)")
+    p.add_argument("--eps-end", type=float, default=TrainParams().eps_end,
+                   help="final exploration noise scale after decay (continuous control)")
+    p.add_argument("--eps-decay-steps", type=int, default=TrainParams().eps_decay_steps,
+                   help="steps to linearly decay exploration noise scale")
     p.add_argument("--hidden-dim", type=int, default=TrainParams().hidden_dim)
     p.add_argument("--seed", type=int, default=TrainParams().seed)
     p.add_argument("--save-every", type=int, default=TrainParams().save_every)
@@ -149,9 +152,9 @@ def main() -> None:
         gamma=args.gamma,
         learning_rate=args.learning_rate,
         target_update=args.target_update,
-        exploration_noise_start=args.exploration_noise_start,
-        exploration_noise_end=args.exploration_noise_end,
-        exploration_decay_steps=args.exploration_decay_steps,
+        eps_start=args.eps_start,
+        eps_end=args.eps_end,
+        eps_decay_steps=args.eps_decay_steps,
         hidden_dim=args.hidden_dim,
         seed=args.seed,
         save_every=args.save_every,
@@ -203,20 +206,20 @@ def main() -> None:
 
         mean_actor_loss = ep_actor_loss / max(1, loss_count)
         mean_critic_loss = ep_critic_loss / max(1, loss_count)
-        exploration_scale_now = agent.exploration_scale()
+        eps_now = agent.epsilon()
         history.append(
             {
                 "episode": ep,
                 "return": float(ep_return),
                 "steps": env.step_idx,
-                "exploration_scale": float(exploration_scale_now),
+                "epsilon": float(eps_now),
                 "mean_actor_loss": float(mean_actor_loss),
                 "mean_critic_loss": float(mean_critic_loss),
             }
         )
         print(
             f"ep={ep:04d} return={ep_return:8.3f} steps={env.step_idx:4d} "
-            f"exploration_scale={exploration_scale_now:0.3f} actor_loss={mean_actor_loss:0.4f} critic_loss={mean_critic_loss:0.4f} replay={len(replay)}"
+            f"epsilon={eps_now:0.3f} actor_loss={mean_actor_loss:0.4f} critic_loss={mean_critic_loss:0.4f} replay={len(replay)}"
         )
 
         if ep % train_hp.save_every == 0 or ep == train_hp.episodes:
