@@ -85,9 +85,9 @@ class TrainParams:
     target_update: int = 4000
 
     # exploration noise schedule (linear in global environment steps)
-    eps_start: float = 1.0
-    eps_end: float = 0.05
-    eps_decay_steps: int = 300_000
+    exploration_noise_start: float = 1.0
+    exploration_noise_end: float = 0.05
+    exploration_decay_steps: int = 300_000
 
     # network backbone: obs_dim(=12 from env by default) -> hidden -> hidden -> 2 continuous actions
     hidden_dim: int = 256
