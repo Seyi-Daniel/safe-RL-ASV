@@ -52,7 +52,7 @@ class EnvParams:
     pp_heading_gain_deg: float = 25.0     # proportional gain divisor for heading error -> rudder cmd
 
     # COLREGS risk/takeover gating
-    colregs_head_on_half_angle_deg: float = 5.0
+    colregs_head_on_half_angle_deg: float = 10.0  # Engineering approximation for simulation stability.
     colregs_crossing_starboard_max_deg: float = 112.5
     colregs_overtaking_aft_max_deg: float = 247.5
     colregs_speed_eps: float = 0.2

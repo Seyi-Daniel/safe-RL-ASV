@@ -173,27 +173,14 @@ class SingleTargetFeatureEnv:
         dcpa = math.hypot(cx, cy)
         return tcpa, dcpa
 
-    def _classify_pair_colregs(self, agent: Vessel, target: Vessel) -> Dict[str, float | str]:
+    def _classify_pair_geometry(self, agent: Vessel, target: Vessel) -> Dict[str, float | str]:
         own_bearing = self._relative_bearing_deg(agent, target)
         tgt_bearing = self._relative_bearing_deg(target, agent)
 
         head_on_half = self.envp.colregs_head_on_half_angle_deg
         head_on_min = (360.0 - head_on_half) % 360.0
-        head_on_max = head_on_half
         crossing_max = self.envp.colregs_crossing_starboard_max_deg
         overtaking_max = self.envp.colregs_overtaking_aft_max_deg
-
-        head_on = self._bearing_in_sector(own_bearing, head_on_min, head_on_max) and self._bearing_in_sector(
-            tgt_bearing, head_on_min, head_on_max
-        )
-        if head_on:
-            return {
-                "scenario": "head_on",
-                "agent_role": "give_way",
-                "target_role": "give_way",
-                "agent_bearing_deg": own_bearing,
-                "target_bearing_deg": tgt_bearing,
-            }
 
         speed_eps = self.envp.colregs_speed_eps
         agent_overtaking = self._bearing_in_sector(tgt_bearing, crossing_max, overtaking_max) and (
@@ -204,57 +191,115 @@ class SingleTargetFeatureEnv:
         )
         if agent_overtaking and not target_overtaking:
             return {
-                "scenario": "overtaking",
-                "agent_role": "give_way",
-                "target_role": "stand_on",
+                "geometry": "overtaking_agent_geom",
                 "agent_bearing_deg": own_bearing,
                 "target_bearing_deg": tgt_bearing,
             }
         if target_overtaking and not agent_overtaking:
             return {
-                "scenario": "overtaking",
-                "agent_role": "stand_on",
-                "target_role": "give_way",
+                "geometry": "overtaking_target_geom",
+                "agent_bearing_deg": own_bearing,
+                "target_bearing_deg": tgt_bearing,
+            }
+
+        head_on = self._bearing_in_sector(own_bearing, head_on_min, head_on_half) and self._bearing_in_sector(
+            tgt_bearing, head_on_min, head_on_half
+        )
+        if head_on:
+            return {
+                "geometry": "head_on_geom",
                 "agent_bearing_deg": own_bearing,
                 "target_bearing_deg": tgt_bearing,
             }
 
         if self._bearing_in_sector(own_bearing, head_on_half, crossing_max):
             return {
-                "scenario": "crossing",
-                "agent_role": "give_way",
-                "target_role": "stand_on",
+                "geometry": "crossing_agent_give_way_geom",
                 "agent_bearing_deg": own_bearing,
                 "target_bearing_deg": tgt_bearing,
             }
 
         if self._bearing_in_sector(own_bearing, 360.0 - crossing_max, head_on_min):
             return {
-                "scenario": "crossing",
-                "agent_role": "stand_on",
-                "target_role": "give_way",
+                "geometry": "crossing_agent_stand_on_geom",
                 "agent_bearing_deg": own_bearing,
                 "target_bearing_deg": tgt_bearing,
             }
+
         return {
-            "scenario": "safe",
-            "agent_role": "none",
-            "target_role": "none",
+            "geometry": "none",
             "agent_bearing_deg": own_bearing,
             "target_bearing_deg": tgt_bearing,
         }
 
-    def _classify_colregs(self) -> Dict[str, float | str]:
-        # Do not classify if either vessel has already reached its goal.
+    def _assess_pair_risk(self, agent: Vessel, target: Vessel) -> Dict[str, float | bool]:
+        tcpa, dcpa = self._tcpa_dcpa(agent, target)
+        risk_of_collision = (0.0 <= tcpa <= self.envp.tcpa_risk_threshold) and (dcpa <= self.envp.dcpa_risk_threshold)
+        return {
+            "tcpa": tcpa,
+            "dcpa": dcpa,
+            "risk_of_collision": risk_of_collision,
+        }
+
+    def _resolve_colregs_pair(self, agent: Vessel, target: Vessel) -> Dict[str, float | str | bool]:
+        geom = self._classify_pair_geometry(agent, target)
+        risk = self._assess_pair_risk(agent, target)
+        geometry = str(geom["geometry"])
+        risk_of_collision = bool(risk["risk_of_collision"])
+
+        scenario = "safe"
+        agent_role = "none"
+        target_role = "none"
+
+        if geometry == "head_on_geom" and risk_of_collision:
+            scenario = "head_on"
+            agent_role = "give_way"
+            target_role = "give_way"
+        elif geometry == "crossing_agent_give_way_geom" and risk_of_collision:
+            scenario = "crossing"
+            agent_role = "give_way"
+            target_role = "stand_on"
+        elif geometry == "crossing_agent_stand_on_geom" and risk_of_collision:
+            scenario = "crossing"
+            agent_role = "stand_on"
+            target_role = "give_way"
+        elif geometry in {"head_on_geom", "crossing_agent_give_way_geom", "crossing_agent_stand_on_geom"}:
+            scenario = "no_risk"
+        elif geometry == "overtaking_agent_geom":
+            scenario = "overtaking"
+            agent_role = "give_way"
+            target_role = "stand_on"
+        elif geometry == "overtaking_target_geom":
+            scenario = "overtaking"
+            agent_role = "stand_on"
+            target_role = "give_way"
+
+        return {
+            "geometry": geometry,
+            "scenario": scenario,
+            "agent_role": agent_role,
+            "target_role": target_role,
+            "agent_bearing_deg": float(geom["agent_bearing_deg"]),
+            "target_bearing_deg": float(geom["target_bearing_deg"]),
+            "tcpa": float(risk["tcpa"]),
+            "dcpa": float(risk["dcpa"]),
+            "risk_of_collision": risk_of_collision,
+        }
+
+    def _classify_colregs(self) -> Dict[str, float | str | bool]:
         if self.agent_reached or self.target_reached:
             return {
+                "geometry": "none",
                 "scenario": "safe",
                 "agent_role": "none",
                 "target_role": "none",
                 "agent_bearing_deg": 0.0,
                 "target_bearing_deg": 0.0,
+                "tcpa": float("inf"),
+                "dcpa": float("inf"),
+                "risk_of_collision": False,
             }
-        return self._classify_pair_colregs(self.agent, self.target)
+        return self._resolve_colregs_pair(self.agent, self.target)
 
     def _reset_sample_triggers_takeover(self, agent: Vessel, target: Vessel) -> bool:
         agent_sim = Vessel(agent.x, agent.y, agent.h, agent.speed, agent.goal_x, agent.goal_y, agent.rudder, agent.throttle)
@@ -271,23 +316,22 @@ class SingleTargetFeatureEnv:
                 encounter = {
                     "agent_role": "none",
                     "target_role": "none",
+                    "risk_of_collision": False,
                 }
             else:
-                encounter = self._classify_pair_colregs(agent_sim, target_sim)
+                encounter = self._resolve_colregs_pair(agent_sim, target_sim)
 
-            tcpa, dcpa = self._tcpa_dcpa(agent_sim, target_sim)
-            risk = (0.0 <= tcpa <= self.envp.tcpa_risk_threshold) and (dcpa <= self.envp.dcpa_risk_threshold)
             agent_dist = self._distance_from_start(agent_sim, agent_start)
             target_dist = self._distance_from_start(target_sim, target_start)
             if (
-                risk
+                encounter["risk_of_collision"]
                 and encounter["agent_role"] == "give_way"
                 and not agent_reached
                 and agent_dist >= self.envp.rl_takeover_distance
             ):
                 return True
             if (
-                risk
+                encounter["risk_of_collision"]
                 and encounter["target_role"] == "give_way"
                 and not target_reached
                 and target_dist >= self.envp.rl_takeover_distance
@@ -624,11 +668,11 @@ class SingleTargetFeatureEnv:
         self.target_role = str(encounter["target_role"])
         self.agent_relative_bearing_deg = float(encounter["agent_bearing_deg"])
         self.target_relative_bearing_deg = float(encounter["target_bearing_deg"])
-
-        tcpa, dcpa = self._tcpa_dcpa(self.agent, self.target)
-        self.last_tcpa = tcpa
-        self.last_dcpa = dcpa
-        self.risk_of_collision = (0.0 <= tcpa <= self.envp.tcpa_risk_threshold) and (dcpa <= self.envp.dcpa_risk_threshold)
+        self.last_tcpa = float(encounter["tcpa"])
+        self.last_dcpa = float(encounter["dcpa"])
+        self.risk_of_collision = bool(encounter["risk_of_collision"])
+        tcpa = self.last_tcpa
+        dcpa = self.last_dcpa
 
         agent_dist = self._distance_from_start(self.agent, self.agent_start_pos)
         target_dist = self._distance_from_start(self.target, self.target_start_pos)
