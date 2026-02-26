@@ -570,7 +570,6 @@ class SingleTargetFeatureEnv:
         h = self.envp.dt / max(1, self.envp.substeps)
 
         takeover_viable = False
-        unavoidable_hazard = False
         min_separation = float("inf")
 
         for _ in range(self.max_steps):
@@ -587,14 +586,8 @@ class SingleTargetFeatureEnv:
 
             separation = math.hypot(target_sim.x - agent_sim.x, target_sim.y - agent_sim.y)
             min_separation = min(min_separation, separation)
-            if separation <= self.envp.collision_distance or separation <= self.envp.near_miss_distance:
-                unavoidable_hazard = True
 
             risk_now = bool(encounter.get("risk_of_collision", False))
-            dcpa_now = float(encounter.get("dcpa", float("inf")))
-            tcpa_now = float(encounter.get("tcpa", float("inf")))
-            if risk_now and (dcpa_now <= self.envp.dcpa_risk_threshold) and (0.0 <= tcpa_now <= self.envp.tcpa_risk_threshold):
-                unavoidable_hazard = True
 
             agent_dist = self._distance_from_start(agent_sim, agent_start)
             target_dist = self._distance_from_start(target_sim, target_start)
@@ -646,9 +639,7 @@ class SingleTargetFeatureEnv:
             if (agent_reached and target_reached) or self._outside(agent_sim) or self._outside(target_sim):
                 break
 
-        if min_separation <= self.envp.near_miss_distance:
-            unavoidable_hazard = True
-
+        unavoidable_hazard = min_separation <= self.envp.near_miss_distance
         qualifies = takeover_viable and unavoidable_hazard
         _restore_latch_state()
         return qualifies
