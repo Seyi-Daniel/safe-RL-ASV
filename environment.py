@@ -105,6 +105,9 @@ class SingleTargetFeatureEnv:
         self.latched_target_role = "none"
         self.overtaking_clear_steps = 0
         self.encounter_latched = False
+        self.latched_encounter_active = False
+        self.latched_geometry = "none"
+        self.encounter_clear_steps = 0
         self.candidate_scenario = "safe"
         self.candidate_agent_role = "none"
         self.candidate_target_role = "none"
@@ -123,6 +126,9 @@ class SingleTargetFeatureEnv:
         self.agent_rl_latched = False
         self.target_rl_latched = False
         self.any_rl_ever_triggered = False
+        self.latched_encounter_active = False
+        self.latched_geometry = "none"
+        self.encounter_clear_steps = 0
         self.secondary_policy_fn = None
         self.last_inter_vessel_distance = float("inf")
         self.encounter_was_risky = False
@@ -308,63 +314,93 @@ class SingleTargetFeatureEnv:
         risk = self._assess_pair_risk(agent, target)
         geometry = str(geom["geometry"])
         risk_of_collision = bool(risk["risk_of_collision"])
+        sep = math.hypot(target.x - agent.x, target.y - agent.y)
 
-        if geometry == "overtaking_agent_geom":
-            self.overtaking_latched = True
-            self.encounter_latched = True
-            self.latched_scenario = "overtaking"
-            self.latched_agent_role = "give_way"
-            self.latched_target_role = "stand_on"
-            self.overtaking_clear_steps = 0
-        elif geometry == "overtaking_target_geom":
-            self.overtaking_latched = True
-            self.encounter_latched = True
-            self.latched_scenario = "overtaking"
-            self.latched_agent_role = "stand_on"
-            self.latched_target_role = "give_way"
-            self.overtaking_clear_steps = 0
+        raw_scenario = "safe"
+        raw_agent_role = "none"
+        raw_target_role = "none"
 
-        if self.overtaking_latched:
-            sep = math.hypot(target.x - agent.x, target.y - agent.y)
-            if sep > self.envp.overtaking_clear_distance:
-                self.overtaking_clear_steps += 1
-                if self.overtaking_clear_steps >= max(1, int(self.envp.overtaking_clear_steps_required)):
-                    self.overtaking_latched = False
-                    self.encounter_latched = False
-                    self.latched_scenario = "safe"
-                    self.latched_agent_role = "none"
-                    self.latched_target_role = "none"
-                    self.overtaking_clear_steps = 0
+        if geometry == "head_on_geom" and risk_of_collision:
+            raw_scenario = "head_on"
+            if self.envp.simplified_head_on_single_giveway:
+                raw_agent_role = "give_way"
+                raw_target_role = "stand_on"
             else:
-                self.overtaking_clear_steps = 0
+                raw_agent_role = "give_way"
+                raw_target_role = "give_way"
+        elif geometry == "crossing_agent_give_way_geom" and risk_of_collision:
+            raw_scenario = "crossing"
+            raw_agent_role = "give_way"
+            raw_target_role = "stand_on"
+        elif geometry == "crossing_agent_stand_on_geom" and risk_of_collision:
+            raw_scenario = "crossing"
+            raw_agent_role = "stand_on"
+            raw_target_role = "give_way"
+        elif geometry == "overtaking_agent_geom" and risk_of_collision:
+            raw_scenario = "overtaking"
+            raw_agent_role = "give_way"
+            raw_target_role = "stand_on"
+        elif geometry == "overtaking_target_geom" and risk_of_collision:
+            raw_scenario = "overtaking"
+            raw_agent_role = "stand_on"
+            raw_target_role = "give_way"
+        elif geometry in {
+            "head_on_geom",
+            "crossing_agent_give_way_geom",
+            "crossing_agent_stand_on_geom",
+            "overtaking_agent_geom",
+            "overtaking_target_geom",
+        }:
+            raw_scenario = "no_risk"
 
-        scenario = "safe"
-        agent_role = "none"
-        target_role = "none"
+        if not self.latched_encounter_active and raw_scenario in {"head_on", "crossing", "overtaking"}:
+            self.latched_encounter_active = True
+            self.encounter_latched = True
+            self.latched_geometry = geometry
+            self.latched_scenario = raw_scenario
+            self.latched_agent_role = raw_agent_role
+            self.latched_target_role = raw_target_role
+            self.overtaking_latched = raw_scenario == "overtaking"
+            self.encounter_clear_steps = 0
+            self.safe_pass_awarded = False
+            self.encounter_was_risky = True
 
-        if self.overtaking_latched:
+        scenario = raw_scenario
+        agent_role = raw_agent_role
+        target_role = raw_target_role
+        encounter_latched = False
+
+        if self.latched_encounter_active:
             scenario = self.latched_scenario
             agent_role = self.latched_agent_role
             target_role = self.latched_target_role
-            self.encounter_latched = True
-        elif geometry == "head_on_geom" and risk_of_collision:
-            scenario = "head_on"
-            agent_role = "give_way"
-            target_role = "give_way"
-        elif geometry == "crossing_agent_give_way_geom" and risk_of_collision:
-            scenario = "crossing"
-            agent_role = "give_way"
-            target_role = "stand_on"
-        elif geometry == "crossing_agent_stand_on_geom" and risk_of_collision:
-            scenario = "crossing"
-            agent_role = "stand_on"
-            target_role = "give_way"
-        elif geometry in {"head_on_geom", "crossing_agent_give_way_geom", "crossing_agent_stand_on_geom"}:
-            scenario = "no_risk"
+            encounter_latched = True
+            if (not risk_of_collision) and (sep > self.envp.safe_pass_distance):
+                self.encounter_clear_steps += 1
+            else:
+                self.encounter_clear_steps = 0
 
-        if not self.overtaking_latched:
-            scenario, agent_role, target_role = self._apply_non_overtaking_hysteresis(scenario, agent_role, target_role)
-            self.encounter_latched = scenario in {"head_on", "crossing"}
+            if self.encounter_clear_steps >= 3:
+                self.latched_encounter_active = False
+                self.encounter_latched = False
+                self.overtaking_latched = False
+                self.latched_geometry = "none"
+                self.latched_scenario = "safe"
+                self.latched_agent_role = "none"
+                self.latched_target_role = "none"
+                self.encounter_clear_steps = 0
+                self.agent_rl_latched = False
+                self.target_rl_latched = False
+                self.agent_rl_active = False
+                self.target_rl_active = False
+                self.agent_giveway_action_awarded = False
+                self.target_giveway_action_awarded = False
+                self.agent_standon_hold_awarded = False
+                self.target_standon_hold_awarded = False
+                scenario = raw_scenario
+                agent_role = raw_agent_role
+                target_role = raw_target_role
+                encounter_latched = False
 
         return {
             "geometry": geometry,
@@ -376,7 +412,7 @@ class SingleTargetFeatureEnv:
             "tcpa": float(risk["tcpa"]),
             "dcpa": float(risk["dcpa"]),
             "risk_of_collision": risk_of_collision,
-            "encounter_latched": self.encounter_latched,
+            "encounter_latched": encounter_latched,
             "overtaking_latched": self.overtaking_latched,
         }
 
@@ -454,6 +490,9 @@ class SingleTargetFeatureEnv:
             self.latched_target_role,
             self.overtaking_clear_steps,
             self.encounter_latched,
+            self.latched_encounter_active,
+            self.latched_geometry,
+            self.encounter_clear_steps,
             self.candidate_scenario,
             self.candidate_agent_role,
             self.candidate_target_role,
@@ -469,6 +508,9 @@ class SingleTargetFeatureEnv:
         self.latched_target_role = "none"
         self.overtaking_clear_steps = 0
         self.encounter_latched = False
+        self.latched_encounter_active = False
+        self.latched_geometry = "none"
+        self.encounter_clear_steps = 0
         agent_sim = Vessel(agent.x, agent.y, agent.h, agent.speed, agent.goal_x, agent.goal_y, agent.rudder, agent.throttle)
         target_sim = Vessel(target.x, target.y, target.h, target.speed, target.goal_x, target.goal_y, target.rudder, target.throttle)
 
@@ -496,7 +538,25 @@ class SingleTargetFeatureEnv:
                 and not agent_reached
                 and agent_dist >= self.envp.rl_takeover_distance
             ):
-                self.overtaking_latched, self.latched_scenario, self.latched_agent_role, self.latched_target_role, self.overtaking_clear_steps, self.encounter_latched, self.candidate_scenario, self.candidate_agent_role, self.candidate_target_role, self.candidate_steps, self.active_non_overtaking_scenario, self.active_non_overtaking_agent_role, self.active_non_overtaking_target_role, self.active_non_overtaking_exit_steps = saved_latch_state
+                (
+                    self.overtaking_latched,
+                    self.latched_scenario,
+                    self.latched_agent_role,
+                    self.latched_target_role,
+                    self.overtaking_clear_steps,
+                    self.encounter_latched,
+                    self.latched_encounter_active,
+                    self.latched_geometry,
+                    self.encounter_clear_steps,
+                    self.candidate_scenario,
+                    self.candidate_agent_role,
+                    self.candidate_target_role,
+                    self.candidate_steps,
+                    self.active_non_overtaking_scenario,
+                    self.active_non_overtaking_agent_role,
+                    self.active_non_overtaking_target_role,
+                    self.active_non_overtaking_exit_steps,
+                ) = saved_latch_state
                 return True
             if (
                 encounter["risk_of_collision"]
@@ -504,7 +564,25 @@ class SingleTargetFeatureEnv:
                 and not target_reached
                 and target_dist >= self.envp.rl_takeover_distance
             ):
-                self.overtaking_latched, self.latched_scenario, self.latched_agent_role, self.latched_target_role, self.overtaking_clear_steps, self.encounter_latched, self.candidate_scenario, self.candidate_agent_role, self.candidate_target_role, self.candidate_steps, self.active_non_overtaking_scenario, self.active_non_overtaking_agent_role, self.active_non_overtaking_target_role, self.active_non_overtaking_exit_steps = saved_latch_state
+                (
+                    self.overtaking_latched,
+                    self.latched_scenario,
+                    self.latched_agent_role,
+                    self.latched_target_role,
+                    self.overtaking_clear_steps,
+                    self.encounter_latched,
+                    self.latched_encounter_active,
+                    self.latched_geometry,
+                    self.encounter_clear_steps,
+                    self.candidate_scenario,
+                    self.candidate_agent_role,
+                    self.candidate_target_role,
+                    self.candidate_steps,
+                    self.active_non_overtaking_scenario,
+                    self.active_non_overtaking_agent_role,
+                    self.active_non_overtaking_target_role,
+                    self.active_non_overtaking_exit_steps,
+                ) = saved_latch_state
                 return True
 
             for _ in range(max(1, self.envp.substeps)):
@@ -540,7 +618,25 @@ class SingleTargetFeatureEnv:
             if (agent_reached and target_reached) or self._outside(agent_sim) or self._outside(target_sim):
                 break
 
-        self.overtaking_latched, self.latched_scenario, self.latched_agent_role, self.latched_target_role, self.overtaking_clear_steps, self.encounter_latched, self.candidate_scenario, self.candidate_agent_role, self.candidate_target_role, self.candidate_steps, self.active_non_overtaking_scenario, self.active_non_overtaking_agent_role, self.active_non_overtaking_target_role, self.active_non_overtaking_exit_steps = saved_latch_state
+        (
+                    self.overtaking_latched,
+                    self.latched_scenario,
+                    self.latched_agent_role,
+                    self.latched_target_role,
+                    self.overtaking_clear_steps,
+                    self.encounter_latched,
+                    self.latched_encounter_active,
+                    self.latched_geometry,
+                    self.encounter_clear_steps,
+                    self.candidate_scenario,
+                    self.candidate_agent_role,
+                    self.candidate_target_role,
+                    self.candidate_steps,
+                    self.active_non_overtaking_scenario,
+                    self.active_non_overtaking_agent_role,
+                    self.active_non_overtaking_target_role,
+                    self.active_non_overtaking_exit_steps,
+                ) = saved_latch_state
         return False
 
     def _point_on_big_circle(self, ang: float) -> Tuple[float, float]:
@@ -858,6 +954,9 @@ class SingleTargetFeatureEnv:
         self.agent_rl_latched = False
         self.target_rl_latched = False
         self.any_rl_ever_triggered = False
+        self.latched_encounter_active = False
+        self.latched_geometry = "none"
+        self.encounter_clear_steps = 0
         self.last_inter_vessel_distance = float("inf")
         self.encounter_was_risky = False
         self.safe_pass_awarded = False
@@ -911,7 +1010,9 @@ class SingleTargetFeatureEnv:
             raise ValueError("Action must contain [rudder_cmd, throttle_cmd].")
         rudder_cmd = clamp(float(a[0]), -1.0, 1.0)
         throttle_cmd = clamp(float(a[1]), -1.0, 1.0)
-
+        give_way_vessel = "agent" if self.agent_role == "give_way" else "target" if self.target_role == "give_way" else "none"
+        stand_on_vessel = "agent" if self.agent_role == "stand_on" else "target" if self.target_role == "stand_on" else "none"
+        stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "target" else "straight" if stand_on_vessel == "agent" else "none"
 
         if self.paused:
             info: Dict[str, float | str | int] = {
@@ -929,8 +1030,12 @@ class SingleTargetFeatureEnv:
                 "geometry_scenario": self.geometry_scenario,
                 "encounter_latched": int(self.encounter_latched),
                 "overtaking_latched": int(self.overtaking_latched),
+                "latched_scenario": self.latched_scenario,
                 "agent_role": self.agent_role,
                 "target_role": self.target_role,
+                "designated_give_way_vessel": give_way_vessel,
+                "designated_stand_on_vessel": stand_on_vessel,
+                "stand_on_nominal_mode": stand_on_nominal_mode,
                 "agent_rl_active": int(self.agent_rl_active),
                 "target_rl_active": int(self.target_rl_active),
                 "agent_rl_latched": int(self.agent_rl_latched),
@@ -964,54 +1069,32 @@ class SingleTargetFeatureEnv:
         self.risk_of_collision = bool(encounter["risk_of_collision"])
         tcpa = self.last_tcpa
         dcpa = self.last_dcpa
+        give_way_vessel = "agent" if self.agent_role == "give_way" else "target" if self.target_role == "give_way" else "none"
+        stand_on_vessel = "agent" if self.agent_role == "stand_on" else "target" if self.target_role == "stand_on" else "none"
+        stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "target" else "straight" if stand_on_vessel == "agent" else "none"
 
         agent_dist = self._distance_from_start(self.agent, self.agent_start_pos)
         target_dist = self._distance_from_start(self.target, self.target_start_pos)
 
-        standon_active = self.colregs_scenario in {"crossing", "overtaking"}
-        agent_standon_risk_now = (
-            standon_active
-            and self.agent_role == "stand_on"
-            and self.risk_of_collision
-            and tcpa <= self.envp.standon_escalation_tcpa
-            and dcpa <= self.envp.standon_escalation_dcpa
-        )
-        target_standon_risk_now = (
-            standon_active
-            and self.target_role == "stand_on"
-            and self.risk_of_collision
-            and tcpa <= self.envp.standon_escalation_tcpa
-            and dcpa <= self.envp.standon_escalation_dcpa
-        )
+        # Stand-on escalation disabled for this contract: stand-on remains nominal path-following.
+        self.agent_standon_risk_steps = 0
+        self.target_standon_risk_steps = 0
+        self.agent_standon_escalated = False
+        self.target_standon_escalated = False
 
-        if agent_standon_risk_now:
-            self.agent_standon_risk_steps += 1
-            if self.agent_standon_risk_steps >= max(1, int(self.envp.standon_escalation_persistence_steps)):
-                self.agent_standon_escalated = True
-        else:
-            self.agent_standon_risk_steps = 0
-            if not standon_active or self.agent_role != "stand_on":
-                self.agent_standon_escalated = False
+        encounter_active = bool(self.latched_encounter_active)
+        allow_agent_rl = encounter_active and self.agent_role == "give_way"
+        allow_target_rl = encounter_active and self.target_role == "give_way"
 
-        if target_standon_risk_now:
-            self.target_standon_risk_steps += 1
-            if self.target_standon_risk_steps >= max(1, int(self.envp.standon_escalation_persistence_steps)):
-                self.target_standon_escalated = True
-        else:
-            self.target_standon_risk_steps = 0
-            if not standon_active or self.target_role != "stand_on":
-                self.target_standon_escalated = False
-
-        # Compute whether RL should trigger this step (un-latched).
         agent_rl_trigger = (
-            self.risk_of_collision
-            and self.agent_role == "give_way"
+            allow_agent_rl
+            and self.risk_of_collision
             and agent_dist >= self.envp.rl_takeover_distance
             and not self.agent_reached
         )
         target_rl_trigger = (
-            self.risk_of_collision
-            and self.target_role == "give_way"
+            allow_target_rl
+            and self.risk_of_collision
             and target_dist >= self.envp.rl_takeover_distance
             and not self.target_reached
         )
@@ -1021,8 +1104,9 @@ class SingleTargetFeatureEnv:
         if target_rl_trigger:
             self.target_rl_latched = True
 
-        self.agent_rl_active = self.agent_rl_latched and not self.agent_reached
-        self.target_rl_active = self.target_rl_latched and not self.target_reached
+        # Stand-on vessel is never RL-active in simplified single-give-way encounters.
+        self.agent_rl_active = self.agent_rl_latched and allow_agent_rl and not self.agent_reached
+        self.target_rl_active = self.target_rl_latched and allow_target_rl and not self.target_reached
         self.any_rl_ever_triggered = self.any_rl_ever_triggered or self.agent_rl_latched or self.target_rl_latched
         self.rl_ever_triggered = self.any_rl_ever_triggered
 
@@ -1082,40 +1166,39 @@ class SingleTargetFeatureEnv:
         h = self.envp.dt / max(1, self.envp.substeps)
         was_agent_active = not self.agent_reached
         was_target_active = not self.target_reached
+        encounter_active = bool(self.latched_encounter_active)
         for _ in range(max(1, self.envp.substeps)):
-            agent_rl_cmd, agent_rl_src = self._select_rl_action_for_vessel("agent", a)
-            if agent_rl_cmd is not None:
-                self.agent_control_source = agent_rl_src
-                self._advance_controlled(self.agent, "agent_reached", agent_rl_cmd[0], agent_rl_cmd[1], h)
+            if not encounter_active:
+                self.agent_control_source = "straight"
+                self._advance_straight(self.agent, "agent_reached", h)
+                self.target_control_source = "pure_pursuit"
+                self._advance_target(h)
             else:
-                ar, at, asrc = self._fallback_colregs_action(
-                    "agent", self.colregs_scenario, self.agent_role, self.agent_standon_escalated
-                )
-                self.agent_control_source = asrc
-                if asrc in {"starboard_avoid", "standon_escalation"}:
-                    self._advance_controlled(self.agent, "agent_reached", ar, at, h)
-                elif asrc == "hold_course_speed":
-                    self._advance_hold_course_speed(self.agent, "agent_reached", h)
-                else:
+                if self.agent_role == "stand_on":
+                    self.agent_control_source = "straight"
                     self._advance_straight(self.agent, "agent_reached", h)
+                else:
+                    agent_rl_cmd, agent_rl_src = self._select_rl_action_for_vessel("agent", a)
+                    if agent_rl_cmd is not None:
+                        self.agent_control_source = agent_rl_src
+                        self._advance_controlled(self.agent, "agent_reached", agent_rl_cmd[0], agent_rl_cmd[1], h)
+                    else:
+                        ar, at, _ = self._fallback_colregs_action("agent", self.colregs_scenario, "give_way", False)
+                        self.agent_control_source = "starboard_avoid"
+                        self._advance_controlled(self.agent, "agent_reached", ar, at, h)
 
-            target_rl_cmd, target_rl_src = self._select_rl_action_for_vessel("target", a)
-            if target_rl_cmd is not None:
-                self.target_control_source = target_rl_src
-                self._advance_controlled(self.target, "target_reached", target_rl_cmd[0], target_rl_cmd[1], h)
-            else:
-                tr, tt, tsrc = self._fallback_colregs_action(
-                    "target", self.colregs_scenario, self.target_role, self.target_standon_escalated
-                )
-                self.target_control_source = tsrc
-                if tsrc in {"starboard_avoid", "standon_escalation"}:
-                    self._advance_controlled(self.target, "target_reached", tr, tt, h)
-                elif tsrc == "hold_course_speed":
-                    self._advance_hold_course_speed(self.target, "target_reached", h)
-                elif tsrc == "pure_pursuit":
+                if self.target_role == "stand_on":
+                    self.target_control_source = "pure_pursuit"
                     self._advance_target(h)
                 else:
-                    self._advance_straight(self.target, "target_reached", h)
+                    target_rl_cmd, target_rl_src = self._select_rl_action_for_vessel("target", a)
+                    if target_rl_cmd is not None:
+                        self.target_control_source = target_rl_src
+                        self._advance_controlled(self.target, "target_reached", target_rl_cmd[0], target_rl_cmd[1], h)
+                    else:
+                        tr, tt, _ = self._fallback_colregs_action("target", self.colregs_scenario, "give_way", False)
+                        self.target_control_source = "starboard_avoid"
+                        self._advance_controlled(self.target, "target_reached", tr, tt, h)
 
         if was_agent_active:
             self.agent_steps_taken += 1
@@ -1240,6 +1323,10 @@ class SingleTargetFeatureEnv:
             "overtaking_latched": int(self.overtaking_latched),
             "agent_role": self.agent_role,
             "target_role": self.target_role,
+            "latched_scenario": self.latched_scenario,
+            "designated_give_way_vessel": give_way_vessel,
+            "designated_stand_on_vessel": stand_on_vessel,
+            "stand_on_nominal_mode": stand_on_nominal_mode,
             "agent_rl_active": int(self.agent_rl_active),
             "target_rl_active": int(self.target_rl_active),
             "agent_rl_latched": int(self.agent_rl_latched),
@@ -1331,6 +1418,7 @@ class SingleTargetFeatureEnv:
             f"V2 role={p.get('target_role', self.target_role)}  rl_active={target_active}  rl_latched={int(p.get('target_rl_latched', int(self.target_rl_latched)))}  src={p.get('target_control_source', self.target_control_source)}  escalated={int(p.get('target_standon_escalated', int(self.target_standon_escalated)))}",
             f"DCPA={float(p.get('dcpa', self.last_dcpa)):.1f}m  TCPA={tcpa_txt}  V1→V2={float(p.get('agent_bearing', self.agent_relative_bearing_deg)):.1f}°  V2→V1={float(p.get('target_bearing', self.target_relative_bearing_deg)):.1f}°",
             f"Distances from start: V1={float(p.get('agent_distance', 0.0)):.1f}m  V2={float(p.get('target_distance', 0.0)):.1f}m  takeover>= {float(p.get('takeover_distance', self.envp.rl_takeover_distance)):.1f}m",
+            f"Designated give-way={p.get('designated_give_way_vessel', 'none')}  stand-on={p.get('designated_stand_on_vessel', 'none')}  stand-on nominal={p.get('stand_on_nominal_mode', 'none')}",
             rl_summary,
             "Press SPACE or ENTER to dismiss and continue.",
         ]
@@ -1415,11 +1503,11 @@ class SingleTargetFeatureEnv:
             True, (255, 240, 170),
         )
         hud2 = self._font.render(
-            f"V1 role={self.agent_role} rl_act={int(self.agent_rl_active)} rl_lat={int(self.agent_rl_latched)} ctrl={self.agent_control_source} esc={int(self.agent_standon_escalated)} reached={int(self.agent_reached)} spd={self.agent.speed:.2f}",
+            f"V1 role={self.agent_role} rl_act={int(self.agent_rl_active)} rl_lat={int(self.agent_rl_latched)} ctrl={self.agent_control_source} nominal=straight reached={int(self.agent_reached)} spd={self.agent.speed:.2f}",
             True, (170, 220, 255),
         )
         hud3 = self._font.render(
-            f"V2 role={self.target_role} rl_act={int(self.target_rl_active)} rl_lat={int(self.target_rl_latched)} ctrl={self.target_control_source} esc={int(self.target_standon_escalated)} reached={int(self.target_reached)} spd={self.target.speed:.2f}",
+            f"V2 role={self.target_role} rl_act={int(self.target_rl_active)} rl_lat={int(self.target_rl_latched)} ctrl={self.target_control_source} nominal=pure_pursuit reached={int(self.target_reached)} spd={self.target.speed:.2f}",
             True, (255, 190, 190),
         )
         surf.blit(hud0, (10, 8))

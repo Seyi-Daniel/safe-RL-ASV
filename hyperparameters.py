@@ -56,6 +56,7 @@ class EnvParams:
     colregs_crossing_starboard_max_deg: float = 112.5
     colregs_overtaking_aft_max_deg: float = 247.5
     colregs_speed_eps: float = 0.2
+    simplified_head_on_single_giveway: bool = True
 
     dcpa_risk_threshold: float = 20.0
     tcpa_risk_threshold: float = 90.0
