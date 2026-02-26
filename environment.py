@@ -110,6 +110,7 @@ class SingleTargetFeatureEnv:
         self.encounter_clear_steps = 0
         self.designated_agent_role = "none"
         self.designated_target_role = "none"
+        self.rl_controlled_vessel = "none"
         self.candidate_scenario = "safe"
         self.candidate_agent_role = "none"
         self.candidate_target_role = "none"
@@ -133,6 +134,7 @@ class SingleTargetFeatureEnv:
         self.encounter_clear_steps = 0
         self.designated_agent_role = "none"
         self.designated_target_role = "none"
+        self.rl_controlled_vessel = "none"
         self.secondary_policy_fn = None
         self.last_inter_vessel_distance = float("inf")
         self.encounter_was_risky = False
@@ -172,7 +174,8 @@ class SingleTargetFeatureEnv:
             self._screen = None
 
     def set_secondary_policy(self, fn) -> None:
-        self.secondary_policy_fn = fn
+        # Dual-control is disabled: policy controls only one give-way vessel via external action.
+        self.secondary_policy_fn = None
 
     def sx(self, x: float) -> int:
         return int(round(x * self.envp.pixels_per_meter))
@@ -395,10 +398,6 @@ class SingleTargetFeatureEnv:
                 self.latched_agent_role = "none"
                 self.latched_target_role = "none"
                 self.encounter_clear_steps = 0
-                self.agent_rl_latched = False
-                self.target_rl_latched = False
-                self.agent_rl_active = False
-                self.target_rl_active = False
                 self.agent_giveway_action_awarded = False
                 self.target_giveway_action_awarded = False
                 self.agent_standon_hold_awarded = False
@@ -479,6 +478,12 @@ class SingleTargetFeatureEnv:
         if self.agent_reached or self.target_reached:
             fallback_agent_role = self.designated_agent_role if self.encounter_was_risky else "none"
             fallback_target_role = self.designated_target_role if self.encounter_was_risky else "none"
+            if self.rl_controlled_vessel == "agent":
+                fallback_agent_role = "give_way"
+                fallback_target_role = "stand_on" if fallback_target_role == "none" else fallback_target_role
+            elif self.rl_controlled_vessel == "target":
+                fallback_target_role = "give_way"
+                fallback_agent_role = "stand_on" if fallback_agent_role == "none" else fallback_agent_role
             return {
                 "geometry": "none",
                 "scenario": "safe",
@@ -507,6 +512,7 @@ class SingleTargetFeatureEnv:
             self.encounter_clear_steps,
             self.designated_agent_role,
             self.designated_target_role,
+            self.rl_controlled_vessel,
             self.candidate_scenario,
             self.candidate_agent_role,
             self.candidate_target_role,
@@ -527,6 +533,7 @@ class SingleTargetFeatureEnv:
         self.encounter_clear_steps = 0
         self.designated_agent_role = "none"
         self.designated_target_role = "none"
+        self.rl_controlled_vessel = "none"
         agent_sim = Vessel(agent.x, agent.y, agent.h, agent.speed, agent.goal_x, agent.goal_y, agent.rudder, agent.throttle)
         target_sim = Vessel(target.x, target.y, target.h, target.speed, target.goal_x, target.goal_y, target.rudder, target.throttle)
 
@@ -566,6 +573,7 @@ class SingleTargetFeatureEnv:
                     self.encounter_clear_steps,
                     self.designated_agent_role,
                     self.designated_target_role,
+                    self.rl_controlled_vessel,
                     self.candidate_scenario,
                     self.candidate_agent_role,
                     self.candidate_target_role,
@@ -594,6 +602,7 @@ class SingleTargetFeatureEnv:
                     self.encounter_clear_steps,
                     self.designated_agent_role,
                     self.designated_target_role,
+                    self.rl_controlled_vessel,
                     self.candidate_scenario,
                     self.candidate_agent_role,
                     self.candidate_target_role,
@@ -650,6 +659,7 @@ class SingleTargetFeatureEnv:
             self.encounter_clear_steps,
             self.designated_agent_role,
             self.designated_target_role,
+            self.rl_controlled_vessel,
             self.candidate_scenario,
                     self.candidate_agent_role,
                     self.candidate_target_role,
@@ -981,6 +991,7 @@ class SingleTargetFeatureEnv:
         self.encounter_clear_steps = 0
         self.designated_agent_role = "none"
         self.designated_target_role = "none"
+        self.rl_controlled_vessel = "none"
         self.last_inter_vessel_distance = float("inf")
         self.encounter_was_risky = False
         self.safe_pass_awarded = False
@@ -1011,22 +1022,14 @@ class SingleTargetFeatureEnv:
     def _select_rl_action_for_vessel(
         self, vessel_name: str, external_action: np.ndarray
     ) -> Tuple[Optional[Tuple[float, float]], str]:
-        if vessel_name == "agent":
-            if not self.agent_rl_active:
-                return None, ""
-            a = np.asarray(external_action, dtype=np.float32).reshape(-1)
-            if a.size < 2:
-                return None, ""
-            return (clamp(float(a[0]), -1.0, 1.0), clamp(float(a[1]), -1.0, 1.0)), "rl_external"
-
-        if not self.target_rl_active:
+        if vessel_name == "agent" and not self.agent_rl_active:
             return None, ""
-        if self.secondary_policy_fn is None:
+        if vessel_name == "target" and not self.target_rl_active:
             return None, ""
-        a = np.asarray(self.secondary_policy_fn(self._get_obs_target_perspective()), dtype=np.float32).reshape(-1)
+        a = np.asarray(external_action, dtype=np.float32).reshape(-1)
         if a.size < 2:
             return None, ""
-        return (clamp(float(a[0]), -1.0, 1.0), clamp(float(a[1]), -1.0, 1.0)), "rl_internal"
+        return (clamp(float(a[0]), -1.0, 1.0), clamp(float(a[1]), -1.0, 1.0)), "rl_external"
 
     def step(self, action: Union[np.ndarray, Tuple[float, float], list]) -> Tuple[np.ndarray, float, bool, Dict[str, float | str | int]]:
         a = np.asarray(action, dtype=np.float32).reshape(-1)
@@ -1110,28 +1113,17 @@ class SingleTargetFeatureEnv:
         allow_agent_rl = encounter_active and self.agent_role == "give_way"
         allow_target_rl = encounter_active and self.target_role == "give_way"
 
-        agent_rl_trigger = (
-            allow_agent_rl
-            and self.risk_of_collision
-            and agent_dist >= self.envp.rl_takeover_distance
-            and not self.agent_reached
-        )
-        target_rl_trigger = (
-            allow_target_rl
-            and self.risk_of_collision
-            and target_dist >= self.envp.rl_takeover_distance
-            and not self.target_reached
-        )
+        if self.rl_controlled_vessel == "none":
+            if allow_agent_rl and self.risk_of_collision and agent_dist >= self.envp.rl_takeover_distance and not self.agent_reached:
+                self.rl_controlled_vessel = "agent"
+            elif allow_target_rl and self.risk_of_collision and target_dist >= self.envp.rl_takeover_distance and not self.target_reached:
+                self.rl_controlled_vessel = "target"
 
-        if agent_rl_trigger:
-            self.agent_rl_latched = True
-        if target_rl_trigger:
-            self.target_rl_latched = True
-
-        # Stand-on vessel is never RL-active in simplified single-give-way encounters.
-        self.agent_rl_active = self.agent_rl_latched and allow_agent_rl and not self.agent_reached
-        self.target_rl_active = self.target_rl_latched and allow_target_rl and not self.target_reached
-        self.any_rl_ever_triggered = self.any_rl_ever_triggered or self.agent_rl_latched or self.target_rl_latched
+        self.agent_rl_latched = self.agent_rl_latched or (self.rl_controlled_vessel == "agent")
+        self.target_rl_latched = self.target_rl_latched or (self.rl_controlled_vessel == "target")
+        self.agent_rl_active = (self.rl_controlled_vessel == "agent") and (not self.agent_reached)
+        self.target_rl_active = (self.rl_controlled_vessel == "target") and (not self.target_reached)
+        self.any_rl_ever_triggered = self.any_rl_ever_triggered or (self.rl_controlled_vessel != "none")
         self.rl_ever_triggered = self.any_rl_ever_triggered
 
         early_cutoff_steps = max(1, int(self.envp.no_takeover_early_done_steps))
@@ -1192,37 +1184,31 @@ class SingleTargetFeatureEnv:
         was_target_active = not self.target_reached
         encounter_active = bool(self.latched_encounter_active)
         for _ in range(max(1, self.envp.substeps)):
-            if not encounter_active:
+            if self.rl_controlled_vessel == "agent":
+                agent_rl_cmd, agent_rl_src = self._select_rl_action_for_vessel("agent", a)
+                if agent_rl_cmd is not None:
+                    self.agent_control_source = agent_rl_src
+                    self._advance_controlled(self.agent, "agent_reached", agent_rl_cmd[0], agent_rl_cmd[1], h)
+                else:
+                    self.agent_control_source = "straight"
+                    self._advance_straight(self.agent, "agent_reached", h)
+                self.target_control_source = "pure_pursuit"
+                self._advance_target(h)
+            elif self.rl_controlled_vessel == "target":
+                self.agent_control_source = "straight"
+                self._advance_straight(self.agent, "agent_reached", h)
+                target_rl_cmd, target_rl_src = self._select_rl_action_for_vessel("target", a)
+                if target_rl_cmd is not None:
+                    self.target_control_source = target_rl_src
+                    self._advance_controlled(self.target, "target_reached", target_rl_cmd[0], target_rl_cmd[1], h)
+                else:
+                    self.target_control_source = "pure_pursuit"
+                    self._advance_target(h)
+            else:
                 self.agent_control_source = "straight"
                 self._advance_straight(self.agent, "agent_reached", h)
                 self.target_control_source = "pure_pursuit"
                 self._advance_target(h)
-            else:
-                if self.agent_role == "stand_on":
-                    self.agent_control_source = "straight"
-                    self._advance_straight(self.agent, "agent_reached", h)
-                else:
-                    agent_rl_cmd, agent_rl_src = self._select_rl_action_for_vessel("agent", a)
-                    if agent_rl_cmd is not None:
-                        self.agent_control_source = agent_rl_src
-                        self._advance_controlled(self.agent, "agent_reached", agent_rl_cmd[0], agent_rl_cmd[1], h)
-                    else:
-                        ar, at, _ = self._fallback_colregs_action("agent", self.colregs_scenario, "give_way", False)
-                        self.agent_control_source = "starboard_avoid"
-                        self._advance_controlled(self.agent, "agent_reached", ar, at, h)
-
-                if self.target_role == "stand_on":
-                    self.target_control_source = "pure_pursuit"
-                    self._advance_target(h)
-                else:
-                    target_rl_cmd, target_rl_src = self._select_rl_action_for_vessel("target", a)
-                    if target_rl_cmd is not None:
-                        self.target_control_source = target_rl_src
-                        self._advance_controlled(self.target, "target_reached", target_rl_cmd[0], target_rl_cmd[1], h)
-                    else:
-                        tr, tt, _ = self._fallback_colregs_action("target", self.colregs_scenario, "give_way", False)
-                        self.target_control_source = "starboard_avoid"
-                        self._advance_controlled(self.target, "target_reached", tr, tt, h)
 
         if was_agent_active:
             self.agent_steps_taken += 1
