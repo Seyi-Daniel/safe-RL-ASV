@@ -108,6 +108,8 @@ class SingleTargetFeatureEnv:
         self.latched_encounter_active = False
         self.latched_geometry = "none"
         self.encounter_clear_steps = 0
+        self.designated_agent_role = "none"
+        self.designated_target_role = "none"
         self.candidate_scenario = "safe"
         self.candidate_agent_role = "none"
         self.candidate_target_role = "none"
@@ -129,6 +131,8 @@ class SingleTargetFeatureEnv:
         self.latched_encounter_active = False
         self.latched_geometry = "none"
         self.encounter_clear_steps = 0
+        self.designated_agent_role = "none"
+        self.designated_target_role = "none"
         self.secondary_policy_fn = None
         self.last_inter_vessel_distance = float("inf")
         self.encounter_was_risky = False
@@ -360,6 +364,8 @@ class SingleTargetFeatureEnv:
             self.latched_scenario = raw_scenario
             self.latched_agent_role = raw_agent_role
             self.latched_target_role = raw_target_role
+            self.designated_agent_role = raw_agent_role
+            self.designated_target_role = raw_target_role
             self.overtaking_latched = raw_scenario == "overtaking"
             self.encounter_clear_steps = 0
             self.safe_pass_awarded = False
@@ -401,6 +407,10 @@ class SingleTargetFeatureEnv:
                 agent_role = raw_agent_role
                 target_role = raw_target_role
                 encounter_latched = False
+
+        if self.encounter_was_risky and agent_role == "none" and target_role == "none":
+            agent_role = self.designated_agent_role
+            target_role = self.designated_target_role
 
         return {
             "geometry": geometry,
@@ -467,11 +477,13 @@ class SingleTargetFeatureEnv:
 
     def _classify_colregs(self) -> Dict[str, float | str | bool]:
         if self.agent_reached or self.target_reached:
+            fallback_agent_role = self.designated_agent_role if self.encounter_was_risky else "none"
+            fallback_target_role = self.designated_target_role if self.encounter_was_risky else "none"
             return {
                 "geometry": "none",
                 "scenario": "safe",
-                "agent_role": "none",
-                "target_role": "none",
+                "agent_role": fallback_agent_role,
+                "target_role": fallback_target_role,
                 "agent_bearing_deg": 0.0,
                 "target_bearing_deg": 0.0,
                 "tcpa": float("inf"),
@@ -493,6 +505,8 @@ class SingleTargetFeatureEnv:
             self.latched_encounter_active,
             self.latched_geometry,
             self.encounter_clear_steps,
+            self.designated_agent_role,
+            self.designated_target_role,
             self.candidate_scenario,
             self.candidate_agent_role,
             self.candidate_target_role,
@@ -511,6 +525,8 @@ class SingleTargetFeatureEnv:
         self.latched_encounter_active = False
         self.latched_geometry = "none"
         self.encounter_clear_steps = 0
+        self.designated_agent_role = "none"
+        self.designated_target_role = "none"
         agent_sim = Vessel(agent.x, agent.y, agent.h, agent.speed, agent.goal_x, agent.goal_y, agent.rudder, agent.throttle)
         target_sim = Vessel(target.x, target.y, target.h, target.speed, target.goal_x, target.goal_y, target.rudder, target.throttle)
 
@@ -548,6 +564,8 @@ class SingleTargetFeatureEnv:
                     self.latched_encounter_active,
                     self.latched_geometry,
                     self.encounter_clear_steps,
+                    self.designated_agent_role,
+                    self.designated_target_role,
                     self.candidate_scenario,
                     self.candidate_agent_role,
                     self.candidate_target_role,
@@ -574,6 +592,8 @@ class SingleTargetFeatureEnv:
                     self.latched_encounter_active,
                     self.latched_geometry,
                     self.encounter_clear_steps,
+                    self.designated_agent_role,
+                    self.designated_target_role,
                     self.candidate_scenario,
                     self.candidate_agent_role,
                     self.candidate_target_role,
@@ -625,10 +645,12 @@ class SingleTargetFeatureEnv:
                     self.latched_target_role,
                     self.overtaking_clear_steps,
                     self.encounter_latched,
-                    self.latched_encounter_active,
-                    self.latched_geometry,
-                    self.encounter_clear_steps,
-                    self.candidate_scenario,
+            self.latched_encounter_active,
+            self.latched_geometry,
+            self.encounter_clear_steps,
+            self.designated_agent_role,
+            self.designated_target_role,
+            self.candidate_scenario,
                     self.candidate_agent_role,
                     self.candidate_target_role,
                     self.candidate_steps,
@@ -957,6 +979,8 @@ class SingleTargetFeatureEnv:
         self.latched_encounter_active = False
         self.latched_geometry = "none"
         self.encounter_clear_steps = 0
+        self.designated_agent_role = "none"
+        self.designated_target_role = "none"
         self.last_inter_vessel_distance = float("inf")
         self.encounter_was_risky = False
         self.safe_pass_awarded = False
