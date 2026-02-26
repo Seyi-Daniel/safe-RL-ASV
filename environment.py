@@ -85,7 +85,6 @@ class SingleTargetFeatureEnv:
         self.target_start_pos = (0.0, 0.0)
 
         # Vessel-2 scripted path state
-        self.target_end_heading: float = 0.0
 
         # render-time planned path visualization
         self.show_planned_paths = True
@@ -272,42 +271,14 @@ class SingleTargetFeatureEnv:
         offset = self.rng.uniform(-0.5 * math.pi, 0.5 * math.pi)
         return wrap_pi(to_center_angle + offset)
 
-    def _pure_pursuit_rudder_cmd(self, v: Vessel, goal_x: float, goal_y: float, end_heading: float) -> float:
-        """
-        Two-phase pure pursuit rudder command.
-        Far phase: steer toward goal position directly.
-        Near phase: steer toward a virtual approach point placed behind the goal
-                    along the end_heading direction, so the vessel arrives with
-                    roughly the correct heading.
-        """
+    def _pure_pursuit_rudder_cmd(self, v: Vessel, goal_x: float, goal_y: float) -> float:
+        """Pure-pursuit rudder command that steers vessel directly toward goal position."""
         turning_radius = v.speed / max(self.envp.rudder_max_yaw_rate_rad_s, 1e-6)
-        lookahead_dist = self.envp.pp_lookahead_factor * turning_radius
-        chord = math.hypot(goal_x - v.x, goal_y - v.y)
+        lookahead_dist = max(1e-6, self.envp.pp_lookahead_factor * turning_radius)
 
-        # Cap transition and approach distances to avoid conflict on short crossings.
-        transition_dist = min(
-            self.envp.pp_transition_factor * turning_radius,
-            0.5 * chord,
-        )
-        approach_dist = min(
-            self.envp.pp_approach_factor * turning_radius,
-            0.25 * chord,
-        )
-
-        d_goal = math.hypot(goal_x - v.x, goal_y - v.y)
-
-        if d_goal > transition_dist:
-            # Far phase: steer directly toward the goal.
-            target_x, target_y = goal_x, goal_y
-        else:
-            # Near phase: steer toward virtual approach point behind goal.
-            target_x = goal_x - approach_dist * math.cos(end_heading)
-            target_y = goal_y - approach_dist * math.sin(end_heading)
-
-        # Optional lookahead projection in target direction
-        bearing = math.atan2(target_y - v.y, target_x - v.x)
-        target_x = v.x + lookahead_dist * math.cos(bearing)
-        target_y = v.y + lookahead_dist * math.sin(bearing)
+        bearing_to_goal = math.atan2(goal_y - v.y, goal_x - v.x)
+        target_x = v.x + lookahead_dist * math.cos(bearing_to_goal)
+        target_y = v.y + lookahead_dist * math.sin(bearing_to_goal)
 
         bearing = math.atan2(target_y - v.y, target_x - v.x)
         heading_error = wrap_pi(bearing - v.h)
@@ -318,7 +289,7 @@ class SingleTargetFeatureEnv:
         )
 
     def _sample_target_path(self) -> Vessel:
-        # Vessel 2: random start/goal on big circle with inward-facing start/end headings.
+        # Vessel 2: random start/goal on big circle with inward-facing start heading.
         start_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
         goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
         tries = 0
@@ -329,8 +300,6 @@ class SingleTargetFeatureEnv:
         sx2, sy2 = self._point_on_big_circle(start_ang_2)
         gx2, gy2 = self._point_on_big_circle(goal_ang_2)
         sh2 = self._inward_facing_heading(sx2, sy2)
-        gh2 = self._inward_facing_heading(gx2, gy2)
-        self.target_end_heading = gh2
         sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         return Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
 
@@ -344,12 +313,7 @@ class SingleTargetFeatureEnv:
             self.target.speed = 0.0
             return
 
-        rudder_cmd = self._pure_pursuit_rudder_cmd(
-            self.target,
-            self.target.goal_x,
-            self.target.goal_y,
-            self.target_end_heading,
-        )
+        rudder_cmd = self._pure_pursuit_rudder_cmd(self.target, self.target.goal_x, self.target.goal_y)
 
         self._integrate_rudder_heading(self.target, rudder_cmd, dt)
 
@@ -361,7 +325,14 @@ class SingleTargetFeatureEnv:
         self.target.x += travel * math.cos(self.target.h)
         self.target.y += travel * math.sin(self.target.h)
 
-        if travel + 1e-9 >= d_goal or self._goal_distance(self.target) <= self.envp.goal_radius:
+        if travel + 1e-9 >= d_goal:
+            self.target.x = self.target.goal_x
+            self.target.y = self.target.goal_y
+            self.target_reached = True
+            self.target.speed = 0.0
+            return
+
+        if self._goal_distance(self.target) <= self.envp.goal_radius:
             self.target_reached = True
             self.target.speed = 0.0
 
@@ -392,6 +363,13 @@ class SingleTargetFeatureEnv:
         v.y += math.sin(v.h) * travel
 
         if travel + 1e-9 >= d:
+            v.x = v.goal_x
+            v.y = v.goal_y
+            setattr(self, reached_attr, True)
+            v.speed = 0.0
+            return
+
+        if self._goal_distance(v) <= self.envp.goal_radius:
             setattr(self, reached_attr, True)
             v.speed = 0.0
 
@@ -425,6 +403,13 @@ class SingleTargetFeatureEnv:
         v.y += math.sin(v.h) * travel
 
         if travel + 1e-9 >= d:
+            v.x = v.goal_x
+            v.y = v.goal_y
+            setattr(self, reached_attr, True)
+            v.speed = 0.0
+            return
+
+        if self._goal_distance(v) <= self.envp.goal_radius:
             setattr(self, reached_attr, True)
             v.speed = 0.0
 
@@ -445,9 +430,7 @@ class SingleTargetFeatureEnv:
             if d_goal <= self.envp.goal_radius:
                 break
 
-            rudder_cmd = self._pure_pursuit_rudder_cmd(
-                sim, goal_x, goal_y, self.target_end_heading
-            )
+            rudder_cmd = self._pure_pursuit_rudder_cmd(sim, goal_x, goal_y)
             self._integrate_rudder_heading(sim, rudder_cmd, dt)
 
             travel = min(sim.speed * dt, d_goal)
@@ -456,6 +439,8 @@ class SingleTargetFeatureEnv:
             pts.append((sim.x, sim.y))
 
             if travel + 1e-9 >= d_goal:
+                sim.x, sim.y = goal_x, goal_y
+                pts.append((sim.x, sim.y))
                 break
 
         self.target_planned_path = pts

@@ -38,7 +38,7 @@ class EnvParams:
 
     # spawn & goals
     spawn_margin: float = 20.0
-    goal_radius: float = 10.0
+    goal_radius: float = 2.0
     spawn_ring_radius: float = 35.0
     goal_ring_radius: float = 180.0
     vessel_outline_radius: float = 4.0
@@ -49,8 +49,6 @@ class EnvParams:
     target_max_speed: float = 7.0
     # pure pursuit controller parameters for vessel 2 scripted path
     pp_lookahead_factor: float = 2.0      # lookahead distance = factor × turning_radius
-    pp_transition_factor: float = 2.0     # near-phase begins at factor × turning_radius from goal
-    pp_approach_factor: float = 1.0       # virtual approach point at factor × turning_radius behind goal
     pp_heading_gain_deg: float = 25.0     # proportional gain divisor for heading error -> rudder cmd
 
     # COLREGS risk/takeover gating
