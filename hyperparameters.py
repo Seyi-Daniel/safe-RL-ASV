@@ -62,6 +62,8 @@ class EnvParams:
     rl_takeover_distance: float = 35.0
     reset_viable_episode_max_tries: int = 80
     no_takeover_early_done_steps: int = 1
+    overtaking_clear_distance: float = 40.0
+    overtaking_clear_steps_required: int = 5
 
 
 @dataclass

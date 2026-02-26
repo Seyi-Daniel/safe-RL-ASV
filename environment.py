@@ -99,6 +99,13 @@ class SingleTargetFeatureEnv:
         self.rl_overlay_shown: bool = False  # True after overlay has been shown once this episode
         self.prev_agent_rl_active = False
         self.prev_target_rl_active = False
+        self.overtaking_latched = False
+        self.latched_scenario = "safe"
+        self.latched_agent_role = "none"
+        self.latched_target_role = "none"
+        self.overtaking_clear_steps = 0
+        self.encounter_latched = False
+        self.geometry_scenario = "none"
         self._screen = None
         self._clock = None
         self._font = None
@@ -145,13 +152,28 @@ class SingleTargetFeatureEnv:
         rel_port = (math.degrees(math.atan2(y_rel, x_rel)) + 360.0) % 360.0
         return (360.0 - rel_port) % 360.0
 
-    def _bearing_in_sector(self, bearing_deg: float, start_deg: float, end_deg: float) -> bool:
+    def _bearing_in_sector(self, bearing_deg: float, start_deg: float, end_deg: float, inclusive: bool = True) -> bool:
         b = bearing_deg % 360.0
         s = start_deg % 360.0
         e = end_deg % 360.0
         if s <= e:
-            return s <= b <= e
-        return b >= s or b <= e
+            if inclusive:
+                return s <= b <= e
+            return s < b < e
+        if inclusive:
+            return b >= s or b <= e
+        return b > s or b < e
+
+    def _is_closing(self, from_v: Vessel, to_v: Vessel, eps: float = 1e-6) -> bool:
+        rx = to_v.x - from_v.x
+        ry = to_v.y - from_v.y
+        r = math.hypot(rx, ry)
+        if r <= eps:
+            return False
+        rvx = math.cos(to_v.h) * to_v.speed - math.cos(from_v.h) * from_v.speed
+        rvy = math.sin(to_v.h) * to_v.speed - math.sin(from_v.h) * from_v.speed
+        range_rate = (rx * rvx + ry * rvy) / r
+        return range_rate < -eps
 
     def _tcpa_dcpa(self, a: Vessel, b: Vessel) -> Tuple[float, float]:
         avx = math.cos(a.h) * a.speed
@@ -182,13 +204,12 @@ class SingleTargetFeatureEnv:
         crossing_max = self.envp.colregs_crossing_starboard_max_deg
         overtaking_max = self.envp.colregs_overtaking_aft_max_deg
 
-        speed_eps = self.envp.colregs_speed_eps
-        agent_overtaking = self._bearing_in_sector(tgt_bearing, crossing_max, overtaking_max) and (
-            agent.speed > target.speed + speed_eps
-        )
-        target_overtaking = self._bearing_in_sector(own_bearing, crossing_max, overtaking_max) and (
-            target.speed > agent.speed + speed_eps
-        )
+        agent_overtaking = self._bearing_in_sector(
+            tgt_bearing, crossing_max, overtaking_max, inclusive=False
+        ) and self._is_closing(agent, target)
+        target_overtaking = self._bearing_in_sector(
+            own_bearing, crossing_max, overtaking_max, inclusive=False
+        ) and self._is_closing(target, agent)
         if agent_overtaking and not target_overtaking:
             return {
                 "geometry": "overtaking_agent_geom",
@@ -247,11 +268,44 @@ class SingleTargetFeatureEnv:
         geometry = str(geom["geometry"])
         risk_of_collision = bool(risk["risk_of_collision"])
 
+        if geometry == "overtaking_agent_geom":
+            self.overtaking_latched = True
+            self.encounter_latched = True
+            self.latched_scenario = "overtaking"
+            self.latched_agent_role = "give_way"
+            self.latched_target_role = "stand_on"
+            self.overtaking_clear_steps = 0
+        elif geometry == "overtaking_target_geom":
+            self.overtaking_latched = True
+            self.encounter_latched = True
+            self.latched_scenario = "overtaking"
+            self.latched_agent_role = "stand_on"
+            self.latched_target_role = "give_way"
+            self.overtaking_clear_steps = 0
+
+        if self.overtaking_latched:
+            sep = math.hypot(target.x - agent.x, target.y - agent.y)
+            if sep > self.envp.overtaking_clear_distance:
+                self.overtaking_clear_steps += 1
+                if self.overtaking_clear_steps >= max(1, int(self.envp.overtaking_clear_steps_required)):
+                    self.overtaking_latched = False
+                    self.encounter_latched = False
+                    self.latched_scenario = "safe"
+                    self.latched_agent_role = "none"
+                    self.latched_target_role = "none"
+                    self.overtaking_clear_steps = 0
+            else:
+                self.overtaking_clear_steps = 0
+
         scenario = "safe"
         agent_role = "none"
         target_role = "none"
 
-        if geometry == "head_on_geom" and risk_of_collision:
+        if self.overtaking_latched:
+            scenario = self.latched_scenario
+            agent_role = self.latched_agent_role
+            target_role = self.latched_target_role
+        elif geometry == "head_on_geom" and risk_of_collision:
             scenario = "head_on"
             agent_role = "give_way"
             target_role = "give_way"
@@ -265,14 +319,6 @@ class SingleTargetFeatureEnv:
             target_role = "give_way"
         elif geometry in {"head_on_geom", "crossing_agent_give_way_geom", "crossing_agent_stand_on_geom"}:
             scenario = "no_risk"
-        elif geometry == "overtaking_agent_geom":
-            scenario = "overtaking"
-            agent_role = "give_way"
-            target_role = "stand_on"
-        elif geometry == "overtaking_target_geom":
-            scenario = "overtaking"
-            agent_role = "stand_on"
-            target_role = "give_way"
 
         return {
             "geometry": geometry,
@@ -284,6 +330,8 @@ class SingleTargetFeatureEnv:
             "tcpa": float(risk["tcpa"]),
             "dcpa": float(risk["dcpa"]),
             "risk_of_collision": risk_of_collision,
+            "encounter_latched": self.encounter_latched,
+            "overtaking_latched": self.overtaking_latched,
         }
 
     def _classify_colregs(self) -> Dict[str, float | str | bool]:
@@ -298,10 +346,26 @@ class SingleTargetFeatureEnv:
                 "tcpa": float("inf"),
                 "dcpa": float("inf"),
                 "risk_of_collision": False,
+                "encounter_latched": self.encounter_latched,
+                "overtaking_latched": self.overtaking_latched,
             }
         return self._resolve_colregs_pair(self.agent, self.target)
 
     def _reset_sample_triggers_takeover(self, agent: Vessel, target: Vessel) -> bool:
+        saved_latch_state = (
+            self.overtaking_latched,
+            self.latched_scenario,
+            self.latched_agent_role,
+            self.latched_target_role,
+            self.overtaking_clear_steps,
+            self.encounter_latched,
+        )
+        self.overtaking_latched = False
+        self.latched_scenario = "safe"
+        self.latched_agent_role = "none"
+        self.latched_target_role = "none"
+        self.overtaking_clear_steps = 0
+        self.encounter_latched = False
         agent_sim = Vessel(agent.x, agent.y, agent.h, agent.speed, agent.goal_x, agent.goal_y, agent.rudder, agent.throttle)
         target_sim = Vessel(target.x, target.y, target.h, target.speed, target.goal_x, target.goal_y, target.rudder, target.throttle)
 
@@ -329,6 +393,7 @@ class SingleTargetFeatureEnv:
                 and not agent_reached
                 and agent_dist >= self.envp.rl_takeover_distance
             ):
+                self.overtaking_latched, self.latched_scenario, self.latched_agent_role, self.latched_target_role, self.overtaking_clear_steps, self.encounter_latched = saved_latch_state
                 return True
             if (
                 encounter["risk_of_collision"]
@@ -336,6 +401,7 @@ class SingleTargetFeatureEnv:
                 and not target_reached
                 and target_dist >= self.envp.rl_takeover_distance
             ):
+                self.overtaking_latched, self.latched_scenario, self.latched_agent_role, self.latched_target_role, self.overtaking_clear_steps, self.encounter_latched = saved_latch_state
                 return True
 
             for _ in range(max(1, self.envp.substeps)):
@@ -371,6 +437,7 @@ class SingleTargetFeatureEnv:
             if (agent_reached and target_reached) or self._outside(agent_sim) or self._outside(target_sim):
                 break
 
+        self.overtaking_latched, self.latched_scenario, self.latched_agent_role, self.latched_target_role, self.overtaking_clear_steps, self.encounter_latched = saved_latch_state
         return False
 
     def _point_on_big_circle(self, ang: float) -> Tuple[float, float]:
@@ -621,6 +688,13 @@ class SingleTargetFeatureEnv:
         self.rl_overlay_shown = False
         self.prev_agent_rl_active = False
         self.prev_target_rl_active = False
+        self.overtaking_latched = False
+        self.latched_scenario = "safe"
+        self.latched_agent_role = "none"
+        self.latched_target_role = "none"
+        self.overtaking_clear_steps = 0
+        self.encounter_latched = False
+        self.geometry_scenario = "none"
 
         # Episode termination is fixed-time or both-reached (whichever occurs first).
         self.max_steps = max(1, int(round(self.envp.episode_seconds / self.envp.dt)))
@@ -664,8 +738,10 @@ class SingleTargetFeatureEnv:
 
         encounter = self._classify_colregs()
         self.colregs_scenario = str(encounter["scenario"])
+        self.geometry_scenario = str(encounter["geometry"])
         self.agent_role = str(encounter["agent_role"])
         self.target_role = str(encounter["target_role"])
+        self.overtaking_latched = bool(encounter["overtaking_latched"])
         self.agent_relative_bearing_deg = float(encounter["agent_bearing_deg"])
         self.target_relative_bearing_deg = float(encounter["target_bearing_deg"])
         self.last_tcpa = float(encounter["tcpa"])
