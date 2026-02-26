@@ -42,7 +42,7 @@ class Vessel:
 
 
 class SingleTargetFeatureEnv:
-    """Two-vessel setup: vessel-1 straight center->circle goal, vessel-2 follows Dubins-style plan."""
+    """Two-vessel setup: vessel-1 straight center->circle goal, vessel-2 follows pure pursuit path."""
 
     def __init__(
         self,
@@ -84,15 +84,7 @@ class SingleTargetFeatureEnv:
         self.agent_start_pos = (0.0, 0.0)
         self.target_start_pos = (0.0, 0.0)
 
-        # vessel 2 planned path and tracking state
-        self.target_plan: List[Tuple[str, float, float]] = []  # (segment_kind, duration_s, cmd)
-        self.target_plan_idx = 0
-        self.target_plan_elapsed = 0.0
-        self.target_goal_heading = 0.0
-        self.target_planner_mode = "shortest_path"
-        self.target_path_word = ""
-        self.target_plan_terminal_pos_err = 0.0
-        self.target_plan_terminal_heading_err = 0.0
+        # Vessel-2 scripted path state
 
         # render-time planned path visualization
         self.show_planned_paths = True
@@ -103,6 +95,8 @@ class SingleTargetFeatureEnv:
         self.paused = False
         self.risk_overlay_active = False
         self.risk_overlay_payload: Dict[str, float | str | int] = {}
+        self.rl_ever_triggered: bool = False  # latches True when RL first activates, never resets within episode
+        self.rl_overlay_shown: bool = False  # True after overlay has been shown once this episode
         self.prev_agent_rl_active = False
         self.prev_target_rl_active = False
         self._screen = None
@@ -180,6 +174,16 @@ class SingleTargetFeatureEnv:
         return tcpa, dcpa
 
     def _classify_colregs(self) -> Dict[str, float | str]:
+        # Do not classify if either vessel has already reached its goal.
+        if self.agent_reached or self.target_reached:
+            return {
+                "scenario": "safe",
+                "agent_role": "none",
+                "target_role": "none",
+                "agent_bearing_deg": 0.0,
+                "target_bearing_deg": 0.0,
+            }
+
         own_bearing = self._relative_bearing_deg(self.agent, self.target)
         tgt_bearing = self._relative_bearing_deg(self.target, self.agent)
 
@@ -225,6 +229,7 @@ class SingleTargetFeatureEnv:
                 "target_bearing_deg": tgt_bearing,
             }
 
+        # Crossing: target on agent's starboard bow (agent gives way per Rule 15).
         if self._bearing_in_sector(own_bearing, head_on_half, crossing_max):
             return {
                 "scenario": "crossing",
@@ -233,7 +238,9 @@ class SingleTargetFeatureEnv:
                 "agent_bearing_deg": own_bearing,
                 "target_bearing_deg": tgt_bearing,
             }
-        if self._bearing_in_sector(own_bearing, overtaking_max, head_on_min):
+
+        # Crossing: target on agent's port bow (agent stands on, target gives way per Rule 15).
+        if self._bearing_in_sector(own_bearing, 360.0 - crossing_max, head_on_min):
             return {
                 "scenario": "crossing",
                 "agent_role": "stand_on",
@@ -257,194 +264,70 @@ class SingleTargetFeatureEnv:
         d = abs(wrap_pi(a1 - a0))
         return min(d, abs(2.0 * math.pi - d))
 
-    def _sample_end_heading_candidates(self, sx: float, sy: float, gx: float, gy: float) -> List[float]:
+    def _inward_facing_heading(self, pos_x: float, pos_y: float) -> float:
+        """Sample a heading that points into the circle interior."""
         cx, cy = self.start_x, self.start_y
-        radx = gx - cx
-        rady = gy - cy
-        tang_cw = math.atan2(rady, radx) - 0.5 * math.pi
-        tang_ccw = math.atan2(rady, radx) + 0.5 * math.pi
-        to_center = math.atan2(cy - gy, cx - gx)
-        chord = math.atan2(gy - sy, gx - sx)
+        to_center_angle = math.atan2(cy - pos_y, cx - pos_x)
+        offset = self.rng.uniform(-0.5 * math.pi, 0.5 * math.pi)
+        return wrap_pi(to_center_angle + offset)
 
-        base = [tang_cw, tang_ccw, to_center, chord]
-        sweep = math.radians(self.envp.dubins_heading_sweep_deg)
-        n = max(0, int(self.envp.dubins_heading_choices))
+    def _pure_pursuit_rudder_cmd(self, v: Vessel, goal_x: float, goal_y: float) -> float:
+        """Pure-pursuit rudder command that steers vessel directly toward goal position."""
+        turning_radius = v.speed / max(self.envp.rudder_max_yaw_rate_rad_s, 1e-6)
+        lookahead_dist = max(1e-6, self.envp.pp_lookahead_factor * turning_radius)
 
-        out: List[float] = []
-        for b in base:
-            out.append(wrap_pi(b))
-            for k in range(1, n + 1):
-                out.append(wrap_pi(b + k * sweep))
-                out.append(wrap_pi(b - k * sweep))
-        return out
+        bearing_to_goal = math.atan2(goal_y - v.y, goal_x - v.x)
+        target_x = v.x + lookahead_dist * math.cos(bearing_to_goal)
+        target_y = v.y + lookahead_dist * math.sin(bearing_to_goal)
 
-    # ----- exact Dubins words in normalized coordinates -----
-    def _dubins_lsl(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        tmp = d + math.sin(alpha) - math.sin(beta)
-        p2 = 2.0 + d * d - 2.0 * math.cos(alpha - beta) + 2.0 * d * (math.sin(alpha) - math.sin(beta))
-        if p2 < 0.0:
-            return None
-        tmp2 = math.atan2(math.cos(beta) - math.cos(alpha), tmp)
-        t = mod2pi(-alpha + tmp2)
-        p = math.sqrt(p2)
-        q = mod2pi(beta - tmp2)
-        return t, p, q
+        bearing = math.atan2(target_y - v.y, target_x - v.x)
+        heading_error = wrap_pi(bearing - v.h)
+        return clamp(
+            heading_error / math.radians(self.envp.pp_heading_gain_deg),
+            -1.0,
+            1.0,
+        )
 
-    def _dubins_rsr(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        tmp = d - math.sin(alpha) + math.sin(beta)
-        p2 = 2.0 + d * d - 2.0 * math.cos(alpha - beta) + 2.0 * d * (-math.sin(alpha) + math.sin(beta))
-        if p2 < 0.0:
-            return None
-        tmp2 = math.atan2(math.cos(alpha) - math.cos(beta), tmp)
-        t = mod2pi(alpha - tmp2)
-        p = math.sqrt(p2)
-        q = mod2pi(-beta + tmp2)
-        return t, p, q
+    def _sample_target_path(self) -> Vessel:
+        # Vessel 2: random start/goal on big circle with inward-facing start heading.
+        start_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
+        goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
+        tries = 0
+        while self._arc_gap(start_ang_2, goal_ang_2) < math.radians(20.0) and tries < 40:
+            goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
+            tries += 1
 
-    def _dubins_lsr(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        p2 = -2.0 + d * d + 2.0 * math.cos(alpha - beta) + 2.0 * d * (math.sin(alpha) + math.sin(beta))
-        if p2 < 0.0:
-            return None
-        p = math.sqrt(p2)
-        tmp2 = math.atan2(-math.cos(alpha) - math.cos(beta), d + math.sin(alpha) + math.sin(beta)) - math.atan2(-2.0, p)
-        t = mod2pi(-alpha + tmp2)
-        q = mod2pi(-beta + tmp2)
-        return t, p, q
+        sx2, sy2 = self._point_on_big_circle(start_ang_2)
+        gx2, gy2 = self._point_on_big_circle(goal_ang_2)
+        sh2 = self._inward_facing_heading(sx2, sy2)
+        sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
+        return Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
 
-    def _dubins_rsl(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        p2 = -2.0 + d * d + 2.0 * math.cos(alpha - beta) - 2.0 * d * (math.sin(alpha) + math.sin(beta))
-        if p2 < 0.0:
-            return None
-        p = math.sqrt(p2)
-        tmp2 = math.atan2(math.cos(alpha) + math.cos(beta), d - math.sin(alpha) - math.sin(beta)) - math.atan2(2.0, p)
-        t = mod2pi(alpha - tmp2)
-        q = mod2pi(beta - tmp2)
-        return t, p, q
+    def _advance_target(self, dt: float) -> None:
+        if self.target is None or self.target_reached:
+            return
 
-    def _dubins_rlr(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        tmp = (6.0 - d * d + 2.0 * math.cos(alpha - beta) + 2.0 * d * (math.sin(alpha) - math.sin(beta))) / 8.0
-        if abs(tmp) > 1.0:
-            return None
-        p = mod2pi(2.0 * math.pi - math.acos(tmp))
-        t = mod2pi(alpha - math.atan2(math.cos(alpha) - math.cos(beta), d - math.sin(alpha) + math.sin(beta)) + 0.5 * p)
-        q = mod2pi(alpha - beta - t + p)
-        return t, p, q
+        d_goal = self._goal_distance(self.target)
+        if d_goal <= self.envp.goal_radius:
+            self.target_reached = True
+            self.target.speed = 0.0
+            return
 
-    def _dubins_lrl(self, alpha: float, beta: float, d: float) -> Optional[Tuple[float, float, float]]:
-        tmp = (6.0 - d * d + 2.0 * math.cos(alpha - beta) + 2.0 * d * (-math.sin(alpha) + math.sin(beta))) / 8.0
-        if abs(tmp) > 1.0:
-            return None
-        p = mod2pi(2.0 * math.pi - math.acos(tmp))
-        t = mod2pi(-alpha - math.atan2(math.cos(alpha) - math.cos(beta), d + math.sin(alpha) - math.sin(beta)) + 0.5 * p)
-        q = mod2pi(beta - alpha - t + p)
-        return t, p, q
+        rudder_cmd = self._pure_pursuit_rudder_cmd(self.target, self.target.goal_x, self.target.goal_y)
 
-    def _exact_dubins_candidates(self, sx: float, sy: float, sh: float, gx: float, gy: float, gh: float, radius: float) -> List[Tuple[str, Tuple[float, float, float], float]]:
-        dx = gx - sx
-        dy = gy - sy
-        D = math.hypot(dx, dy)
-        d = D / max(1e-9, radius)
-        theta = math.atan2(dy, dx)
-        alpha = mod2pi(sh - theta)
-        beta = mod2pi(gh - theta)
+        self._integrate_rudder_heading(self.target, rudder_cmd, dt)
 
-        words = [
-            ("LSL", self._dubins_lsl),
-            ("RSR", self._dubins_rsr),
-            ("LSR", self._dubins_lsr),
-            ("RSL", self._dubins_rsl),
-            ("RLR", self._dubins_rlr),
-            ("LRL", self._dubins_lrl),
-        ]
-        out: List[Tuple[str, Tuple[float, float, float], float]] = []
-        for word, fn in words:
-            params = fn(alpha, beta, d)
-            if params is None:
-                continue
-            lengths = (params[0] * radius, params[1] * radius, params[2] * radius)
-            out.append((word, lengths, sum(lengths)))
-        return out
+        # hold constant scripted speed in nominal mode
+        self.target.speed = clamp(self.target.speed, self.envp.target_min_speed, self.envp.target_max_speed)
 
-    def _segment_cost(self, mode: str, lengths: Tuple[float, float, float], word: str, heading_err: float, pos_err: float, chord: float) -> float:
-        total_len = sum(lengths)
-        steering_len = lengths[0] + lengths[2] + (lengths[1] if word[1] in {"L", "R"} else 0.0)
-        curvature_proxy = steering_len
-        straight_dev = abs(total_len - chord)
+        d_goal = self._goal_distance(self.target)
+        travel = min(self.target.speed * dt, d_goal)
+        self.target.x += travel * math.cos(self.target.h)
+        self.target.y += travel * math.sin(self.target.h)
 
-        if mode == "minimum_steering_effort":
-            return steering_len + 0.15 * total_len + 6.0 * pos_err + heading_err
-        if mode == "minimum_curvature_change":
-            return curvature_proxy + 0.2 * steering_len + 5.0 * pos_err + heading_err
-        if mode == "closest_to_straight_line":
-            return straight_dev + 0.2 * steering_len + 7.0 * pos_err + heading_err
-        return total_len + 0.25 * steering_len + 5.0 * pos_err + heading_err
-
-    def _simulate_plan_endpoint_ideal(self, sx: float, sy: float, sh: float, speed: float, plan: List[Tuple[str, float, float]]) -> Tuple[float, float, float]:
-        x, y, h = sx, sy, sh
-        yaw_rate = self.envp.rudder_max_yaw_rate_rad_s
-        for _, duration, cmd in plan:
-            t = 0.0
-            while t < duration:
-                step = min(0.05, duration - t)
-                h = wrap_pi(h + cmd * yaw_rate * step)
-                x += speed * math.cos(h) * step
-                y += speed * math.sin(h) * step
-                t += step
-        return x, y, h
-
-    def _sample_dubins_style_plan(self, sx: float, sy: float, sh: float, gx: float, gy: float, speed: float) -> Tuple[List[Tuple[str, float, float]], float, str, str, float, float]:
-        yaw_rate = self.envp.rudder_max_yaw_rate_rad_s
-        radius = max(1e-6, speed / max(1e-6, yaw_rate))
-        chord = math.hypot(gx - sx, gy - sy)
-
-        modes = [
-            "shortest_path",
-            "minimum_steering_effort",
-            "minimum_curvature_change",
-            "closest_to_straight_line",
-        ]
-        mode = self.rng.choice(modes)
-
-        best_plan: List[Tuple[str, float, float]] = []
-        best_goal_h = sh
-        best_word = ""
-        best_pos_err = float("inf")
-        best_heading_err = float("inf")
-        best_score = float("inf")
-
-        for gh in self._sample_end_heading_candidates(sx, sy, gx, gy):
-            for word, lengths, _ in self._exact_dubins_candidates(sx, sy, sh, gx, gy, gh, radius):
-                # Convert geometric lengths to durations for constant speed execution.
-                durations = tuple(l / max(1e-6, speed) for l in lengths)
-                seg_cmd = {"L": 1.0, "R": -1.0, "S": 0.0}
-                plan = [
-                    (word[0], durations[0], seg_cmd[word[0]]),
-                    (word[1], durations[1], seg_cmd[word[1]]),
-                    (word[2], durations[2], seg_cmd[word[2]]),
-                ]
-
-                ex, ey, eh = self._simulate_plan_endpoint_ideal(sx, sy, sh, speed, plan)
-                pos_err = math.hypot(gx - ex, gy - ey)
-                heading_err = abs(wrap_pi(gh - eh))
-                score = self._segment_cost(mode, lengths, word, heading_err, pos_err, chord) + 20.0 * pos_err
-                if score < best_score:
-                    best_score = score
-                    best_plan = plan
-                    best_goal_h = gh
-                    best_word = word
-                    best_pos_err = pos_err
-                    best_heading_err = heading_err
-
-        # Fallback (very rare): simple straight segment.
-        if not best_plan:
-            dur = chord / max(1e-6, speed)
-            best_plan = [("S", dur, 0.0)]
-            best_word = "S"
-            best_goal_h = math.atan2(gy - sy, gx - sx)
-            best_pos_err = 0.0
-            best_heading_err = abs(wrap_pi(best_goal_h - sh))
-
-        return best_plan, best_goal_h, mode, best_word, best_pos_err, best_heading_err
+        if self._goal_distance(self.target) <= self.envp.goal_radius:
+            self.target_reached = True
+            self.target.speed = 0.0
 
     def _integrate_rudder_heading(self, v: Vessel, rudder_cmd: float, dt: float) -> None:
         rudder_cmd = clamp(rudder_cmd, -1.0, 1.0)
@@ -472,7 +355,7 @@ class SingleTargetFeatureEnv:
         v.x += math.cos(v.h) * travel
         v.y += math.sin(v.h) * travel
 
-        if travel + 1e-9 >= d:
+        if self._goal_distance(v) <= self.envp.goal_radius:
             setattr(self, reached_attr, True)
             v.speed = 0.0
 
@@ -505,57 +388,9 @@ class SingleTargetFeatureEnv:
         v.x += math.cos(v.h) * travel
         v.y += math.sin(v.h) * travel
 
-        if travel + 1e-9 >= d:
+        if self._goal_distance(v) <= self.envp.goal_radius:
             setattr(self, reached_attr, True)
             v.speed = 0.0
-
-    def _advance_target_plan(self, dt: float) -> None:
-        if self.target is None or self.target_reached:
-            return
-
-        remaining = dt
-        while remaining > 1e-9 and not self.target_reached:
-            d_goal = self._goal_distance(self.target)
-            if d_goal <= self.envp.goal_radius:
-                self.target_reached = True
-                self.target.speed = 0.0
-                break
-
-            if self.target_plan_idx < len(self.target_plan):
-                seg_kind, seg_dur, cmd = self.target_plan[self.target_plan_idx]
-                seg_rem = max(0.0, seg_dur - self.target_plan_elapsed)
-                if seg_rem <= 1e-9:
-                    self.target_plan_idx += 1
-                    self.target_plan_elapsed = 0.0
-                    continue
-                step = min(remaining, seg_rem)
-                desired_cmd = cmd
-            else:
-                # Post-plan terminal guidance: smoothly steer toward goal heading.
-                step = remaining
-                goal_bearing = math.atan2(self.target.goal_y - self.target.y, self.target.goal_x - self.target.x)
-                err = wrap_pi(goal_bearing - self.target.h)
-                desired_cmd = clamp(err / math.radians(25.0), -1.0, 1.0)
-
-            self._integrate_rudder_heading(self.target, desired_cmd, step)
-
-            d_goal = self._goal_distance(self.target)
-            travel = min(self.target.speed * step, d_goal)
-            self.target.x += travel * math.cos(self.target.h)
-            self.target.y += travel * math.sin(self.target.h)
-
-            if travel + 1e-9 >= d_goal:
-                self.target_reached = True
-                self.target.speed = 0.0
-                break
-
-            remaining -= step
-            if self.target_plan_idx < len(self.target_plan):
-                self.target_plan_elapsed += step
-                if self.target_plan_elapsed + 1e-9 >= self.target_plan[self.target_plan_idx][1]:
-                    self.target_plan_idx += 1
-                    self.target_plan_elapsed = 0.0
-
 
     def _build_agent_planned_path(self) -> None:
         if self.agent is None:
@@ -564,12 +399,8 @@ class SingleTargetFeatureEnv:
         self.agent_planned_path = [(self.start_x, self.start_y), (self.agent.goal_x, self.agent.goal_y)]
 
     def _build_target_planned_path(self, sx: float, sy: float, sh: float, speed: float, goal_x: float, goal_y: float) -> None:
-        # Build a visualized path by replaying the same dynamics used during execution.
         sim = Vessel(sx, sy, sh, speed, goal_x, goal_y, rudder=0.0, throttle=0.0)
         pts: List[Tuple[float, float]] = [(sim.x, sim.y)]
-
-        local_idx = 0
-        local_elapsed = 0.0
         dt = self.envp.dt / max(1, self.envp.substeps)
         max_sim_steps = max(2000, int(2.0 * self.max_steps * max(1, self.envp.substeps)))
 
@@ -578,36 +409,16 @@ class SingleTargetFeatureEnv:
             if d_goal <= self.envp.goal_radius:
                 break
 
-            if local_idx < len(self.target_plan):
-                _, seg_dur, cmd = self.target_plan[local_idx]
-                seg_rem = max(0.0, seg_dur - local_elapsed)
-                if seg_rem <= 1e-9:
-                    local_idx += 1
-                    local_elapsed = 0.0
-                    continue
-                step = min(dt, seg_rem)
-                desired_cmd = cmd
-            else:
-                step = dt
-                goal_bearing = math.atan2(goal_y - sim.y, goal_x - sim.x)
-                err = wrap_pi(goal_bearing - sim.h)
-                desired_cmd = clamp(err / math.radians(25.0), -1.0, 1.0)
+            rudder_cmd = self._pure_pursuit_rudder_cmd(sim, goal_x, goal_y)
+            self._integrate_rudder_heading(sim, rudder_cmd, dt)
 
-            self._integrate_rudder_heading(sim, desired_cmd, step)
-            d_goal = math.hypot(goal_x - sim.x, goal_y - sim.y)
-            travel = min(sim.speed * step, d_goal)
+            travel = min(sim.speed * dt, d_goal)
             sim.x += travel * math.cos(sim.h)
             sim.y += travel * math.sin(sim.h)
             pts.append((sim.x, sim.y))
 
             if travel + 1e-9 >= d_goal:
                 break
-
-            if local_idx < len(self.target_plan):
-                local_elapsed += step
-                if local_elapsed + 1e-9 >= self.target_plan[local_idx][1]:
-                    local_idx += 1
-                    local_elapsed = 0.0
 
         self.target_planned_path = pts
 
@@ -638,38 +449,21 @@ class SingleTargetFeatureEnv:
         goal_ang_1 = self.rng.uniform(0.0, 2.0 * math.pi)
         agx, agy = self._point_on_big_circle(goal_ang_1)
         ah = math.atan2(agy - self.start_y, agx - self.start_x)
-        aspeed = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
+        # Vessel-1 samples from its own speed limits (agent dynamics), not target limits.
+        aspeed = self.rng.uniform(self.envp.min_speed, self.envp.max_speed)
         self.agent = Vessel(self.start_x, self.start_y, ah, aspeed, agx, agy)
         self.agent_start_speed = aspeed
         self.agent_start_pos = (self.agent.x, self.agent.y)
 
-        # Vessel 2: random start/goal on big circle + randomized initial heading.
-        start_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
-        goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
-        tries = 0
-        while self._arc_gap(start_ang_2, goal_ang_2) < math.radians(20.0) and tries < 40:
-            goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
-            tries += 1
-
-        sx2, sy2 = self._point_on_big_circle(start_ang_2)
-        gx2, gy2 = self._point_on_big_circle(goal_ang_2)
-        sh2 = self.rng.uniform(-math.pi, math.pi)
-        sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
-        self.target = Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
+        # Vessel 2: sampled pure-pursuit path endpoints on outer circle.
+        self.target = self._sample_target_path()
+        sx2, sy2 = self.target.x, self.target.y
+        sh2 = self.target.h
+        sp2 = self.target.speed
+        gx2, gy2 = self.target.goal_x, self.target.goal_y
         self.target_start_speed = sp2
         self.target_start_pos = (self.target.x, self.target.y)
 
-        (
-            self.target_plan,
-            self.target_goal_heading,
-            self.target_planner_mode,
-            self.target_path_word,
-            self.target_plan_terminal_pos_err,
-            self.target_plan_terminal_heading_err,
-        ) = self._sample_dubins_style_plan(sx2, sy2, sh2, gx2, gy2, sp2)
-
-        self.target_plan_idx = 0
-        self.target_plan_elapsed = 0.0
 
         self.time = 0.0
         self.step_idx = 0
@@ -693,14 +487,13 @@ class SingleTargetFeatureEnv:
         self.paused = False
         self.risk_overlay_active = False
         self.risk_overlay_payload = {}
+        self.rl_ever_triggered = False
+        self.rl_overlay_shown = False
         self.prev_agent_rl_active = False
         self.prev_target_rl_active = False
 
-        t1 = self.prev_goal_d_agent / max(1e-6, self.agent.speed)
-        planned_t2 = sum(d for _, d, _ in self.target_plan)
-        t2 = max(planned_t2, self.prev_goal_d_target / max(1e-6, self.target.speed))
-        episode_time = max(self.envp.episode_seconds, 1.4 * max(t1, t2) + 20.0)
-        self.max_steps = max(1, int(round(episode_time / self.envp.dt)))
+        # Episode termination is fixed-time or both-reached (whichever occurs first).
+        self.max_steps = max(1, int(round(self.envp.episode_seconds / self.envp.dt)))
 
         self._build_agent_planned_path()
         self._build_target_planned_path(sx2, sy2, sh2, sp2, gx2, gy2)
@@ -754,8 +547,26 @@ class SingleTargetFeatureEnv:
         agent_dist = self._distance_from_start(self.agent, self.agent_start_pos)
         target_dist = self._distance_from_start(self.target, self.target_start_pos)
 
-        self.agent_rl_active = self.risk_of_collision and self.agent_role == "give_way" and agent_dist >= self.envp.rl_takeover_distance
-        self.target_rl_active = self.risk_of_collision and self.target_role == "give_way" and target_dist >= self.envp.rl_takeover_distance
+        # Compute whether RL should trigger this step (un-latched).
+        agent_rl_trigger = (
+            self.risk_of_collision
+            and self.agent_role == "give_way"
+            and agent_dist >= self.envp.rl_takeover_distance
+            and not self.agent_reached
+        )
+        target_rl_trigger = (
+            self.risk_of_collision
+            and self.target_role == "give_way"
+            and target_dist >= self.envp.rl_takeover_distance
+            and not self.target_reached
+        )
+
+        # Latch: once RL activates for the first time, it stays active until episode end.
+        if agent_rl_trigger or target_rl_trigger:
+            self.rl_ever_triggered = True
+
+        self.agent_rl_active = self.rl_ever_triggered and not self.agent_reached
+        self.target_rl_active = self.rl_ever_triggered and not self.target_reached
 
         h = self.envp.dt / max(1, self.envp.substeps)
         was_agent_active = not self.agent_reached
@@ -772,8 +583,8 @@ class SingleTargetFeatureEnv:
             if self.target_role == "give_way" and self.target_rl_active:
                 self._advance_controlled(self.target, "target_reached", rudder_cmd, throttle_cmd, h)
             else:
-                # Keep vessel-2 on its nominal Dubins/plan path unless RL takeover is active.
-                self._advance_target_plan(h)
+                # Keep vessel-2 on its nominal pure pursuit path unless RL takeover is active.
+                self._advance_target(h)
 
         if was_agent_active:
             self.agent_steps_taken += 1
@@ -807,7 +618,6 @@ class SingleTargetFeatureEnv:
         self.prev_goal_d_agent = d_agent
         self.prev_goal_d_target = d_target
 
-        durations = ",".join(f"{d:.2f}" for _, d, _ in self.target_plan)
         info: Dict[str, float | str | int] = {
             "reason": reason,
             "agent_goal_distance": d_agent,
@@ -816,11 +626,6 @@ class SingleTargetFeatureEnv:
             "target_reached": int(self.target_reached),
             "rudder_cmd": rudder_cmd,
             "throttle_cmd": throttle_cmd,
-            "target_planner_mode": self.target_planner_mode,
-            "target_path_word": self.target_path_word,
-            "target_plan_durations": durations,
-            "target_plan_terminal_pos_err": float(self.target_plan_terminal_pos_err),
-            "target_plan_terminal_heading_err": float(self.target_plan_terminal_heading_err),
             "agent_steps_taken": int(self.agent_steps_taken),
             "target_steps_taken": int(self.target_steps_taken),
             "agent_start_speed": float(self.agent_start_speed),
@@ -843,11 +648,14 @@ class SingleTargetFeatureEnv:
             "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
         }
 
-        auto_pause_trigger = self.render_enabled and (
-            (self.agent_rl_active and not self.prev_agent_rl_active)
-            or (self.target_rl_active and not self.prev_target_rl_active)
-        )
-        if auto_pause_trigger and self.risk_of_collision:
+        # Show the RL takeover overlay exactly once per episode, on the first step RL activates.
+        if (
+            self.render_enabled
+            and not self.rl_overlay_shown
+            and self.rl_ever_triggered
+            and (self.agent_rl_active or self.target_rl_active)
+        ):
+            self.rl_overlay_shown = True
             self.paused = True
             self.risk_overlay_active = True
             self.risk_overlay_payload = {
@@ -883,17 +691,16 @@ class SingleTargetFeatureEnv:
         p = self.risk_overlay_payload
         tcpa = p.get("tcpa", float("inf"))
         tcpa_txt = "inf" if (isinstance(tcpa, float) and math.isinf(tcpa)) else f"{float(tcpa):.1f}s"
+        give_way_vessel = "V1 (agent)" if p.get("agent_rl_active", 0) else "V2 (target)" if p.get("target_rl_active", 0) else "unknown"
         lines = [
-            "⚠ RL TAKEOVER TRIGGERED — RISK BRIEFING",
-            f"Step {int(p.get('step', self.step_idx))}  Time {float(p.get('time', self.time)):.1f}s",
-            f"COLREGS scenario: {p.get('scenario', self.colregs_scenario)}",
-            f"Roles: V1={p.get('agent_role', self.agent_role)}  V2={p.get('target_role', self.target_role)}",
-            f"DCPA={float(p.get('dcpa', self.last_dcpa)):.2f}m  TCPA={tcpa_txt}",
-            f"Relative bearings: V1→V2={float(p.get('agent_bearing', self.agent_relative_bearing_deg)):.1f}°  V2→V1={float(p.get('target_bearing', self.target_relative_bearing_deg)):.1f}°",
-            f"Takeover active: V1={int(p.get('agent_rl_active', self.agent_rl_active))}  V2={int(p.get('target_rl_active', self.target_rl_active))}",
-            f"Distance since start: V1={float(p.get('agent_distance', 0.0)):.1f}m  V2={float(p.get('target_distance', 0.0)):.1f}m  threshold={float(p.get('takeover_distance', self.envp.rl_takeover_distance)):.1f}m",
-            "Why paused: risk is within DCPA/TCPA thresholds and give-way vessel RL takeover has begun.",
-            "Press SPACE or ENTER to clear this overlay and continue.",
+            "⚠  RL TAKEOVER — COLLISION AVOIDANCE ACTIVE",
+            f"Step {int(p.get('step', self.step_idx))}   Sim time {float(p.get('time', self.time)):.1f}s",
+            f"COLREGS scenario: {p.get('scenario', self.colregs_scenario).upper()}",
+            f"Give-way vessel: {give_way_vessel}   Stand-on vessel: {'V2 (target)' if p.get('agent_rl_active', 0) else 'V1 (agent)'}",
+            f"DCPA = {float(p.get('dcpa', self.last_dcpa)):.1f}m   TCPA = {tcpa_txt}",
+            f"V1→V2 bearing = {float(p.get('agent_bearing', self.agent_relative_bearing_deg)):.1f}°   V2→V1 bearing = {float(p.get('target_bearing', self.target_relative_bearing_deg)):.1f}°",
+            "RL model now controls give-way vessel for remainder of episode.",
+            "Press SPACE or ENTER to dismiss and continue.",
         ]
 
         box_w = int(0.88 * w)
@@ -966,34 +773,22 @@ class SingleTargetFeatureEnv:
         self._draw_vessel(self.target, (255, 120, 120), "V2")
 
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
+
         hud0 = self._font.render(
-            f"sim_step={self.step_idx}  t={self.time:.1f}s  paused={int(self.paused)}[SPACE]  paths[P]={int(self.show_planned_paths)}  mode={self.target_planner_mode[:4].upper()}  word={self.target_path_word}",
-            True,
-            (255, 255, 255),
+            f"step={self.step_idx}  t={self.time:.1f}s  paused={int(self.paused)}[SPACE]  paths[P]={int(self.show_planned_paths)}  rl_latched={int(self.rl_ever_triggered)}",
+            True, (255, 255, 255),
         )
         hud1 = self._font.render(
-            (
-                f"COLREGS={self.colregs_scenario}  risk={'YES' if self.risk_of_collision else 'NO'}  "
-                f"DCPA={self.last_dcpa:.2f}m  TCPA={tcpa_txt}  BRG={self.agent_relative_bearing_deg:.1f}deg"
-            ),
-            True,
-            (255, 240, 170),
+            f"COLREGS={self.colregs_scenario}  risk={'YES' if self.risk_of_collision else 'NO'}  DCPA={self.last_dcpa:.1f}m  TCPA={tcpa_txt}  V1→V2_BRG={self.agent_relative_bearing_deg:.1f}°  V2→V1_BRG={self.target_relative_bearing_deg:.1f}°",
+            True, (255, 240, 170),
         )
         hud2 = self._font.render(
-            (
-                f"V1 role={self.agent_role} rl={int(self.agent_rl_active)} dist={self._distance_from_start(self.agent, self.agent_start_pos):.1f}/{self.envp.rl_takeover_distance:.1f} "
-                f"spd={self.agent.speed:.2f} hdg={math.degrees(self.agent.h):.1f} rud={math.degrees(self.agent.rudder):.1f}"
-            ),
-            True,
-            (170, 220, 255),
+            f"V1(agent) role={self.agent_role}  rl_active={int(self.agent_rl_active)}  reached={int(self.agent_reached)}  spd={self.agent.speed:.2f}m/s  hdg={math.degrees(self.agent.h):.1f}°",
+            True, (170, 220, 255),
         )
         hud3 = self._font.render(
-            (
-                f"V2 role={self.target_role} rl={int(self.target_rl_active)} dist={self._distance_from_start(self.target, self.target_start_pos):.1f}/{self.envp.rl_takeover_distance:.1f} "
-                f"spd={self.target.speed:.2f} hdg={math.degrees(self.target.h):.1f} rud={math.degrees(self.target.rudder):.1f}"
-            ),
-            True,
-            (255, 190, 190),
+            f"V2(target) role={self.target_role}  rl_active={int(self.target_rl_active)}  reached={int(self.target_reached)}  spd={self.target.speed:.2f}m/s  hdg={math.degrees(self.target.h):.1f}°",
+            True, (255, 190, 190),
         )
         surf.blit(hud0, (10, 8))
         surf.blit(hud1, (10, 26))
