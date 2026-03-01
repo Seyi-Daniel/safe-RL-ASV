@@ -47,7 +47,9 @@ class EnvParams:
     target_outer_radius: float = 180.0
     target_min_speed: float = 0.5
     target_max_speed: float = 7.0
-    target_max_goal_distance_from_start: float = 80.0
+    target_max_goal_arc_distance_from_start: float = 80.0
+    # Legacy alias (chord-distance naming); keep for backward compatibility.
+    target_max_goal_distance_from_start: float | None = None
     # pure pursuit controller parameters for vessel 2 scripted path
     pp_lookahead_factor: float = 2.0      # lookahead distance = factor × turning_radius
     pp_heading_gain_deg: float = 25.0     # proportional gain divisor for heading error -> rudder cmd

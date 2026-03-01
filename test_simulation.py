@@ -17,10 +17,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--render", action="store_true", help="enable pygame visualization")
     p.add_argument("--episode-seconds", type=float, default=60.0)
     p.add_argument(
+        "--target-max-goal-arc-distance",
         "--target-max-goal-distance",
+        dest="target_max_goal_arc_distance",
         type=float,
-        default=EnvParams().target_max_goal_distance_from_start,
-        help="Maximum allowed vessel-2 start->goal distance",
+        default=EnvParams().target_max_goal_arc_distance_from_start,
+        help="Maximum allowed vessel-2 start->goal arc distance along the big circle",
     )
     return p.parse_args()
 
@@ -33,7 +35,7 @@ def main() -> None:
     envp = EnvParams(
         episode_seconds=args.episode_seconds,
         seed=args.seed,
-        target_max_goal_distance_from_start=args.target_max_goal_distance,
+        target_max_goal_arc_distance_from_start=args.target_max_goal_arc_distance,
     )
     env = SingleTargetFeatureEnv(envp, RewardParams(), render=args.render)
 
@@ -43,10 +45,12 @@ def main() -> None:
             _ = obs
             v2_start = env.target_start_pos
             v2_goal = (env.target.goal_x, env.target.goal_y)
-            v2_goal_dist = float(np.hypot(v2_goal[0] - v2_start[0], v2_goal[1] - v2_start[1]))
+            start_angle = float(np.arctan2(v2_start[1] - env.start_y, v2_start[0] - env.start_x))
+            goal_angle = float(np.arctan2(v2_goal[1] - env.start_y, v2_goal[0] - env.start_x))
+            v2_goal_arc_dist = float(env.envp.target_outer_radius * env._arc_gap(start_angle, goal_angle))
             print(
                 f"Episode {ep}: vessel2 start={v2_start}, goal={v2_goal}, "
-                f"distance={v2_goal_dist:.2f} m (max={args.target_max_goal_distance:.2f} m)"
+                f"arc_distance={v2_goal_arc_dist:.2f} m (max={args.target_max_goal_arc_distance:.2f} m)"
             )
 
             done = False
