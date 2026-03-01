@@ -678,15 +678,20 @@ class SingleTargetFeatureEnv:
 
     def _sample_target_path(self) -> Vessel:
         # Vessel 2: random start/goal on big circle with inward-facing start heading.
+        # Goal is sampled to remain within a bounded distance of start for local pure-pursuit behavior checks.
         start_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
         goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
-        tries = 0
-        while self._arc_gap(start_ang_2, goal_ang_2) < math.radians(20.0) and tries < 40:
-            goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
-            tries += 1
 
         sx2, sy2 = self._point_on_big_circle(start_ang_2)
         gx2, gy2 = self._point_on_big_circle(goal_ang_2)
+
+        tries = 0
+        max_goal_dist = max(0.0, float(self.envp.target_max_goal_distance_from_start))
+        while math.hypot(gx2 - sx2, gy2 - sy2) > max_goal_dist and tries < 40:
+            goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
+            gx2, gy2 = self._point_on_big_circle(goal_ang_2)
+            tries += 1
+
         sh2 = self._inward_facing_heading(sx2, sy2)
         sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         return Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
