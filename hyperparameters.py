@@ -52,14 +52,31 @@ class EnvParams:
     pp_heading_gain_deg: float = 25.0     # proportional gain divisor for heading error -> rudder cmd
 
     # COLREGS risk/takeover gating
-    colregs_head_on_half_angle_deg: float = 5.0
+    colregs_head_on_half_angle_deg: float = 10.0  # Engineering approximation for simulation stability.
     colregs_crossing_starboard_max_deg: float = 112.5
     colregs_overtaking_aft_max_deg: float = 247.5
     colregs_speed_eps: float = 0.2
+    simplified_head_on_single_giveway: bool = True
 
     dcpa_risk_threshold: float = 20.0
     tcpa_risk_threshold: float = 90.0
     rl_takeover_distance: float = 35.0
+    reset_viable_episode_max_tries: int = 80
+    no_takeover_early_done_steps: int = 1
+    overtaking_clear_distance: float = 40.0
+    overtaking_clear_steps_required: int = 5
+
+    fallback_starboard_rudder_cmd: float = 0.6
+    fallback_headon_throttle_cmd: float = -0.15
+    fallback_crossing_throttle_cmd: float = -0.05
+    standon_escalation_tcpa: float = 20.0
+    standon_escalation_dcpa: float = 12.0
+    standon_escalation_persistence_steps: int = 3
+    encounter_enter_persistence_steps: int = 2
+    encounter_exit_persistence_steps: int = 3
+    collision_distance: float = 8.0
+    near_miss_distance: float = 15.0
+    safe_pass_distance: float = 25.0
 
 
 @dataclass
@@ -71,6 +88,16 @@ class RewardParams:
 
     # terminal safety
     out_of_bounds_penalty: float = -8.0
+    collision_penalty: float = -20.0
+    near_miss_penalty: float = -2.5
+    unsafe_proximity_penalty_weight: float = 0.05
+    safe_pass_bonus: float = 0.5
+    give_way_early_action_bonus: float = 0.2
+    late_action_penalty: float = -0.4
+    stand_on_hold_bonus: float = 0.1
+    stand_on_unnecessary_action_penalty: float = -0.2
+    crossing_ahead_penalty: float = -0.5
+    oscillation_penalty_weight: float = 0.02
 
 
 @dataclass
