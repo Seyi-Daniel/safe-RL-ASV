@@ -91,19 +91,22 @@ def run_episode_view(args: argparse.Namespace, envp: EnvParams) -> None:
         env.close()
 
 
-def _episode_hits_dcpa_threshold(env: SingleTargetFeatureEnv, seed: int, dcpa_threshold: float) -> tuple[bool, float]:
+def _episode_hits_dcpa_threshold(env: SingleTargetFeatureEnv, seed: int, dcpa_threshold: float) -> tuple[bool, float, dict[str, float | str | int]]:
     _ = env.reset(seed=seed)
     best_dcpa = float("inf")
     done = False
+    final_info: dict[str, float | str | int] = {"reason": "unknown"}
     while not done:
+        # Requirement: threshold crossing must happen before either vessel reaches goal.
         if env.agent_reached or env.target_reached:
             break
         _, _, done, info = env.step(np.array([0.0, 0.0], dtype=np.float32))
+        final_info = info
         dcpa = float(info.get("dcpa", float("inf")))
         best_dcpa = min(best_dcpa, dcpa)
         if dcpa <= dcpa_threshold:
-            return True, best_dcpa
-    return False, best_dcpa
+            return True, best_dcpa, final_info
+    return False, best_dcpa, final_info
 
 
 def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
@@ -124,12 +127,14 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
         for ep in range(1, args.episodes + 1):
             accepted_seed = None
             accepted_best_dcpa = float("inf")
+            accepted_attempt = -1
             for attempt in range(max(1, args.dcpa_sample_max_tries)):
                 candidate_seed = args.seed + ep * 100_000 + attempt
-                ok, best_dcpa = _episode_hits_dcpa_threshold(env, candidate_seed, args.dcpa_threshold)
+                ok, best_dcpa, _ = _episode_hits_dcpa_threshold(env, candidate_seed, args.dcpa_threshold)
                 if ok:
                     accepted_seed = candidate_seed
                     accepted_best_dcpa = best_dcpa
+                    accepted_attempt = attempt
                     break
 
             if accepted_seed is None:
@@ -139,21 +144,38 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                 )
                 continue
 
+            # Re-run accepted seed for actual episode playback and strictly verify threshold again.
             _ = env.reset(seed=accepted_seed)
-            print(
-                f"Episode {ep}: accepted_seed={accepted_seed} best_dcpa={accepted_best_dcpa:.2f} "
-                f"(threshold={args.dcpa_threshold:.2f})"
-            )
-
             done = False
             total = 0.0
+            run_best_dcpa = float("inf")
+            threshold_hit_before_goal = False
+            info: dict[str, float | str | int] = {"reason": "unknown", "dcpa": float("inf")}
             while not done:
+                if env.agent_reached or env.target_reached:
+                    break
                 action = np.array([0.0, 0.0], dtype=np.float32)
                 _, reward, done, info = env.step(action)
                 total += reward
+                dcpa = float(info.get("dcpa", float("inf")))
+                run_best_dcpa = min(run_best_dcpa, dcpa)
+                if dcpa <= args.dcpa_threshold:
+                    threshold_hit_before_goal = True
                 if args.render:
                     env.render()
 
+            if not threshold_hit_before_goal:
+                print(
+                    f"Episode {ep}: rejected post-check for seed={accepted_seed} "
+                    f"(best_dcpa={run_best_dcpa:.2f} > threshold={args.dcpa_threshold:.2f})"
+                )
+                continue
+
+            print(
+                f"Episode {ep}: accepted_seed={accepted_seed} attempt={accepted_attempt} "
+                f"sample_best_dcpa={accepted_best_dcpa:.2f} run_best_dcpa={run_best_dcpa:.2f} "
+                f"(threshold={args.dcpa_threshold:.2f})"
+            )
             print(
                 f"  end: reason={info.get('reason', 'unknown')} steps={env.step_idx} return={float(total):.3f} "
                 f"final_dcpa={float(info.get('dcpa', float('inf'))):.2f}"
