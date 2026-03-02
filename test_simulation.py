@@ -24,12 +24,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--disable-no-takeover-early-done", dest="enable_no_takeover_early_done", action="store_false", help="Disable early cutoff for no-takeover episodes")
     p.set_defaults(enable_no_takeover_early_done=EnvParams().enable_no_takeover_early_done)
     p.add_argument(
+        "--target-min-goal-arc-distance",
         "--target-max-goal-arc-distance",
         "--target-max-goal-distance",
-        dest="target_max_goal_arc_distance",
+        dest="target_min_goal_arc_distance",
         type=float,
-        default=EnvParams().target_max_goal_arc_distance_from_start,
-        help="Maximum allowed vessel-2 start->goal arc distance along the big circle",
+        default=EnvParams().target_min_goal_arc_distance_from_start,
+        help="Minimum required vessel-2 start->goal arc distance along the big circle",
     )
     return p.parse_args()
 
@@ -42,7 +43,7 @@ def main() -> None:
     envp = EnvParams(
         episode_seconds=args.episode_seconds,
         seed=args.seed,
-        target_max_goal_arc_distance_from_start=args.target_max_goal_arc_distance,
+        target_min_goal_arc_distance_from_start=args.target_min_goal_arc_distance,
         require_reset_viable_takeover_path=args.require_reset_viable_takeover_path,
         enable_no_takeover_early_done=args.enable_no_takeover_early_done,
     )
@@ -59,7 +60,7 @@ def main() -> None:
             v2_goal_arc_dist = float(env.envp.target_outer_radius * env._arc_gap(start_angle, goal_angle))
             print(
                 f"Episode {ep}: vessel2 start={v2_start}, goal={v2_goal}, "
-                f"arc_distance={v2_goal_arc_dist:.2f} m (max={args.target_max_goal_arc_distance:.2f} m)"
+                f"arc_distance={v2_goal_arc_dist:.2f} m (min={args.target_min_goal_arc_distance:.2f} m)"
             )
 
             done = False

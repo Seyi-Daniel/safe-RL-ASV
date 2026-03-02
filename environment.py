@@ -678,7 +678,7 @@ class SingleTargetFeatureEnv:
 
     def _sample_target_path(self) -> Vessel:
         # Vessel 2: random start/goal on big circle with inward-facing start heading.
-        # Goal is sampled to remain within a bounded arc distance from start for local pure-pursuit behavior checks.
+        # Goal is sampled to remain within a minimum arc distance from start for local pure-pursuit behavior checks.
         start_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
         goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
 
@@ -686,12 +686,14 @@ class SingleTargetFeatureEnv:
         gx2, gy2 = self._point_on_big_circle(goal_ang_2)
 
         tries = 0
-        max_goal_arc_dist = max(0.0, float(self.envp.target_max_goal_arc_distance_from_start))
-        # Backward compatibility: allow legacy parameter name to override when explicitly provided.
+        min_goal_arc_dist = max(0.0, float(self.envp.target_min_goal_arc_distance_from_start))
+        # Backward compatibility: allow legacy parameter names to override when explicitly provided.
+        if self.envp.target_max_goal_arc_distance_from_start is not None:
+            min_goal_arc_dist = max(0.0, float(self.envp.target_max_goal_arc_distance_from_start))
         if self.envp.target_max_goal_distance_from_start is not None:
-            max_goal_arc_dist = max(0.0, float(self.envp.target_max_goal_distance_from_start))
+            min_goal_arc_dist = max(0.0, float(self.envp.target_max_goal_distance_from_start))
 
-        while (self.envp.target_outer_radius * self._arc_gap(start_ang_2, goal_ang_2)) > max_goal_arc_dist and tries < 40:
+        while (self.envp.target_outer_radius * self._arc_gap(start_ang_2, goal_ang_2)) < min_goal_arc_dist and tries < 40:
             goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
             gx2, gy2 = self._point_on_big_circle(goal_ang_2)
             tries += 1
