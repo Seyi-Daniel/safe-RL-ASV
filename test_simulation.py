@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from environment import HAS_PYGAME, SingleTargetFeatureEnv
+from environment import HAS_PYGAME, SingleTargetFeatureEnv, Vessel, clamp
 from hyperparameters import EnvParams, RewardParams
 
 if HAS_PYGAME:
@@ -41,8 +41,9 @@ def parse_args() -> argparse.Namespace:
     )
 
     # v2-heading-range view options
-    p.add_argument("--heading-samples", type=int, default=36, help="How many possible vessel-2 start points to draw")
+    p.add_argument("--v2-start-angle-deg", type=float, default=40.0, help="Single vessel-2 start point angle on the big circle")
     p.add_argument("--heading-line-length", type=float, default=28.0, help="Length (meters) of each heading-boundary line")
+    p.add_argument("--heading-path-speed", type=float, default=-1.0, help="Speed used for planned-path rollout (-1 uses midpoint of target min/max speed)")
     p.add_argument("--auto-close-seconds", type=float, default=0.0, help="Auto-close window after N seconds (0 = wait until closed)")
     p.add_argument("--save-image", type=str, default="", help="Optional image path to save current heading-range view")
     return p.parse_args()
@@ -96,9 +97,35 @@ def _draw_heading_line(surface, sx: int, sy: int, heading: float, length_px: flo
     pygame.draw.line(surface, color, (sx, sy), (ex, ey), 2)
 
 
+def _simulate_target_path(env: SingleTargetFeatureEnv, sx: float, sy: float, heading: float, speed: float, goal_x: float, goal_y: float) -> list[tuple[float, float]]:
+    sim = Vessel(sx, sy, heading, speed, goal_x, goal_y, rudder=0.0, throttle=0.0)
+    pts: list[tuple[float, float]] = [(sim.x, sim.y)]
+    h = env.envp.dt / max(1, env.envp.substeps)
+    max_sim_steps = max(2000, int(2.0 * env.max_steps * max(1, env.envp.substeps)))
+
+    for _ in range(max_sim_steps):
+        d_goal = math.hypot(goal_x - sim.x, goal_y - sim.y)
+        if d_goal <= env.envp.goal_radius:
+            break
+        rudder_cmd = env._pure_pursuit_rudder_cmd(sim, goal_x, goal_y)
+        env._integrate_rudder_heading(sim, rudder_cmd, h)
+        sim.speed = clamp(sim.speed, env.envp.target_min_speed, env.envp.target_max_speed)
+        travel = min(sim.speed * h, d_goal)
+        sim.x += travel * math.cos(sim.h)
+        sim.y += travel * math.sin(sim.h)
+        pts.append((sim.x, sim.y))
+        if travel + 1e-9 >= d_goal:
+            break
+        if env._outside(sim):
+            break
+    return pts
+
+
 def run_heading_range_view(args: argparse.Namespace, envp: EnvParams) -> None:
     if not HAS_PYGAME:
         raise RuntimeError("pygame is required for --view v2-heading-range")
+
+    env = SingleTargetFeatureEnv(envp, RewardParams(), render=False)
 
     pygame.init()
     w = int(envp.world_w * envp.pixels_per_meter)
@@ -117,7 +144,39 @@ def run_heading_range_view(args: argparse.Namespace, envp: EnvParams) -> None:
         return int(round(y * envp.pixels_per_meter))
 
     line_len_px = args.heading_line_length * envp.pixels_per_meter
-    sample_count = max(3, int(args.heading_samples))
+
+    start_ang = math.radians(float(args.v2_start_angle_deg))
+    start_x = cx + envp.target_outer_radius * math.cos(start_ang)
+    start_y = cy + envp.target_outer_radius * math.sin(start_ang)
+
+    to_center = math.atan2(cy - start_y, cx - start_x)
+    h_left = to_center - 0.5 * math.pi
+    h_right = to_center + 0.5 * math.pi
+
+    min_goal_arc = max(0.0, float(envp.target_min_goal_arc_distance_from_start))
+    arc_delta = 0.0 if envp.target_outer_radius <= 1e-9 else min(math.pi, min_goal_arc / envp.target_outer_radius)
+
+    goal_left_ang = start_ang - arc_delta
+    goal_right_ang = start_ang + arc_delta
+    goal_left = (cx + envp.target_outer_radius * math.cos(goal_left_ang), cy + envp.target_outer_radius * math.sin(goal_left_ang))
+    goal_right = (cx + envp.target_outer_radius * math.cos(goal_right_ang), cy + envp.target_outer_radius * math.sin(goal_right_ang))
+
+    path_speed = float(args.heading_path_speed)
+    if path_speed <= 0.0:
+        path_speed = 0.5 * (envp.target_min_speed + envp.target_max_speed)
+
+    paths = {
+        "left_heading_to_left_goal": _simulate_target_path(env, start_x, start_y, h_left, path_speed, goal_left[0], goal_left[1]),
+        "left_heading_to_right_goal": _simulate_target_path(env, start_x, start_y, h_left, path_speed, goal_right[0], goal_right[1]),
+        "right_heading_to_left_goal": _simulate_target_path(env, start_x, start_y, h_right, path_speed, goal_left[0], goal_left[1]),
+        "right_heading_to_right_goal": _simulate_target_path(env, start_x, start_y, h_right, path_speed, goal_right[0], goal_right[1]),
+    }
+
+    def draw_polyline(pts: list[tuple[float, float]], color: tuple[int, int, int]) -> None:
+        if len(pts) < 2:
+            return
+        pix = [(sx(x), sy(y)) for x, y in pts]
+        pygame.draw.lines(screen, color, False, pix, 2)
 
     def draw_frame() -> None:
         screen.fill((17, 58, 92))
@@ -138,17 +197,18 @@ def run_heading_range_view(args: argparse.Namespace, envp: EnvParams) -> None:
             1,
         )
 
-        for i in range(sample_count):
-            ang = (2.0 * math.pi * i) / sample_count
-            x = cx + envp.target_outer_radius * math.cos(ang)
-            y = cy + envp.target_outer_radius * math.sin(ang)
-            to_center = math.atan2(cy - y, cx - x)
-            h_lo = to_center - 0.5 * math.pi
-            h_hi = to_center + 0.5 * math.pi
-            px, py = sx(x), sy(y)
-            pygame.draw.circle(screen, (255, 160, 160), (px, py), 3)
-            _draw_heading_line(screen, px, py, h_lo, line_len_px, (100, 255, 120))
-            _draw_heading_line(screen, px, py, h_hi, line_len_px, (255, 130, 220))
+        px, py = sx(start_x), sy(start_y)
+        pygame.draw.circle(screen, (255, 160, 160), (px, py), 5)
+        _draw_heading_line(screen, px, py, h_left, line_len_px, (100, 255, 120))
+        _draw_heading_line(screen, px, py, h_right, line_len_px, (255, 130, 220))
+
+        pygame.draw.circle(screen, (120, 255, 150), (sx(goal_left[0]), sy(goal_left[1])), 5)
+        pygame.draw.circle(screen, (255, 160, 230), (sx(goal_right[0]), sy(goal_right[1])), 5)
+
+        draw_polyline(paths["left_heading_to_left_goal"], (0, 220, 120))
+        draw_polyline(paths["left_heading_to_right_goal"], (120, 255, 190))
+        draw_polyline(paths["right_heading_to_left_goal"], (220, 120, 230))
+        draw_polyline(paths["right_heading_to_right_goal"], (255, 170, 245))
 
         pygame.display.flip()
 
@@ -174,6 +234,7 @@ def run_heading_range_view(args: argparse.Namespace, envp: EnvParams) -> None:
         if args.auto_close_seconds > 0.0 and elapsed >= args.auto_close_seconds:
             running = False
 
+    env.close()
     pygame.quit()
 
 
