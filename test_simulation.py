@@ -17,19 +17,12 @@ if HAS_PYGAME:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Lightweight simulation sandbox for manual behavior checks")
-    p.add_argument("--view", choices=("episode", "v2-heading-range"), default="episode")
+    p.add_argument("--view", choices=("episode", "v2-heading-range", "dcpa-sampled-episode"), default="episode")
 
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--render", action="store_true", help="enable pygame visualization")
     p.add_argument("--episode-seconds", type=float, default=60.0)
-    p.add_argument("--require-reset-viable-takeover-path", action="store_true", help="Require reset sampling to find a takeover-viable/risky path")
-    p.add_argument("--allow-any-reset-path", dest="require_reset_viable_takeover_path", action="store_false", help="Disable reset-time viability filtering")
-    p.set_defaults(require_reset_viable_takeover_path=EnvParams().require_reset_viable_takeover_path)
-
-    p.add_argument("--enable-no-takeover-early-done", action="store_true", help="Terminate early when no takeover path is detected")
-    p.add_argument("--disable-no-takeover-early-done", dest="enable_no_takeover_early_done", action="store_false", help="Disable early cutoff for no-takeover episodes")
-    p.set_defaults(enable_no_takeover_early_done=EnvParams().enable_no_takeover_early_done)
     p.add_argument(
         "--target-min-goal-arc-distance",
         "--target-max-goal-arc-distance",
@@ -39,6 +32,10 @@ def parse_args() -> argparse.Namespace:
         default=EnvParams().target_min_goal_arc_distance_from_start,
         help="Minimum required vessel-2 start->goal arc distance along the big circle",
     )
+
+    # dcpa-sampled-episode view options
+    p.add_argument("--dcpa-threshold", type=float, default=20.0, help="Accept sampled episodes only if DCPA reaches this threshold or lower")
+    p.add_argument("--dcpa-sample-max-tries", type=int, default=400, help="Max resampling attempts per accepted episode")
 
     # v2-heading-range view options
     p.add_argument("--v2-start-angle-deg", type=float, default=40.0, help="Single vessel-2 start point angle on the big circle")
@@ -54,8 +51,6 @@ def _make_env_params(args: argparse.Namespace) -> EnvParams:
         episode_seconds=args.episode_seconds,
         seed=args.seed,
         target_min_goal_arc_distance_from_start=args.target_min_goal_arc_distance,
-        require_reset_viable_takeover_path=args.require_reset_viable_takeover_path,
-        enable_no_takeover_early_done=args.enable_no_takeover_early_done,
     )
 
 
@@ -86,6 +81,74 @@ def run_episode_view(args: argparse.Namespace, envp: EnvParams) -> None:
             print(
                 f"  end: reason={info.get('reason', 'unknown')} steps={env.step_idx} "
                 f"return={float(total):.3f} target_goal_distance={float(info.get('target_goal_distance', -1.0)):.3f}"
+            )
+    finally:
+        env.close()
+
+
+def _episode_hits_dcpa_threshold(env: SingleTargetFeatureEnv, seed: int, dcpa_threshold: float) -> tuple[bool, float]:
+    _ = env.reset(seed=seed)
+    best_dcpa = float("inf")
+    done = False
+    while not done:
+        if env.agent_reached or env.target_reached:
+            break
+        _, _, done, info = env.step(np.array([0.0, 0.0], dtype=np.float32))
+        dcpa = float(info.get("dcpa", float("inf")))
+        best_dcpa = min(best_dcpa, dcpa)
+        if dcpa <= dcpa_threshold:
+            return True, best_dcpa
+    return False, best_dcpa
+
+
+def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
+    # In this view, disable vessel-2 min-goal-arc restriction and disable reset/early-done gating.
+    envp = EnvParams(
+        episode_seconds=args.episode_seconds,
+        seed=args.seed,
+        target_min_goal_arc_distance_from_start=0.0,
+        require_reset_viable_takeover_path=False,
+        enable_no_takeover_early_done=False,
+    )
+
+    env = SingleTargetFeatureEnv(envp, RewardParams(), render=args.render)
+    try:
+        for ep in range(1, args.episodes + 1):
+            accepted_seed = None
+            accepted_best_dcpa = float("inf")
+            for attempt in range(max(1, args.dcpa_sample_max_tries)):
+                candidate_seed = args.seed + ep * 100_000 + attempt
+                ok, best_dcpa = _episode_hits_dcpa_threshold(env, candidate_seed, args.dcpa_threshold)
+                if ok:
+                    accepted_seed = candidate_seed
+                    accepted_best_dcpa = best_dcpa
+                    break
+
+            if accepted_seed is None:
+                print(
+                    f"Episode {ep}: no sample found with dcpa <= {args.dcpa_threshold:.2f} "
+                    f"within {args.dcpa_sample_max_tries} tries"
+                )
+                continue
+
+            _ = env.reset(seed=accepted_seed)
+            print(
+                f"Episode {ep}: accepted_seed={accepted_seed} best_dcpa={accepted_best_dcpa:.2f} "
+                f"(threshold={args.dcpa_threshold:.2f})"
+            )
+
+            done = False
+            total = 0.0
+            while not done:
+                action = np.array([0.0, 0.0], dtype=np.float32)
+                _, reward, done, info = env.step(action)
+                total += reward
+                if args.render:
+                    env.render()
+
+            print(
+                f"  end: reason={info.get('reason', 'unknown')} steps={env.step_idx} return={float(total):.3f} "
+                f"final_dcpa={float(info.get('dcpa', float('inf'))):.2f}"
             )
     finally:
         env.close()
@@ -189,13 +252,7 @@ def run_heading_range_view(args: argparse.Namespace, envp: EnvParams) -> None:
             for y in range(0, int(envp.world_h) + 1, step):
                 pygame.draw.line(screen, (40, 80, 110), (0, sy(y)), (sx(envp.world_w), sy(y)))
 
-        pygame.draw.circle(
-            screen,
-            (255, 225, 120),
-            (sx(cx), sy(cy)),
-            int(round(envp.target_outer_radius * envp.pixels_per_meter)),
-            1,
-        )
+        pygame.draw.circle(screen, (255, 225, 120), (sx(cx), sy(cy)), int(round(envp.target_outer_radius * envp.pixels_per_meter)), 1)
 
         px, py = sx(start_x), sy(start_y)
         pygame.draw.circle(screen, (255, 160, 160), (px, py), 5)
@@ -248,6 +305,8 @@ def main() -> None:
         run_episode_view(args, envp)
     elif args.view == "v2-heading-range":
         run_heading_range_view(args, envp)
+    elif args.view == "dcpa-sampled-episode":
+        run_dcpa_sampled_episode_view(args)
 
 
 if __name__ == "__main__":
