@@ -1417,13 +1417,10 @@ class SingleTargetFeatureEnv:
         lines = [
             "⚠  RL TAKEOVER / ENCOUNTER STATUS",
             f"Step {int(p.get('step', self.step_idx))}   Sim time {float(p.get('time', self.time)):.1f}s",
-            f"Geometry={str(p.get('geometry', self.geometry_scenario)).upper()}   Scenario={str(p.get('scenario', self.colregs_scenario)).upper()}   Risk={int(p.get('risk_of_collision', int(self.risk_of_collision)))}",
-            f"Encounter latched={int(p.get('encounter_latched', int(self.encounter_latched)))}   Overtaking latched={int(p.get('overtaking_latched', int(self.overtaking_latched)))}",
-            f"V1 role={p.get('agent_role', self.agent_role)}  rl_active={agent_active}  rl_latched={int(p.get('agent_rl_latched', int(self.agent_rl_latched)))}  src={p.get('agent_control_source', self.agent_control_source)}  escalated={int(p.get('agent_standon_escalated', int(self.agent_standon_escalated)))}",
-            f"V2 role={p.get('target_role', self.target_role)}  rl_active={target_active}  rl_latched={int(p.get('target_rl_latched', int(self.target_rl_latched)))}  src={p.get('target_control_source', self.target_control_source)}  escalated={int(p.get('target_standon_escalated', int(self.target_standon_escalated)))}",
+            f"Scenario={str(p.get('scenario', self.colregs_scenario)).upper()}",
+            f"V1 role={p.get('agent_role', self.agent_role)}",
+            f"V2 role={p.get('target_role', self.target_role)}",
             f"DCPA={float(p.get('dcpa', self.last_dcpa)):.1f}m  TCPA={tcpa_txt}  V1→V2={float(p.get('agent_bearing', self.agent_relative_bearing_deg)):.1f}°  V2→V1={float(p.get('target_bearing', self.target_relative_bearing_deg)):.1f}°",
-            f"Distances from start: V1={float(p.get('agent_distance', 0.0)):.1f}m  V2={float(p.get('target_distance', 0.0)):.1f}m  takeover>= {float(p.get('takeover_distance', self.envp.rl_takeover_distance)):.1f}m",
-            f"Designated give-way={p.get('designated_give_way_vessel', 'none')}  stand-on={p.get('designated_stand_on_vessel', 'none')}  stand-on nominal={p.get('stand_on_nominal_mode', 'none')}",
             rl_summary,
             "Press SPACE or ENTER to dismiss and continue.",
         ]
