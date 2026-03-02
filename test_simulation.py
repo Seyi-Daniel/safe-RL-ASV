@@ -152,12 +152,12 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     accepted_best_tcpa = best_tcpa
                     accepted_attempt = attempt
                     break
+                print(
+                    f"Episode {ep}: failed attempt={attempt} seed={candidate_seed} "
+                    f"(best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
+                    f"need dcpa <= {args.dcpa_threshold:.2f} and tcpa <= {args.tcpa_threshold:.2f})"
+                )
                 attempt += 1
-                if max_tries == 0 and (attempt % 200 == 0):
-                    print(
-                        f"Episode {ep}: still sampling... tried={attempt} "
-                        f"(need dcpa <= {args.dcpa_threshold:.2f} and tcpa <= {args.tcpa_threshold:.2f})"
-                    )
 
             if accepted_seed is None:
                 print(
