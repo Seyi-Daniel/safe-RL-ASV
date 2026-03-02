@@ -16,6 +16,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--render", action="store_true", help="enable pygame visualization")
     p.add_argument("--episode-seconds", type=float, default=60.0)
+    p.add_argument("--require-reset-viable-takeover-path", action="store_true", help="Require reset sampling to find a takeover-viable/risky path")
+    p.add_argument("--allow-any-reset-path", dest="require_reset_viable_takeover_path", action="store_false", help="Disable reset-time viability filtering")
+    p.set_defaults(require_reset_viable_takeover_path=EnvParams().require_reset_viable_takeover_path)
+
+    p.add_argument("--enable-no-takeover-early-done", action="store_true", help="Terminate early when no takeover path is detected")
+    p.add_argument("--disable-no-takeover-early-done", dest="enable_no_takeover_early_done", action="store_false", help="Disable early cutoff for no-takeover episodes")
+    p.set_defaults(enable_no_takeover_early_done=EnvParams().enable_no_takeover_early_done)
     p.add_argument(
         "--target-max-goal-arc-distance",
         "--target-max-goal-distance",
@@ -36,6 +43,8 @@ def main() -> None:
         episode_seconds=args.episode_seconds,
         seed=args.seed,
         target_max_goal_arc_distance_from_start=args.target_max_goal_arc_distance,
+        require_reset_viable_takeover_path=args.require_reset_viable_takeover_path,
+        enable_no_takeover_early_done=args.enable_no_takeover_early_done,
     )
     env = SingleTargetFeatureEnv(envp, RewardParams(), render=args.render)
 

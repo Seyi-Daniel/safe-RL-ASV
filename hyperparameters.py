@@ -65,7 +65,9 @@ class EnvParams:
     tcpa_risk_threshold: float = 90.0
     rl_takeover_distance: float = 35.0
     reset_viable_episode_max_tries: int = 80
+    require_reset_viable_takeover_path: bool = True
     no_takeover_early_done_steps: int = 1
+    enable_no_takeover_early_done: bool = True
     overtaking_clear_distance: float = 40.0
     overtaking_clear_steps_required: int = 5
 

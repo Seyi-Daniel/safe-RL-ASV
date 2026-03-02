@@ -894,6 +894,7 @@ class SingleTargetFeatureEnv:
             self.rng.seed(seed)
 
         max_tries = max(1, int(self.envp.reset_viable_episode_max_tries))
+        require_viable_path = bool(self.envp.require_reset_viable_takeover_path)
         sampled_agent: Vessel | None = None
         sampled_target: Vessel | None = None
         for _ in range(max_tries):
@@ -903,7 +904,7 @@ class SingleTargetFeatureEnv:
             aspeed = self.rng.uniform(self.envp.min_speed, self.envp.max_speed)
             candidate_agent = Vessel(self.start_x, self.start_y, ah, aspeed, agx, agy)
             candidate_target = self._sample_target_path()
-            if self._reset_sample_triggers_takeover(candidate_agent, candidate_target):
+            if (not require_viable_path) or self._reset_sample_triggers_takeover(candidate_agent, candidate_target):
                 sampled_agent = candidate_agent
                 sampled_target = candidate_target
                 break
@@ -1109,7 +1110,7 @@ class SingleTargetFeatureEnv:
         self.rl_ever_triggered = self.any_rl_ever_triggered
 
         early_cutoff_steps = max(1, int(self.envp.no_takeover_early_done_steps))
-        if (not self.reset_has_takeover_path) and (not self.any_rl_ever_triggered) and (self.step_idx + 1) >= early_cutoff_steps:
+        if bool(self.envp.enable_no_takeover_early_done) and (not self.reset_has_takeover_path) and (not self.any_rl_ever_triggered) and (self.step_idx + 1) >= early_cutoff_steps:
             self.step_idx += 1
             self.time += self.envp.dt
             d_agent = self._goal_distance(self.agent)
