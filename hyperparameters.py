@@ -47,6 +47,13 @@ class EnvParams:
     target_outer_radius: float = 180.0
     target_min_speed: float = 0.5
     target_max_speed: float = 7.0
+    target_min_goal_arc_distance_from_start: float = 80.0  # Interpreted as straight-line (chord) distance
+    adaptive_target_min_goal_arc_from_speed: bool = True
+    target_min_goal_dcrit_factor: float = 1.1
+    # Legacy alias from max-arc naming; keep for backward compatibility.
+    target_max_goal_arc_distance_from_start: float | None = None
+    # Legacy alias (chord-distance naming); keep for backward compatibility.
+    target_max_goal_distance_from_start: float | None = None
     # pure pursuit controller parameters for vessel 2 scripted path
     pp_lookahead_factor: float = 2.0      # lookahead distance = factor × turning_radius
     pp_heading_gain_deg: float = 25.0     # proportional gain divisor for heading error -> rudder cmd
@@ -62,7 +69,9 @@ class EnvParams:
     tcpa_risk_threshold: float = 90.0
     rl_takeover_distance: float = 35.0
     reset_viable_episode_max_tries: int = 80
+    require_reset_viable_takeover_path: bool = True
     no_takeover_early_done_steps: int = 1
+    enable_no_takeover_early_done: bool = True
     overtaking_clear_distance: float = 40.0
     overtaking_clear_steps_required: int = 5
 
