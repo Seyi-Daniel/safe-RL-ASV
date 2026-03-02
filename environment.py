@@ -1500,19 +1500,19 @@ class SingleTargetFeatureEnv:
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
 
         hud0 = self._font.render(
-            f"step={self.step_idx} t={self.time:.1f}s pause={int(self.paused)}[SPACE] paths[P]={int(self.show_planned_paths)} any_rl={int(self.any_rl_ever_triggered)} ovtk_latched={int(self.overtaking_latched)}",
+            f"step={self.step_idx} t={self.time:.1f}s",
             True, (255, 255, 255),
         )
         hud1 = self._font.render(
-            f"geom={self.geometry_scenario} scen={self.colregs_scenario} risk={'YES' if self.risk_of_collision else 'NO'} latched={int(self.encounter_latched)} DCPA={self.last_dcpa:.1f}m TCPA={tcpa_txt} BRG V1→V2={self.agent_relative_bearing_deg:.1f}° V2→V1={self.target_relative_bearing_deg:.1f}°",
+            f"DCPA={self.last_dcpa:.1f}m TCPA={tcpa_txt} BRG V1→V2={self.agent_relative_bearing_deg:.1f}° V2→V1={self.target_relative_bearing_deg:.1f}°",
             True, (255, 240, 170),
         )
         hud2 = self._font.render(
-            f"V1 role={self.agent_role} rl_act={int(self.agent_rl_active)} rl_lat={int(self.agent_rl_latched)} ctrl={self.agent_control_source} nominal=straight reached={int(self.agent_reached)} spd={self.agent.speed:.2f}",
+            f"V1 spd={self.agent.speed:.2f}",
             True, (170, 220, 255),
         )
         hud3 = self._font.render(
-            f"V2 role={self.target_role} rl_act={int(self.target_rl_active)} rl_lat={int(self.target_rl_latched)} ctrl={self.target_control_source} nominal=pure_pursuit reached={int(self.target_reached)} spd={self.target.speed:.2f}",
+            f"V2 spd={self.target.speed:.2f}",
             True, (255, 190, 190),
         )
         hud4 = self._font.render(
