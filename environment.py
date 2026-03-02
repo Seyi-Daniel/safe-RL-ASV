@@ -83,6 +83,8 @@ class SingleTargetFeatureEnv:
         self.target_start_speed = 0.0
         self.agent_start_pos = (0.0, 0.0)
         self.target_start_pos = (0.0, 0.0)
+        self.agent_start_heading = 0.0
+        self.target_start_heading = 0.0
 
         # Vessel-2 scripted path state
 
@@ -678,17 +680,34 @@ class SingleTargetFeatureEnv:
 
     def _sample_target_path(self) -> Vessel:
         # Vessel 2: random start/goal on big circle with inward-facing start heading.
+        # Goal is sampled to remain beyond a minimum start->goal distance for local pure-pursuit behavior checks.
         start_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
         goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
-        tries = 0
-        while self._arc_gap(start_ang_2, goal_ang_2) < math.radians(20.0) and tries < 40:
-            goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
-            tries += 1
 
         sx2, sy2 = self._point_on_big_circle(start_ang_2)
         gx2, gy2 = self._point_on_big_circle(goal_ang_2)
+
         sh2 = self._inward_facing_heading(sx2, sy2)
         sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
+
+        tries = 0
+        min_goal_chord_dist = max(0.0, float(self.envp.target_min_goal_arc_distance_from_start))
+        # Backward compatibility: allow legacy parameter names to override when explicitly provided.
+        if self.envp.target_max_goal_arc_distance_from_start is not None:
+            min_goal_chord_dist = max(0.0, float(self.envp.target_max_goal_arc_distance_from_start))
+        if self.envp.target_max_goal_distance_from_start is not None:
+            min_goal_chord_dist = max(0.0, float(self.envp.target_max_goal_distance_from_start))
+
+        if bool(self.envp.adaptive_target_min_goal_arc_from_speed):
+            omega_max = max(1e-9, float(self.envp.rudder_max_yaw_rate_rad_s))
+            dcrit_chord = max(0.0, float(self.envp.target_min_goal_dcrit_factor)) * (2.0 * sp2 / omega_max)
+            min_goal_chord_dist = max(min_goal_chord_dist, dcrit_chord)
+
+        while math.hypot(gx2 - sx2, gy2 - sy2) < min_goal_chord_dist and tries < 40:
+            goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
+            gx2, gy2 = self._point_on_big_circle(goal_ang_2)
+            tries += 1
+
         return Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
 
     def _advance_target(self, dt: float) -> None:
@@ -885,6 +904,7 @@ class SingleTargetFeatureEnv:
             self.rng.seed(seed)
 
         max_tries = max(1, int(self.envp.reset_viable_episode_max_tries))
+        require_viable_path = bool(self.envp.require_reset_viable_takeover_path)
         sampled_agent: Vessel | None = None
         sampled_target: Vessel | None = None
         for _ in range(max_tries):
@@ -894,7 +914,7 @@ class SingleTargetFeatureEnv:
             aspeed = self.rng.uniform(self.envp.min_speed, self.envp.max_speed)
             candidate_agent = Vessel(self.start_x, self.start_y, ah, aspeed, agx, agy)
             candidate_target = self._sample_target_path()
-            if self._reset_sample_triggers_takeover(candidate_agent, candidate_target):
+            if (not require_viable_path) or self._reset_sample_triggers_takeover(candidate_agent, candidate_target):
                 sampled_agent = candidate_agent
                 sampled_target = candidate_target
                 break
@@ -914,8 +934,10 @@ class SingleTargetFeatureEnv:
 
         self.agent_start_speed = self.agent.speed
         self.agent_start_pos = (self.agent.x, self.agent.y)
+        self.agent_start_heading = self.agent.h
         self.target_start_speed = sp2
         self.target_start_pos = (self.target.x, self.target.y)
+        self.target_start_heading = self.target.h
 
         self.time = 0.0
         self.step_idx = 0
@@ -1100,7 +1122,7 @@ class SingleTargetFeatureEnv:
         self.rl_ever_triggered = self.any_rl_ever_triggered
 
         early_cutoff_steps = max(1, int(self.envp.no_takeover_early_done_steps))
-        if (not self.reset_has_takeover_path) and (not self.any_rl_ever_triggered) and (self.step_idx + 1) >= early_cutoff_steps:
+        if bool(self.envp.enable_no_takeover_early_done) and (not self.reset_has_takeover_path) and (not self.any_rl_ever_triggered) and (self.step_idx + 1) >= early_cutoff_steps:
             self.step_idx += 1
             self.time += self.envp.dt
             d_agent = self._goal_distance(self.agent)
@@ -1493,10 +1515,21 @@ class SingleTargetFeatureEnv:
             f"V2 role={self.target_role} rl_act={int(self.target_rl_active)} rl_lat={int(self.target_rl_latched)} ctrl={self.target_control_source} nominal=pure_pursuit reached={int(self.target_reached)} spd={self.target.speed:.2f}",
             True, (255, 190, 190),
         )
+        hud4 = self._font.render(
+            f"V1 start=({self.agent_start_pos[0]:.1f},{self.agent_start_pos[1]:.1f}) goal=({self.agent.goal_x:.1f},{self.agent.goal_y:.1f}) h0={math.degrees(self.agent_start_heading):.1f}° v0={self.agent_start_speed:.2f}",
+            True, (170, 220, 255),
+        )
+        hud5 = self._font.render(
+            f"V2 start=({self.target_start_pos[0]:.1f},{self.target_start_pos[1]:.1f}) goal=({self.target.goal_x:.1f},{self.target.goal_y:.1f}) h0={math.degrees(self.target_start_heading):.1f}° v0={self.target_start_speed:.2f}",
+            True, (255, 190, 190),
+        )
+
         surf.blit(hud0, (10, 8))
         surf.blit(hud1, (10, 26))
         surf.blit(hud2, (10, 44))
         surf.blit(hud3, (10, 62))
+        surf.blit(hud4, (10, 80))
+        surf.blit(hud5, (10, 98))
 
         if self.risk_overlay_active:
             self._draw_risk_overlay(surf)
