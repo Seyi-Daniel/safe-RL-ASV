@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     # dcpa-sampled-episode view options
     p.add_argument("--dcpa-threshold", type=float, default=20.0, help="Accept sampled episodes only if DCPA reaches this threshold or lower")
     p.add_argument("--tcpa-threshold", type=float, default=90.0, help="Accept sampled episodes only if TCPA is within [0, threshold] when DCPA condition is met")
-    p.add_argument("--dcpa-sample-max-tries", type=int, default=400, help="Max resampling attempts per accepted episode")
+    p.add_argument("--dcpa-sample-max-tries", type=int, default=0, help="Max resampling attempts per accepted episode (0 = unlimited)")
 
     # v2-heading-range view options
     p.add_argument("--v2-start-angle-deg", type=float, default=40.0, help="Single vessel-2 start point angle on the big circle")
@@ -139,7 +139,11 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
             accepted_best_dcpa = float("inf")
             accepted_best_tcpa = float("inf")
             accepted_attempt = -1
-            for attempt in range(max(1, args.dcpa_sample_max_tries)):
+            max_tries = int(args.dcpa_sample_max_tries)
+            attempt = 0
+            while True:
+                if max_tries > 0 and attempt >= max_tries:
+                    break
                 candidate_seed = args.seed + ep * 100_000 + attempt
                 ok, best_dcpa, best_tcpa, _ = _episode_hits_dcpa_threshold(env, candidate_seed, args.dcpa_threshold, args.tcpa_threshold)
                 if ok:
@@ -148,11 +152,17 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     accepted_best_tcpa = best_tcpa
                     accepted_attempt = attempt
                     break
+                attempt += 1
+                if max_tries == 0 and (attempt % 200 == 0):
+                    print(
+                        f"Episode {ep}: still sampling... tried={attempt} "
+                        f"(need dcpa <= {args.dcpa_threshold:.2f} and tcpa <= {args.tcpa_threshold:.2f})"
+                    )
 
             if accepted_seed is None:
                 print(
                     f"Episode {ep}: no sample found with dcpa <= {args.dcpa_threshold:.2f} and tcpa <= {args.tcpa_threshold:.2f} "
-                    f"within {args.dcpa_sample_max_tries} tries"
+                    f"within {max_tries} tries"
                 )
                 continue
 
