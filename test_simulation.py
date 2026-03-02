@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dcpa-sample-max-tries", type=int, default=0, help="Max resampling attempts per accepted episode (0 = unlimited)")
     p.add_argument("--debug-sampling", action="store_true", help="Enable detailed DCPA/TCPA sampling debug logs")
     p.add_argument("--debug-sampling-step-log-every", type=int, default=100, help="When debug is on, print per-attempt status every N steps")
-    p.add_argument("--max-sampling-steps-per-attempt", type=int, default=0, help="Safety cap for candidate sampling steps (0 = no extra cap)")
+    p.add_argument("--max-sampling-steps-per-attempt", type=int, default=0, help="Safety cap for candidate sampling steps (0 = automatic cap of 2x episode max steps)")
 
     # v2-heading-range view options
     p.add_argument("--v2-start-angle-deg", type=float, default=40.0, help="Single vessel-2 start point angle on the big circle")
@@ -107,8 +107,12 @@ def _episode_hits_dcpa_threshold(
     max_sampling_steps_per_attempt: int = 0,
 ) -> tuple[bool, float, float, int, dict[str, float | str | int], str]:
     _ = env.reset(seed=seed)
+    effective_step_cap = int(max_sampling_steps_per_attempt) if int(max_sampling_steps_per_attempt) > 0 else max(1, 2 * int(env.max_steps))
     if debug_sampling:
-        print(f"[sample-debug] start seed={seed} max_steps={env.max_steps} episode_seconds={env.envp.episode_seconds}")
+        print(
+            f"[sample-debug] start seed={seed} max_steps={env.max_steps} "
+            f"episode_seconds={env.envp.episode_seconds} effective_step_cap={effective_step_cap}"
+        )
     best_dcpa = float("inf")
     best_tcpa = float("inf")
     done = False
@@ -140,7 +144,7 @@ def _episode_hits_dcpa_threshold(
                 f"agent_reached={int(env.agent_reached)} target_reached={int(env.target_reached)} done={int(done)}"
             )
 
-        if max_sampling_steps_per_attempt > 0 and steps >= int(max_sampling_steps_per_attempt):
+        if steps >= effective_step_cap:
             fail_reason = "max_sampling_steps_per_attempt_guard"
             break
 
