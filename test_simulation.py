@@ -98,11 +98,13 @@ def _episode_hits_dcpa_threshold(
     dcpa_threshold: float,
     tcpa_threshold: float,
     pump_events: bool = False,
-) -> tuple[bool, float, float, dict[str, float | str | int]]:
+    render_sampling: bool = False,
+) -> tuple[bool, float, float, int, dict[str, float | str | int]]:
     _ = env.reset(seed=seed)
     best_dcpa = float("inf")
     best_tcpa = float("inf")
     done = False
+    steps = 0
     final_info: dict[str, float | str | int] = {"reason": "unknown"}
     while not done:
         if pump_events and HAS_PYGAME:
@@ -111,15 +113,18 @@ def _episode_hits_dcpa_threshold(
         if env.agent_reached or env.target_reached:
             break
         _, _, done, info = env.step(np.array([0.0, 0.0], dtype=np.float32))
+        steps += 1
         final_info = info
+        if render_sampling:
+            env.render()
         dcpa = float(info.get("dcpa", float("inf")))
         tcpa = float(info.get("tcpa", float("inf")))
         best_dcpa = min(best_dcpa, dcpa)
         if tcpa > 0.0:
             best_tcpa = min(best_tcpa, tcpa)
         if (dcpa <= dcpa_threshold) and (0.0 < tcpa <= tcpa_threshold):
-            return True, best_dcpa, best_tcpa, final_info
-    return False, best_dcpa, best_tcpa, final_info
+            return True, best_dcpa, best_tcpa, steps, final_info
+    return False, best_dcpa, best_tcpa, steps, final_info
 
 
 def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
@@ -148,8 +153,13 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                 if max_tries > 0 and attempt >= max_tries:
                     break
                 candidate_seed = args.seed + ep * 100_000 + attempt
-                ok, best_dcpa, best_tcpa, _ = _episode_hits_dcpa_threshold(
-                    env, candidate_seed, args.dcpa_threshold, args.tcpa_threshold, pump_events=args.render
+                ok, best_dcpa, best_tcpa, sample_steps, _ = _episode_hits_dcpa_threshold(
+                    env,
+                    candidate_seed,
+                    args.dcpa_threshold,
+                    args.tcpa_threshold,
+                    pump_events=args.render,
+                    render_sampling=args.render,
                 )
                 if ok:
                     accepted_seed = candidate_seed
@@ -158,7 +168,7 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     accepted_attempt = attempt
                     break
                 print(
-                    f"Episode {ep}: failed attempt={attempt} seed={candidate_seed} "
+                    f"Episode {ep}: failed attempt={attempt} seed={candidate_seed} steps={sample_steps} "
                     f"(best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
                     f"need dcpa <= {args.dcpa_threshold:.2f} and tcpa <= {args.tcpa_threshold:.2f})"
                 )
@@ -203,7 +213,7 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                 continue
 
             print(
-                f"Episode {ep}: accepted_seed={accepted_seed} attempt={accepted_attempt} "
+                f"Episode {ep}: accepted_seed={accepted_seed} attempt={accepted_attempt} sample_steps={sample_steps} "
                 f"sample_best_dcpa={accepted_best_dcpa:.2f} sample_best_tcpa={accepted_best_tcpa:.2f} "
                 f"run_best_dcpa={run_best_dcpa:.2f} run_best_tcpa={run_best_tcpa:.2f} "
                 f"(thresholds: dcpa<={args.dcpa_threshold:.2f}, tcpa<={args.tcpa_threshold:.2f})"
