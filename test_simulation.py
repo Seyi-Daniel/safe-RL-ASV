@@ -33,6 +33,11 @@ def parse_args() -> argparse.Namespace:
         help="Minimum required vessel-2 start->goal arc distance along the big circle",
     )
 
+    p.add_argument("--adaptive-dcrit-min-arc", action="store_true", help="Use speed-based dcrit to raise minimum target goal arc distance")
+    p.add_argument("--no-adaptive-dcrit-min-arc", dest="adaptive_dcrit_min_arc", action="store_false", help="Disable speed-based dcrit minimum arc adjustment")
+    p.set_defaults(adaptive_dcrit_min_arc=EnvParams().adaptive_target_min_goal_arc_from_speed)
+    p.add_argument("--dcrit-factor", type=float, default=EnvParams().target_min_goal_dcrit_factor, help="Multiplier on dcrit when adaptive dcrit min-arc is enabled")
+
     # dcpa-sampled-episode view options
     p.add_argument("--dcpa-threshold", type=float, default=20.0, help="Accept sampled episodes only if DCPA reaches this threshold or lower")
     p.add_argument("--dcpa-sample-max-tries", type=int, default=400, help="Max resampling attempts per accepted episode")
@@ -51,6 +56,8 @@ def _make_env_params(args: argparse.Namespace) -> EnvParams:
         episode_seconds=args.episode_seconds,
         seed=args.seed,
         target_min_goal_arc_distance_from_start=args.target_min_goal_arc_distance,
+        adaptive_target_min_goal_arc_from_speed=args.adaptive_dcrit_min_arc,
+        target_min_goal_dcrit_factor=args.dcrit_factor,
     )
 
 
@@ -107,6 +114,8 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
         episode_seconds=args.episode_seconds,
         seed=args.seed,
         target_min_goal_arc_distance_from_start=0.0,
+        adaptive_target_min_goal_arc_from_speed=False,
+        target_min_goal_dcrit_factor=args.dcrit_factor,
         require_reset_viable_takeover_path=False,
         enable_no_takeover_early_done=False,
     )

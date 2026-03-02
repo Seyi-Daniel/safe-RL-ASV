@@ -48,6 +48,8 @@ class EnvParams:
     target_min_speed: float = 0.5
     target_max_speed: float = 7.0
     target_min_goal_arc_distance_from_start: float = 80.0
+    adaptive_target_min_goal_arc_from_speed: bool = True
+    target_min_goal_dcrit_factor: float = 1.1
     # Legacy alias from max-arc naming; keep for backward compatibility.
     target_max_goal_arc_distance_from_start: float | None = None
     # Legacy alias (chord-distance naming); keep for backward compatibility.

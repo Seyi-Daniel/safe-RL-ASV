@@ -685,6 +685,9 @@ class SingleTargetFeatureEnv:
         sx2, sy2 = self._point_on_big_circle(start_ang_2)
         gx2, gy2 = self._point_on_big_circle(goal_ang_2)
 
+        sh2 = self._inward_facing_heading(sx2, sy2)
+        sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
+
         tries = 0
         min_goal_arc_dist = max(0.0, float(self.envp.target_min_goal_arc_distance_from_start))
         # Backward compatibility: allow legacy parameter names to override when explicitly provided.
@@ -693,13 +696,21 @@ class SingleTargetFeatureEnv:
         if self.envp.target_max_goal_distance_from_start is not None:
             min_goal_arc_dist = max(0.0, float(self.envp.target_max_goal_distance_from_start))
 
+        if bool(self.envp.adaptive_target_min_goal_arc_from_speed):
+            omega_max = max(1e-9, float(self.envp.rudder_max_yaw_rate_rad_s))
+            dcrit_chord = max(0.0, float(self.envp.target_min_goal_dcrit_factor)) * (2.0 * sp2 / omega_max)
+            circle_r = max(1e-9, float(self.envp.target_outer_radius))
+            # Cleaner geometry consistency: derive arc-threshold from chord-space d_crit.
+            dcrit_chord = min(dcrit_chord, 2.0 * circle_r)
+            dcrit_theta = 2.0 * math.asin(dcrit_chord / (2.0 * circle_r))
+            dcrit_arc = circle_r * dcrit_theta
+            min_goal_arc_dist = max(min_goal_arc_dist, dcrit_arc)
+
         while (self.envp.target_outer_radius * self._arc_gap(start_ang_2, goal_ang_2)) < min_goal_arc_dist and tries < 40:
             goal_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
             gx2, gy2 = self._point_on_big_circle(goal_ang_2)
             tries += 1
 
-        sh2 = self._inward_facing_heading(sx2, sy2)
-        sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
         return Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
 
     def _advance_target(self, dt: float) -> None:
