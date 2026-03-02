@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
 
     # dcpa-sampled-episode view options
     p.add_argument("--dcpa-threshold", type=float, default=20.0, help="Accept sampled episodes only if DCPA reaches this threshold or lower")
+    p.add_argument("--tcpa-threshold", type=float, default=90.0, help="Accept sampled episodes only if TCPA is within [0, threshold] when DCPA condition is met")
     p.add_argument("--dcpa-sample-max-tries", type=int, default=400, help="Max resampling attempts per accepted episode")
 
     # v2-heading-range view options
@@ -91,9 +92,15 @@ def run_episode_view(args: argparse.Namespace, envp: EnvParams) -> None:
         env.close()
 
 
-def _episode_hits_dcpa_threshold(env: SingleTargetFeatureEnv, seed: int, dcpa_threshold: float) -> tuple[bool, float, dict[str, float | str | int]]:
+def _episode_hits_dcpa_threshold(
+    env: SingleTargetFeatureEnv,
+    seed: int,
+    dcpa_threshold: float,
+    tcpa_threshold: float,
+) -> tuple[bool, float, float, dict[str, float | str | int]]:
     _ = env.reset(seed=seed)
     best_dcpa = float("inf")
+    best_tcpa = float("inf")
     done = False
     final_info: dict[str, float | str | int] = {"reason": "unknown"}
     while not done:
@@ -103,10 +110,13 @@ def _episode_hits_dcpa_threshold(env: SingleTargetFeatureEnv, seed: int, dcpa_th
         _, _, done, info = env.step(np.array([0.0, 0.0], dtype=np.float32))
         final_info = info
         dcpa = float(info.get("dcpa", float("inf")))
+        tcpa = float(info.get("tcpa", float("inf")))
         best_dcpa = min(best_dcpa, dcpa)
-        if dcpa <= dcpa_threshold:
-            return True, best_dcpa, final_info
-    return False, best_dcpa, final_info
+        if tcpa >= 0.0:
+            best_tcpa = min(best_tcpa, tcpa)
+        if (dcpa <= dcpa_threshold) and (0.0 <= tcpa <= tcpa_threshold):
+            return True, best_dcpa, best_tcpa, final_info
+    return False, best_dcpa, best_tcpa, final_info
 
 
 def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
@@ -127,19 +137,21 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
         for ep in range(1, args.episodes + 1):
             accepted_seed = None
             accepted_best_dcpa = float("inf")
+            accepted_best_tcpa = float("inf")
             accepted_attempt = -1
             for attempt in range(max(1, args.dcpa_sample_max_tries)):
                 candidate_seed = args.seed + ep * 100_000 + attempt
-                ok, best_dcpa, _ = _episode_hits_dcpa_threshold(env, candidate_seed, args.dcpa_threshold)
+                ok, best_dcpa, best_tcpa, _ = _episode_hits_dcpa_threshold(env, candidate_seed, args.dcpa_threshold, args.tcpa_threshold)
                 if ok:
                     accepted_seed = candidate_seed
                     accepted_best_dcpa = best_dcpa
+                    accepted_best_tcpa = best_tcpa
                     accepted_attempt = attempt
                     break
 
             if accepted_seed is None:
                 print(
-                    f"Episode {ep}: no sample found with dcpa <= {args.dcpa_threshold:.2f} "
+                    f"Episode {ep}: no sample found with dcpa <= {args.dcpa_threshold:.2f} and tcpa <= {args.tcpa_threshold:.2f} "
                     f"within {args.dcpa_sample_max_tries} tries"
                 )
                 continue
@@ -149,8 +161,9 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
             done = False
             total = 0.0
             run_best_dcpa = float("inf")
+            run_best_tcpa = float("inf")
             threshold_hit_before_goal = False
-            info: dict[str, float | str | int] = {"reason": "unknown", "dcpa": float("inf")}
+            info: dict[str, float | str | int] = {"reason": "unknown", "dcpa": float("inf"), "tcpa": float("inf")}
             while not done:
                 if env.agent_reached or env.target_reached:
                     break
@@ -158,8 +171,11 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                 _, reward, done, info = env.step(action)
                 total += reward
                 dcpa = float(info.get("dcpa", float("inf")))
+                tcpa = float(info.get("tcpa", float("inf")))
                 run_best_dcpa = min(run_best_dcpa, dcpa)
-                if dcpa <= args.dcpa_threshold:
+                if tcpa >= 0.0:
+                    run_best_tcpa = min(run_best_tcpa, tcpa)
+                if (dcpa <= args.dcpa_threshold) and (0.0 <= tcpa <= args.tcpa_threshold):
                     threshold_hit_before_goal = True
                 if args.render:
                     env.render()
@@ -167,14 +183,16 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
             if not threshold_hit_before_goal:
                 print(
                     f"Episode {ep}: rejected post-check for seed={accepted_seed} "
-                    f"(best_dcpa={run_best_dcpa:.2f} > threshold={args.dcpa_threshold:.2f})"
+                    f"(best_dcpa={run_best_dcpa:.2f}, best_tcpa={run_best_tcpa:.2f}; "
+                    f"thresholds dcpa<={args.dcpa_threshold:.2f}, tcpa<={args.tcpa_threshold:.2f})"
                 )
                 continue
 
             print(
                 f"Episode {ep}: accepted_seed={accepted_seed} attempt={accepted_attempt} "
-                f"sample_best_dcpa={accepted_best_dcpa:.2f} run_best_dcpa={run_best_dcpa:.2f} "
-                f"(threshold={args.dcpa_threshold:.2f})"
+                f"sample_best_dcpa={accepted_best_dcpa:.2f} sample_best_tcpa={accepted_best_tcpa:.2f} "
+                f"run_best_dcpa={run_best_dcpa:.2f} run_best_tcpa={run_best_tcpa:.2f} "
+                f"(thresholds: dcpa<={args.dcpa_threshold:.2f}, tcpa<={args.tcpa_threshold:.2f})"
             )
             print(
                 f"  end: reason={info.get('reason', 'unknown')} steps={env.step_idx} return={float(total):.3f} "
