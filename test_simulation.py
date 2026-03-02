@@ -129,7 +129,7 @@ def _episode_hits_dcpa_threshold(
 
 def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
     # In this view, keep min-goal baseline at 0 but retain adaptive dcrit-from-speed filtering,
-    # while disabling reset/early-done gating so DCPA-based sampling drives episode selection.
+    # while disabling reset/early-done gating so DCPA/TCPA criteria drive episode selection.
     envp = EnvParams(
         episode_seconds=args.episode_seconds,
         seed=args.seed,
@@ -159,7 +159,7 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     args.dcpa_threshold,
                     args.tcpa_threshold,
                     pump_events=args.render,
-                    render_sampling=args.render,
+                    render_sampling=False,
                 )
                 if ok:
                     accepted_seed = candidate_seed
