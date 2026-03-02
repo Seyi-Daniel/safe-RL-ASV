@@ -107,12 +107,13 @@ def _episode_hits_dcpa_threshold(env: SingleTargetFeatureEnv, seed: int, dcpa_th
 
 
 def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
-    # In this view, disable vessel-2 min-goal-arc restriction and disable reset/early-done gating.
+    # In this view, keep min-goal baseline at 0 but retain adaptive dcrit-from-speed filtering,
+    # while disabling reset/early-done gating so DCPA-based sampling drives episode selection.
     envp = EnvParams(
         episode_seconds=args.episode_seconds,
         seed=args.seed,
         target_min_goal_arc_distance_from_start=0.0,
-        adaptive_target_min_goal_arc_from_speed=False,
+        adaptive_target_min_goal_arc_from_speed=True,
         target_min_goal_dcrit_factor=args.dcrit_factor,
         require_reset_viable_takeover_path=False,
         enable_no_takeover_early_done=False,
