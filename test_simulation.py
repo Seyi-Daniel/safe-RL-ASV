@@ -97,6 +97,7 @@ def _episode_hits_dcpa_threshold(
     seed: int,
     dcpa_threshold: float,
     tcpa_threshold: float,
+    pump_events: bool = False,
 ) -> tuple[bool, float, float, dict[str, float | str | int]]:
     _ = env.reset(seed=seed)
     best_dcpa = float("inf")
@@ -104,6 +105,8 @@ def _episode_hits_dcpa_threshold(
     done = False
     final_info: dict[str, float | str | int] = {"reason": "unknown"}
     while not done:
+        if pump_events and HAS_PYGAME:
+            pygame.event.pump()
         # Requirement: threshold crossing must happen before either vessel reaches goal.
         if env.agent_reached or env.target_reached:
             break
@@ -112,9 +115,9 @@ def _episode_hits_dcpa_threshold(
         dcpa = float(info.get("dcpa", float("inf")))
         tcpa = float(info.get("tcpa", float("inf")))
         best_dcpa = min(best_dcpa, dcpa)
-        if tcpa >= 0.0:
+        if tcpa > 0.0:
             best_tcpa = min(best_tcpa, tcpa)
-        if (dcpa <= dcpa_threshold) and (0.0 <= tcpa <= tcpa_threshold):
+        if (dcpa <= dcpa_threshold) and (0.0 < tcpa <= tcpa_threshold):
             return True, best_dcpa, best_tcpa, final_info
     return False, best_dcpa, best_tcpa, final_info
 
@@ -145,7 +148,9 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                 if max_tries > 0 and attempt >= max_tries:
                     break
                 candidate_seed = args.seed + ep * 100_000 + attempt
-                ok, best_dcpa, best_tcpa, _ = _episode_hits_dcpa_threshold(env, candidate_seed, args.dcpa_threshold, args.tcpa_threshold)
+                ok, best_dcpa, best_tcpa, _ = _episode_hits_dcpa_threshold(
+                    env, candidate_seed, args.dcpa_threshold, args.tcpa_threshold, pump_events=args.render
+                )
                 if ok:
                     accepted_seed = candidate_seed
                     accepted_best_dcpa = best_dcpa
@@ -175,17 +180,16 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
             threshold_hit_before_goal = False
             info: dict[str, float | str | int] = {"reason": "unknown", "dcpa": float("inf"), "tcpa": float("inf")}
             while not done:
-                if env.agent_reached or env.target_reached:
-                    break
+                reached_before_step = env.agent_reached or env.target_reached
                 action = np.array([0.0, 0.0], dtype=np.float32)
                 _, reward, done, info = env.step(action)
                 total += reward
                 dcpa = float(info.get("dcpa", float("inf")))
                 tcpa = float(info.get("tcpa", float("inf")))
                 run_best_dcpa = min(run_best_dcpa, dcpa)
-                if tcpa >= 0.0:
+                if tcpa > 0.0:
                     run_best_tcpa = min(run_best_tcpa, tcpa)
-                if (dcpa <= args.dcpa_threshold) and (0.0 <= tcpa <= args.tcpa_threshold):
+                if (not reached_before_step) and (dcpa <= args.dcpa_threshold) and (0.0 < tcpa <= args.tcpa_threshold):
                     threshold_hit_before_goal = True
                 if args.render:
                     env.render()
