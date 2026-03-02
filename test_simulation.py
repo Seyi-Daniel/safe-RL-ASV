@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
         dest="target_min_goal_arc_distance",
         type=float,
         default=EnvParams().target_min_goal_arc_distance_from_start,
-        help="Minimum required vessel-2 start->goal arc distance along the big circle",
+        help="Minimum required vessel-2 start->goal straight-line (chord) distance",
     )
 
     p.add_argument("--adaptive-dcrit-min-arc", action="store_true", help="Use speed-based dcrit to raise minimum target goal arc distance")
@@ -68,12 +68,10 @@ def run_episode_view(args: argparse.Namespace, envp: EnvParams) -> None:
             _ = env.reset(seed=args.seed + ep)
             v2_start = env.target_start_pos
             v2_goal = (env.target.goal_x, env.target.goal_y)
-            start_angle = float(np.arctan2(v2_start[1] - env.start_y, v2_start[0] - env.start_x))
-            goal_angle = float(np.arctan2(v2_goal[1] - env.start_y, v2_goal[0] - env.start_x))
-            v2_goal_arc_dist = float(env.envp.target_outer_radius * env._arc_gap(start_angle, goal_angle))
+            v2_goal_dist = float(np.hypot(v2_goal[0] - v2_start[0], v2_goal[1] - v2_start[1]))
             print(
                 f"Episode {ep}: vessel2 start={v2_start}, goal={v2_goal}, "
-                f"arc_distance={v2_goal_arc_dist:.2f} m (min={args.target_min_goal_arc_distance:.2f} m)"
+                f"distance={v2_goal_dist:.2f} m (min={args.target_min_goal_arc_distance:.2f} m)"
             )
 
             done = False
@@ -225,11 +223,13 @@ def run_heading_range_view(args: argparse.Namespace, envp: EnvParams) -> None:
     h_left = to_center - 0.5 * math.pi
     h_right = to_center + 0.5 * math.pi
 
-    min_goal_arc = max(0.0, float(envp.target_min_goal_arc_distance_from_start))
-    arc_delta = 0.0 if envp.target_outer_radius <= 1e-9 else min(math.pi, min_goal_arc / envp.target_outer_radius)
+    min_goal_dist = max(0.0, float(envp.target_min_goal_arc_distance_from_start))
+    circle_r = max(1e-9, float(envp.target_outer_radius))
+    min_goal_dist = min(min_goal_dist, 2.0 * circle_r)
+    chord_delta = 2.0 * math.asin(min_goal_dist / (2.0 * circle_r))
 
-    goal_left_ang = start_ang - arc_delta
-    goal_right_ang = start_ang + arc_delta
+    goal_left_ang = start_ang - chord_delta
+    goal_right_ang = start_ang + chord_delta
     goal_left = (cx + envp.target_outer_radius * math.cos(goal_left_ang), cy + envp.target_outer_radius * math.sin(goal_left_ang))
     goal_right = (cx + envp.target_outer_radius * math.cos(goal_right_ang), cy + envp.target_outer_radius * math.sin(goal_right_ang))
 

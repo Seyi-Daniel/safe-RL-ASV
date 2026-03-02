@@ -47,7 +47,7 @@ class EnvParams:
     target_outer_radius: float = 180.0
     target_min_speed: float = 0.5
     target_max_speed: float = 7.0
-    target_min_goal_arc_distance_from_start: float = 80.0
+    target_min_goal_arc_distance_from_start: float = 80.0  # Interpreted as straight-line (chord) distance
     adaptive_target_min_goal_arc_from_speed: bool = True
     target_min_goal_dcrit_factor: float = 1.1
     # Legacy alias from max-arc naming; keep for backward compatibility.
