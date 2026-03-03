@@ -66,12 +66,12 @@ class DDPGAgent:
         return self.eps_start + frac * (self.eps_end - self.eps_start)
 
     def act(self, obs: np.ndarray, greedy: bool = False) -> np.ndarray:
+        if not greedy and np.random.random() < self.epsilon():
+            return np.random.uniform(-1.0, 1.0, size=(ACTION_DIM,)).astype(np.float32)
+
         with torch.no_grad():
             s = torch.from_numpy(obs).float().unsqueeze(0).to(self.device)
             a = self.actor(s).squeeze(0).cpu().numpy()
-        if not greedy:
-            noise_scale = self.epsilon()
-            a = a + noise_scale * np.random.normal(0.0, 0.25, size=(ACTION_DIM,)).astype(np.float32)
         return np.clip(a, -1.0, 1.0).astype(np.float32)
 
     def _soft_update(self, src: torch.nn.Module, tgt: torch.nn.Module) -> None:
@@ -167,11 +167,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--learning-rate", type=float, default=TrainParams().learning_rate)
     p.add_argument("--target-update", type=int, default=TrainParams().target_update)
     p.add_argument("--eps-start", type=float, default=TrainParams().eps_start,
-                   help="exploration noise scale at step 0 (continuous control)")
+                   help="epsilon-greedy random-action probability at step 0")
     p.add_argument("--eps-end", type=float, default=TrainParams().eps_end,
-                   help="final exploration noise scale after decay (continuous control)")
+                   help="final epsilon-greedy random-action probability after decay")
     p.add_argument("--eps-decay-steps", type=int, default=TrainParams().eps_decay_steps,
-                   help="steps to linearly decay exploration noise scale")
+                   help="steps to linearly decay epsilon-greedy probability")
     p.add_argument("--hidden-dim", type=int, default=TrainParams().hidden_dim)
     p.add_argument("--seed", type=int, default=TrainParams().seed)
     p.add_argument("--episode-seconds", type=float, default=500.0)

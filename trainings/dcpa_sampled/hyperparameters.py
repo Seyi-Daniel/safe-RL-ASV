@@ -120,7 +120,7 @@ class TrainParams:
     learning_rate: float = 2e-4
     target_update: int = 4000
 
-    # exploration noise schedule (linear in global environment steps)
+    # epsilon-greedy exploration schedule (linear in global environment steps)
     eps_start: float = 1.0
     eps_end: float = 0.05
     eps_decay_steps: int = 300_000
