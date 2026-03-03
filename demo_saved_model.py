@@ -9,9 +9,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from environment import SingleVessel2FeatureEnv
-from hyperparameters import EnvParams, RewardParams
-from policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
+from simulations.common.environment import SingleVessel2FeatureEnv
+from simulations.common.hyperparameters import EnvParams, RewardParams
+from trainings.common.policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--world-w", type=float, default=EnvParams().world_w)
     p.add_argument("--world-h", type=float, default=EnvParams().world_h)
     p.add_argument("--pixels-per-meter", type=float, default=EnvParams().pixels_per_meter)
-    p.add_argument("--save-log", type=str, default="", help="optional json file for episode summaries")
+    p.add_argument("--save-log", type=str, default="artifacts/training_logs/demo_episode_summary.json", help="optional json file for episode summaries")
     return p.parse_args()
 
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from environment import SingleVessel2FeatureEnv
-from hyperparameters import EnvParams, RewardParams
+from simulations.common.environment import SingleVessel2FeatureEnv
+from simulations.common.hyperparameters import EnvParams, RewardParams
 
 
 @dataclass(frozen=True)
