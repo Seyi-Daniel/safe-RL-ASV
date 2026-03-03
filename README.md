@@ -20,14 +20,11 @@ python run_episode.py --render
 ## Repository layout
 
 - Root files above = active/main code path.
-- `legacy/` = archived older subprojects kept for reference and compatibility:
+- `legacy/` = archived older subprojects kept for reference:
   - `legacy/RL_ASV`
   - `legacy/feature-RL-ASV`
   - `legacy/ASV_NEAT`
-- `unified-feature-rl/` now contains compatibility wrappers that forward to root files.
 
 ## Notes
 
-- Existing commands using `python unified-feature-rl/train.py` and
-  `python unified-feature-rl/run_episode.py` still work via wrappers.
-- The active development target should now be the root-level files.
+- The active development target is the root-level files.
