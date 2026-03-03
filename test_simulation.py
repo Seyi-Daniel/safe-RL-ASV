@@ -107,6 +107,9 @@ def _episode_hits_dcpa_threshold(
     max_sampling_steps_per_attempt: int = 0,
 ) -> tuple[bool, float, float, int, dict[str, float | str | int], str]:
     _ = env.reset(seed=seed)
+    def _meets_sampling_thresholds(dcpa: float, tcpa: float) -> bool:
+        return (dcpa <= dcpa_threshold) and (0.0 < tcpa <= tcpa_threshold)
+
     # Sampling is automated; disable modal overlay pause that otherwise freezes progression
     # when risk lock-in first triggers without a dismissal keypress.
     env.rl_overlay_shown = True
@@ -154,7 +157,8 @@ def _episode_hits_dcpa_threshold(
             fail_reason = "max_sampling_steps_per_attempt_guard"
             break
 
-        if (dcpa <= dcpa_threshold) and (0.0 < tcpa <= tcpa_threshold):
+        # Strict requirement: threshold crossing must occur while both vessels are still active.
+        if _meets_sampling_thresholds(dcpa, tcpa) and (not env.agent_reached) and (not env.target_reached):
             if debug_sampling:
                 print(
                     f"[sample-debug] seed={seed} accepted at step={steps} "
@@ -173,6 +177,9 @@ def _episode_hits_dcpa_threshold(
 
 
 def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
+    def _meets_sampling_thresholds(dcpa: float, tcpa: float) -> bool:
+        return (dcpa <= args.dcpa_threshold) and (0.0 < tcpa <= args.tcpa_threshold)
+
     # In this view, keep min-goal baseline at 0 but retain adaptive dcrit-from-speed filtering,
     # while disabling reset/early-done gating so DCPA/TCPA criteria drive episode selection.
     envp = EnvParams(
@@ -247,7 +254,8 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                 run_best_dcpa = min(run_best_dcpa, dcpa)
                 if tcpa > 0.0:
                     run_best_tcpa = min(run_best_tcpa, tcpa)
-                if (not reached_before_step) and (dcpa <= args.dcpa_threshold) and (0.0 < tcpa <= args.tcpa_threshold):
+                # Mirror sampling acceptance rule exactly during post-check replay.
+                if (not reached_before_step) and (not env.agent_reached) and (not env.target_reached) and _meets_sampling_thresholds(dcpa, tcpa):
                     threshold_hit_before_goal = True
                 if args.render:
                     env.render()
