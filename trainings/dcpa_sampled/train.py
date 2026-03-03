@@ -4,8 +4,14 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from collections import deque, namedtuple
 from pathlib import Path
+
+if __package__ is None or __package__ == "":
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
 
 import numpy as np
 import torch
