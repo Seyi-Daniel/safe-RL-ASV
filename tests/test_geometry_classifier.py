@@ -73,3 +73,27 @@ class TestRiskGate(unittest.TestCase):
         self.assertTrue(risk)
         self.assertTrue(0.0 <= tcpa <= self.env.envp.tcpa_risk_threshold)
         self.assertLessEqual(dcpa, self.env.envp.dcpa_risk_threshold)
+
+
+class TestAssignRoles(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = SingleVessel2FeatureEnv(render=False)
+
+    def test_head_on_both_give_way(self):
+        r1, r2 = self.env.assign_roles("head_on", rb_1=0.0, rb_2=0.0)
+        self.assertEqual((r1, r2), ("give_way", "give_way"))
+
+    def test_overtaking_overtaker_give_way(self):
+        # rb_1 in aft sector => vessel1 sees vessel2 astern => vessel2 is overtaking
+        r1, r2 = self.env.assign_roles("overtaking", rb_1=180.0, rb_2=0.0)
+        self.assertEqual((r1, r2), ("stand_on", "give_way"))
+
+    def test_crossing_vessel1_starboard_sees_vessel2(self):
+        # vessel1 sees vessel2 on starboard: give-way for vessel1
+        r1, r2 = self.env.assign_roles("crossing", rb_1=30.0, rb_2=300.0)
+        self.assertEqual((r1, r2), ("give_way", "stand_on"))
+
+    def test_crossing_mirrored_vessel1_stand_on(self):
+        # mirror case: vessel2 sees vessel1 on starboard => vessel2 give-way
+        r1, r2 = self.env.assign_roles("crossing", rb_1=300.0, rb_2=30.0)
+        self.assertEqual((r1, r2), ("stand_on", "give_way"))

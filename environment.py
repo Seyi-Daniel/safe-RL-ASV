@@ -347,9 +347,39 @@ class SingleVessel2FeatureEnv:
             "risk_of_collision": risk_of_collision,
         }
 
+    def assign_roles(self, scenario: str, rb_1: float, rb_2: float) -> Tuple[str, str]:
+        """Pure COLREGS role assignment from scenario + relative bearings."""
+        crossing_max = self.envp.colregs_crossing_starboard_max_deg
+        overtaking_max = self.envp.colregs_overtaking_aft_max_deg
+
+        if scenario == "head_on":
+            return "give_way", "give_way"
+
+        if scenario == "overtaking":
+            vessel1_sees_vessel2_in_aft = self._bearing_in_sector(rb_1, crossing_max, overtaking_max)
+            vessel2_sees_vessel1_in_aft = self._bearing_in_sector(rb_2, crossing_max, overtaking_max)
+            if vessel1_sees_vessel2_in_aft and not vessel2_sees_vessel1_in_aft:
+                return "stand_on", "give_way"
+            if vessel2_sees_vessel1_in_aft and not vessel1_sees_vessel2_in_aft:
+                return "give_way", "stand_on"
+            # Degenerate symmetric aft-sector case: both maneuver conservatively.
+            return "give_way", "give_way"
+
+        # crossing: vessel that sees the other on its starboard side is give-way.
+        vessel1_starboard = 0.0 < rb_1 < crossing_max
+        vessel2_starboard = 0.0 < rb_2 < crossing_max
+        if vessel1_starboard and not vessel2_starboard:
+            return "give_way", "stand_on"
+        if vessel2_starboard and not vessel1_starboard:
+            return "stand_on", "give_way"
+        # Boundary/degenerate cases: default to vessel1 give-way for determinism.
+        return "give_way", "stand_on"
+
     def _resolve_colregs_pair(self, vessel1: Vessel, vessel2: Vessel) -> Dict[str, float | str | bool]:
         geom = self._classify_pair_geometry(vessel1, vessel2)
         risk = self._assess_pair_risk(vessel1, vessel2)
+        scenario_from_geometry, rb_1, rb_2 = self.classify_geometry(vessel1, vessel2)
+        role1_from_geometry, role2_from_geometry = self.assign_roles(scenario_from_geometry, rb_1, rb_2)
         geometry = str(geom["geometry"])
         risk_of_collision = bool(risk["risk_of_collision"])
         sep = math.hypot(vessel2.x - vessel1.x, vessel2.y - vessel1.y)
@@ -358,30 +388,10 @@ class SingleVessel2FeatureEnv:
         raw_vessel1_role = "none"
         raw_vessel2_role = "none"
 
-        if geometry == "head_on_geom" and risk_of_collision:
-            raw_scenario = "head_on"
-            if self.envp.simplified_head_on_single_giveway:
-                raw_vessel1_role = "give_way"
-                raw_vessel2_role = "stand_on"
-            else:
-                raw_vessel1_role = "give_way"
-                raw_vessel2_role = "give_way"
-        elif geometry == "crossing_vessel1_give_way_geom" and risk_of_collision:
-            raw_scenario = "crossing"
-            raw_vessel1_role = "give_way"
-            raw_vessel2_role = "stand_on"
-        elif geometry == "crossing_vessel1_stand_on_geom" and risk_of_collision:
-            raw_scenario = "crossing"
-            raw_vessel1_role = "stand_on"
-            raw_vessel2_role = "give_way"
-        elif geometry == "overtaking_vessel1_geom" and risk_of_collision:
-            raw_scenario = "overtaking"
-            raw_vessel1_role = "give_way"
-            raw_vessel2_role = "stand_on"
-        elif geometry == "overtaking_vessel2_geom" and risk_of_collision:
-            raw_scenario = "overtaking"
-            raw_vessel1_role = "stand_on"
-            raw_vessel2_role = "give_way"
+        if risk_of_collision:
+            raw_scenario = scenario_from_geometry
+            raw_vessel1_role = role1_from_geometry
+            raw_vessel2_role = role2_from_geometry
         elif geometry in {
             "head_on_geom",
             "crossing_vessel1_give_way_geom",
@@ -1456,13 +1466,10 @@ class SingleVessel2FeatureEnv:
         lines = [
             "⚠  RL TAKEOVER / ENCOUNTER STATUS",
             f"Step {int(p.get('step', self.step_idx))}   Sim time {float(p.get('time', self.time)):.1f}s",
-            f"Geometry={str(p.get('geometry', self.geometry_scenario)).upper()}   Scenario={str(p.get('scenario', self.colregs_scenario)).upper()}   Risk={int(p.get('risk_of_collision', int(self.risk_of_collision)))}",
-            f"Encounter latched={int(p.get('encounter_latched', int(self.encounter_latched)))}   Overtaking latched={int(p.get('overtaking_latched', int(self.overtaking_latched)))}",
-            f"V1 role={p.get('vessel1_role', self.vessel1_role)}  rl_active={vessel1_active}  rl_latched={int(p.get('vessel1_rl_latched', int(self.vessel1_rl_latched)))}  src={p.get('vessel1_control_source', self.vessel1_control_source)}  escalated={int(p.get('vessel1_standon_escalated', int(self.vessel1_standon_escalated)))}",
-            f"V2 role={p.get('vessel2_role', self.vessel2_role)}  rl_active={vessel2_active}  rl_latched={int(p.get('vessel2_rl_latched', int(self.vessel2_rl_latched)))}  src={p.get('vessel2_control_source', self.vessel2_control_source)}  escalated={int(p.get('vessel2_standon_escalated', int(self.vessel2_standon_escalated)))}",
+            f"Scenario={str(p.get('scenario', self.colregs_scenario)).upper()}",
+            f"V1 role={p.get('vessel1_role', self.vessel1_role)}",
+            f"V2 role={p.get('vessel2_role', self.vessel2_role)}",
             f"DCPA={float(p.get('dcpa', self.last_dcpa)):.1f}m  TCPA={tcpa_txt}  V1→V2={float(p.get('vessel1_bearing', self.vessel1_relative_bearing_deg)):.1f}°  V2→V1={float(p.get('vessel2_bearing', self.vessel2_relative_bearing_deg)):.1f}°",
-            f"Distances from start: V1={float(p.get('vessel1_distance', 0.0)):.1f}m  V2={float(p.get('vessel2_distance', 0.0)):.1f}m  takeover>= {float(p.get('takeover_distance', self.envp.rl_takeover_distance)):.1f}m",
-            f"Designated give-way={p.get('designated_give_way_vessel', 'none')}  stand-on={p.get('designated_stand_on_vessel', 'none')}  stand-on nominal={p.get('stand_on_nominal_mode', 'none')}",
             rl_summary,
             "Press SPACE or ENTER to dismiss and continue.",
         ]
