@@ -2,6 +2,8 @@ import math
 import unittest
 
 from environment import SingleVessel2FeatureEnv, Vessel
+from hyperparameters import EnvParams, RewardParams
+import numpy as np
 
 
 class TestGeometryClassifier(unittest.TestCase):
@@ -97,3 +99,49 @@ class TestAssignRoles(unittest.TestCase):
         # mirror case: vessel2 sees vessel1 on starboard => vessel2 give-way
         r1, r2 = self.env.assign_roles("crossing", rb_1=300.0, rb_2=30.0)
         self.assertEqual((r1, r2), ("stand_on", "give_way"))
+
+
+class TestLockStateMachine(unittest.TestCase):
+    def setUp(self) -> None:
+        envp = EnvParams(
+            lock_enter_persistence_steps=1,
+            require_reset_viable_takeover_path=False,
+            enable_no_takeover_early_done=False,
+            episode_seconds=30.0,
+        )
+        self.env = SingleVessel2FeatureEnv(envp, RewardParams(), render=False)
+        self.env.reset(seed=123)
+
+    def _set_crossing_risk_state(self) -> None:
+        # Crossing at (50, 0): vessel1 eastbound, vessel2 northbound.
+        self.env.vessel1 = Vessel(x=0.0, y=0.0, h=0.0, speed=5.0, goal_x=500.0, goal_y=0.0)
+        self.env.vessel2 = Vessel(x=50.0, y=-50.0, h=math.pi / 2.0, speed=5.0, goal_x=50.0, goal_y=500.0)
+        self.env.vessel1_reached = False
+        self.env.vessel2_reached = False
+
+    def test_locks_when_risk_triggered(self):
+        self._set_crossing_risk_state()
+        _, _, _, info = self.env.step(np.array([0.0, 0.0], dtype=np.float32))
+        self.assertTrue(self.env.locked)
+        self.assertEqual(info["colregs_scenario"], self.env.locked_scenario)
+        self.assertIn(self.env.locked_scenario, {"crossing", "head_on", "overtaking"})
+
+    def test_locked_scenario_and_roles_do_not_change_after_geometry_drift(self):
+        self._set_crossing_risk_state()
+        _, _, _, info1 = self.env.step(np.array([0.0, 0.0], dtype=np.float32))
+        locked_scenario = self.env.locked_scenario
+        locked_role_v1 = self.env.locked_role_v1
+        locked_role_v2 = self.env.locked_role_v2
+        self.assertTrue(self.env.locked)
+
+        # Force a head-on geometry layout next step, but locked scenario/roles should persist.
+        self.env.vessel1.x, self.env.vessel1.y, self.env.vessel1.h = 0.0, 0.0, 0.0
+        self.env.vessel2.x, self.env.vessel2.y, self.env.vessel2.h = 100.0, 0.0, math.pi
+        self.env.vessel1.speed = 5.0
+        self.env.vessel2.speed = 5.0
+
+        _, _, _, info2 = self.env.step(np.array([0.0, 0.0], dtype=np.float32))
+        self.assertTrue(self.env.locked)
+        self.assertEqual(info2["colregs_scenario"], locked_scenario)
+        self.assertEqual(info2["vessel1_role"], locked_role_v1)
+        self.assertEqual(info2["vessel2_role"], locked_role_v2)

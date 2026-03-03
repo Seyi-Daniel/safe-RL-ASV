@@ -81,8 +81,7 @@ class EnvParams:
     standon_escalation_tcpa: float = 20.0
     standon_escalation_dcpa: float = 12.0
     standon_escalation_persistence_steps: int = 3
-    encounter_enter_persistence_steps: int = 2
-    encounter_exit_persistence_steps: int = 3
+    lock_enter_persistence_steps: int = 2
     collision_distance: float = 8.0
     near_miss_distance: float = 15.0
     safe_pass_distance: float = 25.0

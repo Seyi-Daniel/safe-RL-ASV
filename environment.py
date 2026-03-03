@@ -102,6 +102,11 @@ class SingleVessel2FeatureEnv:
         self.prev_vessel1_rl_active = False
         self.prev_vessel2_rl_active = False
         self.overtaking_latched = False
+        self.locked = False
+        self.locked_scenario = "safe"
+        self.locked_role_v1 = "none"
+        self.locked_role_v2 = "none"
+        self.lock_candidate_steps = 0
         self.latched_scenario = "safe"
         self.latched_vessel1_role = "none"
         self.latched_vessel2_role = "none"
@@ -113,6 +118,11 @@ class SingleVessel2FeatureEnv:
         self.designated_vessel1_role = "none"
         self.designated_vessel2_role = "none"
         self.rl_controlled_vessel = "none"
+        self.locked = False
+        self.locked_scenario = "safe"
+        self.locked_role_v1 = "none"
+        self.locked_role_v2 = "none"
+        self.lock_candidate_steps = 0
         self.candidate_scenario = "safe"
         self.candidate_vessel1_role = "none"
         self.candidate_vessel2_role = "none"
@@ -131,6 +141,11 @@ class SingleVessel2FeatureEnv:
         self.vessel1_rl_latched = False
         self.vessel2_rl_latched = False
         self.any_rl_ever_triggered = False
+        self.locked = False
+        self.locked_scenario = "safe"
+        self.locked_role_v1 = "none"
+        self.locked_role_v2 = "none"
+        self.lock_candidate_steps = 0
         self.latched_encounter_active = False
         self.latched_geometry = "none"
         self.encounter_clear_steps = 0
@@ -378,79 +393,43 @@ class SingleVessel2FeatureEnv:
     def _resolve_colregs_pair(self, vessel1: Vessel, vessel2: Vessel) -> Dict[str, float | str | bool]:
         geom = self._classify_pair_geometry(vessel1, vessel2)
         risk = self._assess_pair_risk(vessel1, vessel2)
-        scenario_from_geometry, rb_1, rb_2 = self.classify_geometry(vessel1, vessel2)
-        role1_from_geometry, role2_from_geometry = self.assign_roles(scenario_from_geometry, rb_1, rb_2)
+        scenario_now, rb_1, rb_2 = self.classify_geometry(vessel1, vessel2)
+        role1_now, role2_now = self.assign_roles(scenario_now, rb_1, rb_2)
         geometry = str(geom["geometry"])
         risk_of_collision = bool(risk["risk_of_collision"])
-        sep = math.hypot(vessel2.x - vessel1.x, vessel2.y - vessel1.y)
 
-        raw_scenario = "safe"
-        raw_vessel1_role = "none"
-        raw_vessel2_role = "none"
-
-        if risk_of_collision:
-            raw_scenario = scenario_from_geometry
-            raw_vessel1_role = role1_from_geometry
-            raw_vessel2_role = role2_from_geometry
-        elif geometry in {
-            "head_on_geom",
-            "crossing_vessel1_give_way_geom",
-            "crossing_vessel1_stand_on_geom",
-            "overtaking_vessel1_geom",
-            "overtaking_vessel2_geom",
-        }:
-            raw_scenario = "no_risk"
-
-        if not self.latched_encounter_active and raw_scenario in {"head_on", "crossing", "overtaking"}:
-            self.latched_encounter_active = True
-            self.encounter_latched = True
-            self.latched_geometry = geometry
-            self.latched_scenario = raw_scenario
-            self.latched_vessel1_role = raw_vessel1_role
-            self.latched_vessel2_role = raw_vessel2_role
-            self.designated_vessel1_role = raw_vessel1_role
-            self.designated_vessel2_role = raw_vessel2_role
-            self.overtaking_latched = raw_scenario == "overtaking"
-            self.encounter_clear_steps = 0
-            self.safe_pass_awarded = False
-            self.encounter_was_risky = True
-
-        scenario = raw_scenario
-        vessel1_role = raw_vessel1_role
-        vessel2_role = raw_vessel2_role
-        encounter_latched = False
-
-        if self.latched_encounter_active:
-            scenario = self.latched_scenario
-            vessel1_role = self.latched_vessel1_role
-            vessel2_role = self.latched_vessel2_role
-            encounter_latched = True
-            if (not risk_of_collision) and (sep > self.envp.safe_pass_distance):
-                self.encounter_clear_steps += 1
+        if not self.locked:
+            if risk_of_collision:
+                self.lock_candidate_steps += 1
             else:
-                self.encounter_clear_steps = 0
+                self.lock_candidate_steps = 0
 
-            if self.encounter_clear_steps >= 3:
-                self.latched_encounter_active = False
-                self.encounter_latched = False
-                self.overtaking_latched = False
-                self.latched_geometry = "none"
-                self.latched_scenario = "safe"
-                self.latched_vessel1_role = "none"
-                self.latched_vessel2_role = "none"
-                self.encounter_clear_steps = 0
-                self.vessel1_giveway_action_awarded = False
-                self.vessel2_giveway_action_awarded = False
-                self.vessel1_standon_hold_awarded = False
-                self.vessel2_standon_hold_awarded = False
-                scenario = raw_scenario
-                vessel1_role = raw_vessel1_role
-                vessel2_role = raw_vessel2_role
-                encounter_latched = False
+            if self.lock_candidate_steps >= max(1, int(self.envp.lock_enter_persistence_steps)):
+                self.locked = True
+                self.locked_scenario = scenario_now
+                self.locked_role_v1 = role1_now
+                self.locked_role_v2 = role2_now
+                self.encounter_was_risky = True
+                self.safe_pass_awarded = False
+                self.latched_encounter_active = True
+                self.encounter_latched = True
+                self.latched_scenario = self.locked_scenario
+                self.latched_vessel1_role = self.locked_role_v1
+                self.latched_vessel2_role = self.locked_role_v2
+                self.designated_vessel1_role = self.locked_role_v1
+                self.designated_vessel2_role = self.locked_role_v2
+                self.overtaking_latched = self.locked_scenario == "overtaking"
 
-        if self.encounter_was_risky and vessel1_role == "none" and vessel2_role == "none":
-            vessel1_role = self.designated_vessel1_role
-            vessel2_role = self.designated_vessel2_role
+        if self.locked:
+            scenario = self.locked_scenario
+            vessel1_role = self.locked_role_v1
+            vessel2_role = self.locked_role_v2
+            encounter_latched = True
+        else:
+            scenario = scenario_now if risk_of_collision else "no_risk"
+            vessel1_role = role1_now if risk_of_collision else "none"
+            vessel2_role = role2_now if risk_of_collision else "none"
+            encounter_latched = False
 
         return {
             "geometry": geometry,
@@ -463,57 +442,8 @@ class SingleVessel2FeatureEnv:
             "dcpa": float(risk["dcpa"]),
             "risk_of_collision": risk_of_collision,
             "encounter_latched": encounter_latched,
-            "overtaking_latched": self.overtaking_latched,
+            "overtaking_latched": int(self.locked and self.locked_scenario == "overtaking"),
         }
-
-    def _apply_non_overtaking_hysteresis(
-        self, scenario: str, vessel1_role: str, vessel2_role: str
-    ) -> Tuple[str, str, str]:
-        if scenario not in {"head_on", "crossing"}:
-            self.candidate_scenario = "safe"
-            self.candidate_vessel1_role = "none"
-            self.candidate_vessel2_role = "none"
-            self.candidate_steps = 0
-            if self.active_non_overtaking_scenario in {"head_on", "crossing"}:
-                self.active_non_overtaking_exit_steps += 1
-                if self.active_non_overtaking_exit_steps < max(1, int(self.envp.encounter_exit_persistence_steps)):
-                    return (
-                        self.active_non_overtaking_scenario,
-                        self.active_non_overtaking_vessel1_role,
-                        self.active_non_overtaking_vessel2_role,
-                    )
-            self.active_non_overtaking_scenario = "safe"
-            self.active_non_overtaking_vessel1_role = "none"
-            self.active_non_overtaking_vessel2_role = "none"
-            self.active_non_overtaking_exit_steps = 0
-            return scenario, vessel1_role, vessel2_role
-
-        self.active_non_overtaking_exit_steps = 0
-        if (
-            self.candidate_scenario == scenario
-            and self.candidate_vessel1_role == vessel1_role
-            and self.candidate_vessel2_role == vessel2_role
-        ):
-            self.candidate_steps += 1
-        else:
-            self.candidate_scenario = scenario
-            self.candidate_vessel1_role = vessel1_role
-            self.candidate_vessel2_role = vessel2_role
-            self.candidate_steps = 1
-
-        if self.candidate_steps >= max(1, int(self.envp.encounter_enter_persistence_steps)):
-            self.active_non_overtaking_scenario = scenario
-            self.active_non_overtaking_vessel1_role = vessel1_role
-            self.active_non_overtaking_vessel2_role = vessel2_role
-            return scenario, vessel1_role, vessel2_role
-
-        if self.active_non_overtaking_scenario in {"head_on", "crossing"}:
-            return (
-                self.active_non_overtaking_scenario,
-                self.active_non_overtaking_vessel1_role,
-                self.active_non_overtaking_vessel2_role,
-            )
-        return "no_risk", "none", "none"
 
     def _classify_colregs(self) -> Dict[str, float | str | bool]:
         if self.vessel1_reached or self.vessel2_reached:
@@ -528,8 +458,8 @@ class SingleVessel2FeatureEnv:
             return {
                 "geometry": "none",
                 "scenario": "safe",
-                "vessel1_role": fallback_vessel1_role,
-                "vessel2_role": fallback_vessel2_role,
+                "vessel1_role": self.locked_role_v1 if self.locked else fallback_vessel1_role,
+                "vessel2_role": self.locked_role_v2 if self.locked else fallback_vessel2_role,
                 "vessel1_bearing_deg": 0.0,
                 "vessel2_bearing_deg": 0.0,
                 "tcpa": float("inf"),
@@ -562,6 +492,11 @@ class SingleVessel2FeatureEnv:
             self.active_non_overtaking_vessel1_role,
             self.active_non_overtaking_vessel2_role,
             self.active_non_overtaking_exit_steps,
+            self.locked,
+            self.locked_scenario,
+            self.locked_role_v1,
+            self.locked_role_v2,
+            self.lock_candidate_steps,
         )
 
         def _restore_latch_state() -> None:
@@ -586,6 +521,11 @@ class SingleVessel2FeatureEnv:
                 self.active_non_overtaking_vessel1_role,
                 self.active_non_overtaking_vessel2_role,
                 self.active_non_overtaking_exit_steps,
+                self.locked,
+                self.locked_scenario,
+                self.locked_role_v1,
+                self.locked_role_v2,
+                self.lock_candidate_steps,
             ) = saved_latch_state
 
         self.overtaking_latched = False
@@ -1020,6 +960,11 @@ class SingleVessel2FeatureEnv:
         self.vessel1_rl_latched = False
         self.vessel2_rl_latched = False
         self.any_rl_ever_triggered = False
+        self.locked = False
+        self.locked_scenario = "safe"
+        self.locked_role_v1 = "none"
+        self.locked_role_v2 = "none"
+        self.lock_candidate_steps = 0
         self.latched_encounter_active = False
         self.latched_geometry = "none"
         self.encounter_clear_steps = 0
@@ -1153,7 +1098,7 @@ class SingleVessel2FeatureEnv:
         self.vessel1_standon_escalated = False
         self.vessel2_standon_escalated = False
 
-        encounter_active = bool(self.latched_encounter_active)
+        encounter_active = bool(self.locked)
         allow_vessel1_rl = encounter_active and self.vessel1_role == "give_way"
         allow_vessel2_rl = encounter_active and self.vessel2_role == "give_way"
 
@@ -1226,7 +1171,7 @@ class SingleVessel2FeatureEnv:
         h = self.envp.dt / max(1, self.envp.substeps)
         was_vessel1_active = not self.vessel1_reached
         was_vessel2_active = not self.vessel2_reached
-        encounter_active = bool(self.latched_encounter_active)
+        encounter_active = bool(self.locked)
         for _ in range(max(1, self.envp.substeps)):
             if self.rl_controlled_vessel == "vessel1":
                 vessel1_rl_cmd, vessel1_rl_src = self._select_rl_action_for_vessel("vessel1", a)
