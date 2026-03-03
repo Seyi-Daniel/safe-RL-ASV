@@ -260,8 +260,10 @@ class SingleTargetFeatureEnv:
         if rv2 <= 1e-8:
             return float("inf"), math.hypot(rx, ry)
         tcpa = -((rx * rvx) + (ry * rvy)) / rv2
+        # If closest approach happened in the past, treat as non-future encounter.
+        # Returning TCPA=inf prevents false-positive future-risk gating.
         if tcpa < 0.0:
-            tcpa = 0.0
+            return float("inf"), math.hypot(rx, ry)
         cx = rx + rvx * tcpa
         cy = ry + rvy * tcpa
         dcpa = math.hypot(cx, cy)
