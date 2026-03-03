@@ -199,14 +199,19 @@ class SingleTargetFeatureEnv:
         return math.hypot(self.target.x - self.agent.x, self.target.y - self.agent.y)
 
     def _relative_bearing_deg(self, observer: Vessel, target: Vessel) -> float:
+        """Signed relative bearing in degrees.
+
+        Positive values mean the target is to starboard (right) of observer bow,
+        negative values mean port (left), and 0 means dead ahead.
+        """
         dx = target.x - observer.x
         dy = target.y - observer.y
         ch = math.cos(observer.h)
         sh = math.sin(observer.h)
         x_rel = ch * dx + sh * dy
         y_rel = -sh * dx + ch * dy
-        rel_port = (math.degrees(math.atan2(y_rel, x_rel)) + 360.0) % 360.0
-        return (360.0 - rel_port) % 360.0
+        # Signed from observer-forward axis with +starboard / -port convention.
+        return math.degrees(math.atan2(-y_rel, x_rel))
 
     def _bearing_in_sector(self, bearing_deg: float, start_deg: float, end_deg: float, inclusive: bool = True) -> bool:
         b = bearing_deg % 360.0
