@@ -89,7 +89,7 @@ def run_episode_view(args: argparse.Namespace, envp: EnvParams) -> None:
 
             print(
                 f"  end: reason={info.get('reason', 'unknown')} steps={env.step_idx} "
-                f"return={float(total):.3f} target_goal_distance={float(info.get('target_goal_distance', -1.0)):.3f}"
+                f"return={float(total):.3f} vessel2_goal_distance={float(info.get('vessel2_goal_distance', info.get('target_goal_distance', -1.0))):.3f}"
             )
     finally:
         env.close()
@@ -141,7 +141,7 @@ def _episode_hits_dcpa_threshold(
             print(
                 f"[sample-debug] seed={seed} step={steps} dcpa={dcpa:.2f} tcpa={tcpa:.2f} "
                 f"best_dcpa={best_dcpa:.2f} best_tcpa={best_tcpa:.2f} "
-                f"agent_reached={int(env.agent_reached)} target_reached={int(env.target_reached)} done={int(done)}"
+                f"vessel1_reached={int(env.agent_reached)} vessel2_reached={int(env.target_reached)} done={int(done)}"
             )
 
         if steps >= effective_step_cap:
