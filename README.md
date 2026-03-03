@@ -5,7 +5,7 @@ The **default/main project is now the root-level unified feature RL stack**.
 ## Main entry points (root)
 
 - `train.py` — DDQN training loop
-- `run_episode.py` — evaluation/visualization runner
+- `demo_model.py` — demo/visualization runner for trained checkpoints
 - `environment.py` — simulation environment and rendering
 - `hyperparameters.py` — tunable config dataclasses
 - `policy.py` — DDQN network definition
@@ -14,7 +14,7 @@ The **default/main project is now the root-level unified feature RL stack**.
 
 ```bash
 python train.py --no-render
-python run_episode.py --render
+python demo_model.py --policy runs/ddqn_policy.pt --render
 ```
 
 ## Repository layout

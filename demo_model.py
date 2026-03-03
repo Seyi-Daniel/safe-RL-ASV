@@ -15,10 +15,10 @@ from policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run episodes with continuous policy")
+    p = argparse.ArgumentParser(description="Demo/visualize a trained continuous-control policy")
+    p.add_argument("--policy", type=str, required=True, help=".pt checkpoint produced by train.py")
     p.add_argument("--episodes", type=int, default=5)
     p.add_argument("--seed", type=int, default=7)
-    p.add_argument("--policy", type=str, default="", help=".pt checkpoint from training")
     p.add_argument("--hidden-dim", type=int, default=256)
 
     p.add_argument("--render", action="store_true", help="enable pygame visualization")
@@ -55,24 +55,21 @@ def main() -> None:
     env = SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    policy = None
 
-    if args.policy:
-        ckpt = torch.load(args.policy, map_location=device)
-        # Fallback dimension matches SingleVessel2FeatureEnv.get_obs() default feature shape.
-        obs_dim = int(ckpt.get("obs_dim", DEFAULT_OBS_DIM))
-        hidden_dim = int(ckpt.get("hidden_dim", args.hidden_dim))
-        action_dim = int(ckpt.get("action_dim", ACTION_DIM))
-        if action_dim != ACTION_DIM:
-            raise ValueError(f"unsupported action count in checkpoint: {action_dim}")
+    ckpt = torch.load(args.policy, map_location=device)
+    # Fallback dimension matches SingleVessel2FeatureEnv.get_obs() default feature shape.
+    obs_dim = int(ckpt.get("obs_dim", DEFAULT_OBS_DIM))
+    hidden_dim = int(ckpt.get("hidden_dim", args.hidden_dim))
+    action_dim = int(ckpt.get("action_dim", ACTION_DIM))
+    if action_dim != ACTION_DIM:
+        raise ValueError(f"unsupported action count in checkpoint: {action_dim}")
 
-        policy = ContinuousActor(in_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(device)
-        state = ckpt.get("actor_state_dict") or ckpt.get("online_state_dict")
-        if state is None:
-            raise ValueError("checkpoint missing actor/online state dict")
-        policy.load_state_dict(state)
-        policy.eval()
-
+    policy = ContinuousActor(in_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(device)
+    state = ckpt.get("actor_state_dict") or ckpt.get("online_state_dict")
+    if state is None:
+        raise ValueError("checkpoint missing actor/online state dict")
+    policy.load_state_dict(state)
+    policy.eval()
 
     summaries = []
     for ep in range(1, args.episodes + 1):
@@ -84,16 +81,9 @@ def main() -> None:
             if args.render and getattr(env, "paused", False):
                 env.render()
                 continue
-            if policy is None:
-                # Reproducible fallback actions because NumPy RNG is seeded at startup.
-                action = np.asarray(
-                    [np.random.uniform(-1.0, 1.0), np.random.uniform(-1.0, 1.0)],
-                    dtype=np.float32,
-                )
-            else:
-                with torch.no_grad():
-                    s = torch.from_numpy(obs).float().unsqueeze(0).to(device)
-                    action = policy(s).squeeze(0).detach().cpu().numpy().astype(np.float32)
+            with torch.no_grad():
+                s = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+                action = policy(s).squeeze(0).detach().cpu().numpy().astype(np.float32)
             obs, r, done, info = env.step(action)
             total += r
             if args.render:
