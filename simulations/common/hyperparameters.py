@@ -131,4 +131,4 @@ class TrainParams:
     # reproducibility / checkpoints
     seed: int = 7
     save_every: int = 20
-    out_dir: str = "unified-feature-rl/runs"
+    out_dir: str = "artifacts/models/dcpa_sampling"

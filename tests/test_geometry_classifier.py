@@ -1,8 +1,8 @@
 import math
 import unittest
 
-from environment import SingleVessel2FeatureEnv, Vessel
-from hyperparameters import EnvParams, RewardParams
+from simulations.common.environment import SingleVessel2FeatureEnv, Vessel
+from simulations.common.hyperparameters import EnvParams, RewardParams
 import numpy as np
 
 

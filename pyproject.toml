@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "safe-rl-asv"
+version = "0.2.0"
+description = "ASV simulation-first and training workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "safe-RL-ASV contributors"}]
+dependencies = [
+  "numpy",
+  "pygame",
+  "torch",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+safe-rl-sim = "simulations.testbed:main"
+safe-rl-train-dcpa = "trainings.dcpa_sampling.train:main"
+safe-rl-demo = "demo_saved_model:main"
+
+[tool.setuptools.packages.find]
+include = ["simulations*", "trainings*"]
+exclude = ["legacy*"]

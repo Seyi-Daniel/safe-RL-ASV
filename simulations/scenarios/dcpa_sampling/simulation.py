@@ -4,9 +4,9 @@ import argparse
 
 import numpy as np
 
-from environment import HAS_PYGAME, SingleVessel2FeatureEnv
+from simulations.common.environment import HAS_PYGAME, SingleVessel2FeatureEnv
 
-from .runtime import (
+from simulations.scenarios.dcpa_sampling.runtime import (
     SimulationRuntimeConfig,
     build_playback_env_params,
     build_sampling_env_params,
