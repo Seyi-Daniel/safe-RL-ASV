@@ -174,9 +174,18 @@ def _episode_hits_dcpa_threshold(
 
 
 def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
-    # In this view, keep min-goal baseline at 0 but retain adaptive dcrit-from-speed filtering,
-    # while disabling reset/early-done gating so DCPA/TCPA criteria drive episode selection.
-    envp = EnvParams(
+    # Sampling/search phase: no rendering, no per-step risk traces.
+    sample_envp = EnvParams(
+        episode_seconds=args.episode_seconds,
+        seed=args.seed,
+        vessel2_min_goal_arc_distance_from_start=0.0,
+        adaptive_vessel2_min_goal_arc_from_speed=True,
+        vessel2_min_goal_dcrit_factor=args.dcrit_factor,
+        require_reset_viable_takeover_path=False,
+        enable_no_takeover_early_done=False,
+        enable_step_risk_logging=False,
+    )
+    playback_envp = EnvParams(
         episode_seconds=args.episode_seconds,
         seed=args.seed,
         vessel2_min_goal_arc_distance_from_start=0.0,
@@ -187,13 +196,18 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
         enable_step_risk_logging=args.step_risk_logs,
     )
 
-    env = SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)
+    sample_env = SingleVessel2FeatureEnv(sample_envp, RewardParams(), render=False)
+    playback_env = None
     try:
+        if args.render:
+            playback_env = SingleVessel2FeatureEnv(playback_envp, RewardParams(), render=True)
+
         for ep in range(1, args.episodes + 1):
             accepted_seed = None
             accepted_best_dcpa = float("inf")
             accepted_best_tcpa = float("inf")
             accepted_attempt = -1
+            accepted_sample_steps = 0
             max_tries = int(args.dcpa_sample_max_tries)
             attempt = 0
             while True:
@@ -201,12 +215,12 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     break
                 candidate_seed = args.seed + ep * 100_000 + attempt
                 ok, best_dcpa, best_tcpa, sample_steps, _, fail_reason = _episode_hits_dcpa_threshold(
-                    env,
+                    sample_env,
                     candidate_seed,
                     args.dcpa_threshold,
                     args.tcpa_threshold,
-                    pump_events=args.render,
-                    render_sampling=args.render,
+                    pump_events=False,
+                    render_sampling=False,
                     debug_sampling=args.debug_sampling,
                     debug_step_log_every=args.debug_sampling_step_log_every,
                     max_sampling_steps_per_attempt=args.max_sampling_steps_per_attempt,
@@ -216,6 +230,7 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     accepted_best_dcpa = best_dcpa
                     accepted_best_tcpa = best_tcpa
                     accepted_attempt = attempt
+                    accepted_sample_steps = sample_steps
                     break
                 if args.sampling_logs:
                     print(
@@ -232,8 +247,10 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                 )
                 continue
 
-            # Re-run accepted seed for actual episode playback and strictly verify threshold again.
-            _ = env.reset(seed=accepted_seed)
+            # Playback phase: run only the accepted seed.
+            run_env = playback_env if playback_env is not None else sample_env
+            run_env.envp.enable_step_risk_logging = bool(args.step_risk_logs)
+            _ = run_env.reset(seed=accepted_seed)
             done = False
             total = 0.0
             run_best_dcpa = float("inf")
@@ -241,9 +258,9 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
             threshold_hit_before_goal = False
             info: dict[str, float | str | int] = {"reason": "unknown", "dcpa": float("inf"), "tcpa": float("inf")}
             while not done:
-                reached_before_step = env.vessel1_reached or env.vessel2_reached
+                reached_before_step = run_env.vessel1_reached or run_env.vessel2_reached
                 action = np.array([0.0, 0.0], dtype=np.float32)
-                _, reward, done, info = env.step(action)
+                _, reward, done, info = run_env.step(action)
                 total += reward
                 dcpa = float(info.get("dcpa", float("inf")))
                 tcpa = float(info.get("tcpa", float("inf")))
@@ -252,8 +269,8 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     run_best_tcpa = min(run_best_tcpa, tcpa)
                 if (not reached_before_step) and (dcpa <= args.dcpa_threshold) and (0.0 < tcpa <= args.tcpa_threshold):
                     threshold_hit_before_goal = True
-                if args.render:
-                    env.render()
+                if args.render and playback_env is not None:
+                    run_env.render()
 
             if not threshold_hit_before_goal:
                 print(
@@ -264,17 +281,19 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                 continue
 
             print(
-                f"Episode {ep}: accepted_seed={accepted_seed} attempt={accepted_attempt} sample_steps={sample_steps} "
+                f"Episode {ep}: accepted_seed={accepted_seed} attempt={accepted_attempt} sample_steps={accepted_sample_steps} "
                 f"sample_best_dcpa={accepted_best_dcpa:.2f} sample_best_tcpa={accepted_best_tcpa:.2f} "
                 f"run_best_dcpa={run_best_dcpa:.2f} run_best_tcpa={run_best_tcpa:.2f} "
                 f"(thresholds: dcpa<={args.dcpa_threshold:.2f}, tcpa<={args.tcpa_threshold:.2f})"
             )
             print(
-                f"  end: reason={info.get('reason', 'unknown')} steps={env.step_idx} return={float(total):.3f} "
+                f"  end: reason={info.get('reason', 'unknown')} steps={run_env.step_idx} return={float(total):.3f} "
                 f"final_dcpa={float(info.get('dcpa', float('inf'))):.2f}"
             )
     finally:
-        env.close()
+        sample_env.close()
+        if playback_env is not None:
+            playback_env.close()
 
 
 def _draw_heading_line(surface, sx: int, sy: int, heading: float, length_px: float, color: tuple[int, int, int]) -> None:
