@@ -251,6 +251,16 @@ class SingleVessel2FeatureEnv:
         dcpa = math.hypot(cx, cy)
         return tcpa, dcpa
 
+    def assess_risk(self, vessel1: Vessel, vessel2: Vessel) -> Tuple[bool, float, float]:
+        """Pure risk gate from TCPA/DCPA thresholds.
+
+        Returns:
+            (risk_of_collision, tcpa, dcpa)
+        """
+        tcpa, dcpa = self._tcpa_dcpa(vessel1, vessel2)
+        risk_of_collision = (0.0 <= tcpa <= self.envp.tcpa_risk_threshold) and (dcpa <= self.envp.dcpa_risk_threshold)
+        return risk_of_collision, tcpa, dcpa
+
     def classify_geometry(self, vessel1: Vessel, vessel2: Vessel) -> Tuple[str, float, float]:
         """Classify encounter scenario from pure geometry.
 
@@ -330,8 +340,7 @@ class SingleVessel2FeatureEnv:
         }
 
     def _assess_pair_risk(self, vessel1: Vessel, vessel2: Vessel) -> Dict[str, float | bool]:
-        tcpa, dcpa = self._tcpa_dcpa(vessel1, vessel2)
-        risk_of_collision = (0.0 <= tcpa <= self.envp.tcpa_risk_threshold) and (dcpa <= self.envp.dcpa_risk_threshold)
+        risk_of_collision, tcpa, dcpa = self.assess_risk(vessel1, vessel2)
         return {
             "tcpa": tcpa,
             "dcpa": dcpa,

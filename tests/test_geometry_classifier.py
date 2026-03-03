@@ -49,3 +49,27 @@ class TestGeometryClassifier(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRiskGate(unittest.TestCase):
+    def setUp(self) -> None:
+        self.env = SingleVessel2FeatureEnv(render=False)
+
+    def _mk(self, x: float, y: float, heading_deg: float, speed: float) -> Vessel:
+        return Vessel(x=x, y=y, h=math.radians(heading_deg), speed=speed, goal_x=0.0, goal_y=0.0)
+
+    def test_parallel_same_velocity_has_infinite_tcpa_and_no_risk(self):
+        v1 = self._mk(0.0, 0.0, 0.0, 5.0)
+        v2 = self._mk(100.0, 0.0, 0.0, 5.0)
+        risk, tcpa, dcpa = self.env.assess_risk(v1, v2)
+        self.assertFalse(risk)
+        self.assertTrue(math.isinf(tcpa))
+        self.assertAlmostEqual(dcpa, 100.0, places=6)
+
+    def test_direct_collision_course_has_risk_true(self):
+        v1 = self._mk(0.0, 0.0, 0.0, 5.0)
+        v2 = self._mk(100.0, 0.0, 180.0, 5.0)
+        risk, tcpa, dcpa = self.env.assess_risk(v1, v2)
+        self.assertTrue(risk)
+        self.assertTrue(0.0 <= tcpa <= self.env.envp.tcpa_risk_threshold)
+        self.assertLessEqual(dcpa, self.env.envp.dcpa_risk_threshold)
