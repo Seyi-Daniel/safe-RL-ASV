@@ -89,7 +89,7 @@ def run_episode_view(args: argparse.Namespace, envp: EnvParams) -> None:
 
             print(
                 f"  end: reason={info.get('reason', 'unknown')} steps={env.step_idx} "
-                f"return={float(total):.3f} vessel2_goal_distance={float(info.get('vessel2_goal_distance', info.get('target_goal_distance', -1.0))):.3f}"
+                f"return={float(total):.3f} target_goal_distance={float(info.get('target_goal_distance', -1.0)):.3f}"
             )
     finally:
         env.close()
@@ -107,15 +107,6 @@ def _episode_hits_dcpa_threshold(
     max_sampling_steps_per_attempt: int = 0,
 ) -> tuple[bool, float, float, int, dict[str, float | str | int], str]:
     _ = env.reset(seed=seed)
-    def _meets_sampling_thresholds(dcpa: float, tcpa: float) -> bool:
-        return (dcpa <= dcpa_threshold) and (0.0 < tcpa <= tcpa_threshold)
-
-    # Sampling is automated; disable modal overlay pause that otherwise freezes progression
-    # when risk lock-in first triggers without a dismissal keypress.
-    env.rl_overlay_shown = True
-    env.risk_overlay_active = False
-    env.paused = False
-
     effective_step_cap = int(max_sampling_steps_per_attempt) if int(max_sampling_steps_per_attempt) > 0 else max(1, 2 * int(env.max_steps))
     if debug_sampling:
         print(
@@ -150,15 +141,14 @@ def _episode_hits_dcpa_threshold(
             print(
                 f"[sample-debug] seed={seed} step={steps} dcpa={dcpa:.2f} tcpa={tcpa:.2f} "
                 f"best_dcpa={best_dcpa:.2f} best_tcpa={best_tcpa:.2f} "
-                f"vessel1_reached={int(env.agent_reached)} vessel2_reached={int(env.target_reached)} done={int(done)}"
+                f"agent_reached={int(env.agent_reached)} target_reached={int(env.target_reached)} done={int(done)}"
             )
 
         if steps >= effective_step_cap:
             fail_reason = "max_sampling_steps_per_attempt_guard"
             break
 
-        # Strict requirement: threshold crossing must occur while both vessels are still active.
-        if _meets_sampling_thresholds(dcpa, tcpa) and (not env.agent_reached) and (not env.target_reached):
+        if (dcpa <= dcpa_threshold) and (0.0 < tcpa <= tcpa_threshold):
             if debug_sampling:
                 print(
                     f"[sample-debug] seed={seed} accepted at step={steps} "
@@ -177,9 +167,6 @@ def _episode_hits_dcpa_threshold(
 
 
 def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
-    def _meets_sampling_thresholds(dcpa: float, tcpa: float) -> bool:
-        return (dcpa <= args.dcpa_threshold) and (0.0 < tcpa <= args.tcpa_threshold)
-
     # In this view, keep min-goal baseline at 0 but retain adaptive dcrit-from-speed filtering,
     # while disabling reset/early-done gating so DCPA/TCPA criteria drive episode selection.
     envp = EnvParams(
@@ -211,7 +198,7 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     args.dcpa_threshold,
                     args.tcpa_threshold,
                     pump_events=args.render,
-                    render_sampling=args.render,
+                    render_sampling=False,
                     debug_sampling=args.debug_sampling,
                     debug_step_log_every=args.debug_sampling_step_log_every,
                     max_sampling_steps_per_attempt=args.max_sampling_steps_per_attempt,
@@ -254,8 +241,7 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                 run_best_dcpa = min(run_best_dcpa, dcpa)
                 if tcpa > 0.0:
                     run_best_tcpa = min(run_best_tcpa, tcpa)
-                # Mirror sampling acceptance rule exactly during post-check replay.
-                if (not reached_before_step) and (not env.agent_reached) and (not env.target_reached) and _meets_sampling_thresholds(dcpa, tcpa):
+                if (not reached_before_step) and (dcpa <= args.dcpa_threshold) and (0.0 < tcpa <= args.tcpa_threshold):
                     threshold_hit_before_goal = True
                 if args.render:
                     env.render()

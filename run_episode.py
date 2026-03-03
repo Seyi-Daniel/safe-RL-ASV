@@ -104,7 +104,7 @@ def main() -> None:
             "return": float(total),
             "steps": env.step_idx,
             "reason": info["reason"],
-            "final_vessel1_goal_distance": float(info.get("vessel1_goal_distance", info.get("agent_goal_distance", -1.0))),
+            "final_agent_goal_distance": float(info["agent_goal_distance"]),
         }
         summaries.append(summary)
         print(summary)

@@ -83,8 +83,6 @@ class EnvParams:
     standon_escalation_persistence_steps: int = 3
     encounter_enter_persistence_steps: int = 2
     encounter_exit_persistence_steps: int = 3
-    encounter_lock_risk_persistence_steps: int = 2
-    encounter_unlock_safe_persistence_steps: int = 3
     collision_distance: float = 8.0
     near_miss_distance: float = 15.0
     safe_pass_distance: float = 25.0
