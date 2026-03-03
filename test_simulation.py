@@ -22,9 +22,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--render", action="store_true", help="enable pygame visualization")
-    p.add_argument("--no-render", dest="render", action="store_false", help="disable pygame visualization")
-    p.set_defaults(render=True)
-    p.add_argument("--episode-seconds", type=float, default=500.0)
+    p.add_argument("--episode-seconds", type=float, default=60.0)
     p.add_argument(
         "--target-min-goal-arc-distance",
         "--target-max-goal-arc-distance",
@@ -41,8 +39,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dcrit-factor", type=float, default=EnvParams().vessel2_min_goal_dcrit_factor, help="Multiplier on dcrit when adaptive dcrit min-arc is enabled")
 
     # dcpa-sampled-episode view options
-    p.add_argument("--dcpa-threshold", type=float, default=10.0, help="Accept sampled episodes only if DCPA reaches this threshold or lower")
-    p.add_argument("--tcpa-threshold", type=float, default=10.0, help="Accept sampled episodes only if TCPA is within [0, threshold] when DCPA condition is met")
+    p.add_argument("--dcpa-threshold", type=float, default=20.0, help="Accept sampled episodes only if DCPA reaches this threshold or lower")
+    p.add_argument("--tcpa-threshold", type=float, default=90.0, help="Accept sampled episodes only if TCPA is within [0, threshold] when DCPA condition is met")
     p.add_argument("--dcpa-sample-max-tries", type=int, default=0, help="Max resampling attempts per accepted episode (0 = unlimited)")
     p.add_argument("--debug-sampling", action="store_true", help="Enable detailed DCPA/TCPA sampling debug logs")
     p.add_argument("--sampling-logs", dest="sampling_logs", action="store_true", help="Print per-attempt sampling summaries")
@@ -109,14 +107,13 @@ def _episode_hits_dcpa_threshold(
     seed: int,
     dcpa_threshold: float,
     tcpa_threshold: float,
-    agent,
     pump_events: bool = False,
     render_sampling: bool = False,
     debug_sampling: bool = False,
     debug_step_log_every: int = 100,
     max_sampling_steps_per_attempt: int = 0,
 ) -> tuple[bool, float, float, int, dict[str, float | str | int], str]:
-    obs = env.reset(seed=seed)
+    _ = env.reset(seed=seed)
     effective_step_cap = int(max_sampling_steps_per_attempt) if int(max_sampling_steps_per_attempt) > 0 else max(1, 2 * int(env.max_steps))
     if debug_sampling:
         print(
@@ -136,9 +133,7 @@ def _episode_hits_dcpa_threshold(
         if env.vessel1_reached or env.vessel2_reached:
             fail_reason = "reached_goal_before_threshold"
             break
-        action = agent.act(obs)
-        next_obs, _, done, info = env.step(action)
-        obs = next_obs
+        _, _, done, info = env.step(np.array([0.0, 0.0], dtype=np.float32))
         steps += 1
         final_info = info
         if render_sampling:
@@ -179,10 +174,6 @@ def _episode_hits_dcpa_threshold(
 
 
 def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
-    import torch
-
-    from hyperparameters import TrainParams
-    from train import DDPGAgent, ReplayBuffer
     # Sampling/search phase: no rendering, no per-step risk traces.
     sample_envp = EnvParams(
         episode_seconds=args.episode_seconds,
@@ -207,25 +198,9 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
 
     sample_env = SingleVessel2FeatureEnv(sample_envp, RewardParams(), render=False)
     playback_env = None
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_hp = TrainParams(seed=args.seed)
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-
-    sample_obs_dim = int(sample_env.reset(seed=args.seed).shape[0])
-    sample_agent = DDPGAgent(in_dim=sample_obs_dim, hp=train_hp, device=device)
-
-    playback_agent = None
-    playback_replay = None
-    if args.render:
-        playback_env = SingleVessel2FeatureEnv(playback_envp, RewardParams(), render=True)
-        playback_obs_dim = int(playback_env.reset(seed=args.seed).shape[0])
-        playback_agent = DDPGAgent(in_dim=playback_obs_dim, hp=train_hp, device=device)
-        playback_replay = ReplayBuffer(train_hp.replay_size)
-
     try:
+        if args.render:
+            playback_env = SingleVessel2FeatureEnv(playback_envp, RewardParams(), render=True)
 
         for ep in range(1, args.episodes + 1):
             accepted_seed = None
@@ -244,7 +219,6 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     candidate_seed,
                     args.dcpa_threshold,
                     args.tcpa_threshold,
-                    sample_agent,
                     pump_events=False,
                     render_sampling=False,
                     debug_sampling=args.debug_sampling,
@@ -276,7 +250,7 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
             # Playback phase: run only the accepted seed.
             run_env = playback_env if playback_env is not None else sample_env
             run_env.envp.enable_step_risk_logging = bool(args.step_risk_logs)
-            obs = run_env.reset(seed=accepted_seed)
+            _ = run_env.reset(seed=accepted_seed)
             done = False
             total = 0.0
             run_best_dcpa = float("inf")
@@ -285,18 +259,9 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
             info: dict[str, float | str | int] = {"reason": "unknown", "dcpa": float("inf"), "tcpa": float("inf")}
             while not done:
                 reached_before_step = run_env.vessel1_reached or run_env.vessel2_reached
-                agent = playback_agent if playback_agent is not None else sample_agent
-                action = agent.act(obs)
-                next_obs, reward, done, info = run_env.step(action)
+                action = np.array([0.0, 0.0], dtype=np.float32)
+                _, reward, done, info = run_env.step(action)
                 total += reward
-                if playback_replay is not None:
-                    playback_replay.push(obs, action, reward, next_obs, done)
-                    agent.global_step += 1
-                    if len(playback_replay) >= train_hp.min_replay:
-                        agent.update(playback_replay, train_hp.batch_size)
-                else:
-                    agent.global_step += 1
-                obs = next_obs
                 dcpa = float(info.get("dcpa", float("inf")))
                 tcpa = float(info.get("tcpa", float("inf")))
                 run_best_dcpa = min(run_best_dcpa, dcpa)
