@@ -256,66 +256,66 @@ class SingleTargetFeatureEnv:
         dcpa = math.hypot(cx, cy)
         return tcpa, dcpa
 
-    def _classify_pair_geometry(self, agent: Vessel, target: Vessel) -> Dict[str, float | str]:
-        own_bearing = self._relative_bearing_deg(agent, target)
-        tgt_bearing = self._relative_bearing_deg(target, agent)
+    def _classify_pair_geometry(self, vessel1: Vessel, vessel2: Vessel) -> Dict[str, float | str]:
+        v1_bearing = self._relative_bearing_deg(vessel1, vessel2)
+        v2_bearing = self._relative_bearing_deg(vessel2, vessel1)
 
         head_on_half = self.envp.colregs_head_on_half_angle_deg
         head_on_min = (360.0 - head_on_half) % 360.0
         crossing_max = self.envp.colregs_crossing_starboard_max_deg
         overtaking_max = self.envp.colregs_overtaking_aft_max_deg
 
-        agent_overtaking = self._bearing_in_sector(
-            tgt_bearing, crossing_max, overtaking_max, inclusive=False
-        ) and self._is_closing(agent, target)
-        target_overtaking = self._bearing_in_sector(
-            own_bearing, crossing_max, overtaking_max, inclusive=False
-        ) and self._is_closing(target, agent)
-        if agent_overtaking and not target_overtaking:
+        vessel1_overtaking = self._bearing_in_sector(
+            v2_bearing, crossing_max, overtaking_max, inclusive=False
+        ) and self._is_closing(vessel1, vessel2)
+        vessel2_overtaking = self._bearing_in_sector(
+            v1_bearing, crossing_max, overtaking_max, inclusive=False
+        ) and self._is_closing(vessel2, vessel1)
+        if vessel1_overtaking and not vessel2_overtaking:
             return {
-                "geometry": "overtaking_agent_geom",
-                "agent_bearing_deg": own_bearing,
-                "target_bearing_deg": tgt_bearing,
+                "geometry": "overtaking_vessel1_geom",
+                "vessel1_bearing_deg": v1_bearing,
+                "vessel2_bearing_deg": v2_bearing,
             }
-        if target_overtaking and not agent_overtaking:
+        if vessel2_overtaking and not vessel1_overtaking:
             return {
-                "geometry": "overtaking_target_geom",
-                "agent_bearing_deg": own_bearing,
-                "target_bearing_deg": tgt_bearing,
+                "geometry": "overtaking_vessel2_geom",
+                "vessel1_bearing_deg": v1_bearing,
+                "vessel2_bearing_deg": v2_bearing,
             }
 
-        head_on = self._bearing_in_sector(own_bearing, head_on_min, head_on_half) and self._bearing_in_sector(
-            tgt_bearing, head_on_min, head_on_half
+        head_on = self._bearing_in_sector(v1_bearing, head_on_min, head_on_half) and self._bearing_in_sector(
+            v2_bearing, head_on_min, head_on_half
         )
         if head_on:
             return {
                 "geometry": "head_on_geom",
-                "agent_bearing_deg": own_bearing,
-                "target_bearing_deg": tgt_bearing,
+                "vessel1_bearing_deg": v1_bearing,
+                "vessel2_bearing_deg": v2_bearing,
             }
 
-        if self._bearing_in_sector(own_bearing, head_on_half, crossing_max):
+        if self._bearing_in_sector(v1_bearing, head_on_half, crossing_max):
             return {
-                "geometry": "crossing_agent_give_way_geom",
-                "agent_bearing_deg": own_bearing,
-                "target_bearing_deg": tgt_bearing,
+                "geometry": "crossing_vessel1_give_way_geom",
+                "vessel1_bearing_deg": v1_bearing,
+                "vessel2_bearing_deg": v2_bearing,
             }
 
-        if self._bearing_in_sector(own_bearing, 360.0 - crossing_max, head_on_min):
+        if self._bearing_in_sector(v1_bearing, 360.0 - crossing_max, head_on_min):
             return {
-                "geometry": "crossing_agent_stand_on_geom",
-                "agent_bearing_deg": own_bearing,
-                "target_bearing_deg": tgt_bearing,
+                "geometry": "crossing_vessel1_stand_on_geom",
+                "vessel1_bearing_deg": v1_bearing,
+                "vessel2_bearing_deg": v2_bearing,
             }
 
         return {
             "geometry": "none",
-            "agent_bearing_deg": own_bearing,
-            "target_bearing_deg": tgt_bearing,
+            "vessel1_bearing_deg": v1_bearing,
+            "vessel2_bearing_deg": v2_bearing,
         }
 
-    def _assess_pair_risk(self, agent: Vessel, target: Vessel) -> Dict[str, float | bool]:
-        tcpa, dcpa = self._tcpa_dcpa(agent, target)
+    def _assess_pair_risk(self, vessel1: Vessel, vessel2: Vessel) -> Dict[str, float | bool]:
+        tcpa, dcpa = self._tcpa_dcpa(vessel1, vessel2)
         risk_of_collision = (0.0 <= tcpa <= self.envp.tcpa_risk_threshold) and (dcpa <= self.envp.dcpa_risk_threshold)
         return {
             "tcpa": tcpa,
@@ -323,12 +323,12 @@ class SingleTargetFeatureEnv:
             "risk_of_collision": risk_of_collision,
         }
 
-    def _resolve_colregs_pair(self, agent: Vessel, target: Vessel) -> Dict[str, float | str | bool]:
-        geom = self._classify_pair_geometry(agent, target)
-        risk = self._assess_pair_risk(agent, target)
+    def _resolve_colregs_pair(self, vessel1: Vessel, vessel2: Vessel) -> Dict[str, float | str | bool]:
+        geom = self._classify_pair_geometry(vessel1, vessel2)
+        risk = self._assess_pair_risk(vessel1, vessel2)
         geometry = str(geom["geometry"])
         risk_of_collision = bool(risk["risk_of_collision"])
-        sep = math.hypot(target.x - agent.x, target.y - agent.y)
+        sep = math.hypot(vessel2.x - vessel1.x, vessel2.y - vessel1.y)
 
         raw_scenario = "safe"
         raw_agent_role = "none"
@@ -342,28 +342,28 @@ class SingleTargetFeatureEnv:
             else:
                 raw_agent_role = "give_way"
                 raw_target_role = "give_way"
-        elif geometry == "crossing_agent_give_way_geom" and risk_of_collision:
+        elif geometry == "crossing_vessel1_give_way_geom" and risk_of_collision:
             raw_scenario = "crossing"
             raw_agent_role = "give_way"
             raw_target_role = "stand_on"
-        elif geometry == "crossing_agent_stand_on_geom" and risk_of_collision:
+        elif geometry == "crossing_vessel1_stand_on_geom" and risk_of_collision:
             raw_scenario = "crossing"
             raw_agent_role = "stand_on"
             raw_target_role = "give_way"
-        elif geometry == "overtaking_agent_geom" and risk_of_collision:
+        elif geometry == "overtaking_vessel1_geom" and risk_of_collision:
             raw_scenario = "overtaking"
             raw_agent_role = "give_way"
             raw_target_role = "stand_on"
-        elif geometry == "overtaking_target_geom" and risk_of_collision:
+        elif geometry == "overtaking_vessel2_geom" and risk_of_collision:
             raw_scenario = "overtaking"
             raw_agent_role = "stand_on"
             raw_target_role = "give_way"
         elif geometry in {
             "head_on_geom",
-            "crossing_agent_give_way_geom",
-            "crossing_agent_stand_on_geom",
-            "overtaking_agent_geom",
-            "overtaking_target_geom",
+            "crossing_vessel1_give_way_geom",
+            "crossing_vessel1_stand_on_geom",
+            "overtaking_vessel1_geom",
+            "overtaking_vessel2_geom",
         }:
             raw_scenario = "no_risk"
 
@@ -423,8 +423,8 @@ class SingleTargetFeatureEnv:
             "scenario": scenario,
             "agent_role": agent_role,
             "target_role": target_role,
-            "agent_bearing_deg": float(geom["agent_bearing_deg"]),
-            "target_bearing_deg": float(geom["target_bearing_deg"]),
+            "agent_bearing_deg": float(geom["vessel1_bearing_deg"]),
+            "target_bearing_deg": float(geom["vessel2_bearing_deg"]),
             "tcpa": float(risk["tcpa"]),
             "dcpa": float(risk["dcpa"]),
             "risk_of_collision": risk_of_collision,
@@ -1355,12 +1355,16 @@ class SingleTargetFeatureEnv:
             "target_standon_escalated": int(self.target_standon_escalated),
         }
 
-        # Show the RL takeover overlay exactly once per episode, on the first step RL activates.
+        # Show encounter status overlay once per episode on the first risky encounter step.
+        encounter_status_trigger = self.risk_of_collision and self.colregs_scenario in {
+            "crossing",
+            "head_on",
+            "overtaking",
+        }
         if (
             self.render_enabled
             and not self.rl_overlay_shown
-            and self.rl_ever_triggered
-            and (self.agent_rl_active or self.target_rl_active)
+            and encounter_status_trigger
         ):
             self.rl_overlay_shown = True
             self.paused = True
@@ -1413,9 +1417,9 @@ class SingleTargetFeatureEnv:
         if agent_active and target_active:
             rl_summary = "RL control active on BOTH vessels"
         elif agent_active:
-            rl_summary = "RL control active on V1(agent); V2 uses fallback"
+            rl_summary = "RL control active on V1; V2 uses fallback"
         elif target_active:
-            rl_summary = "RL control active on V2(target); V1 uses fallback"
+            rl_summary = "RL control active on V2; V1 uses fallback"
         else:
             rl_summary = "No vessel currently under RL control"
 
