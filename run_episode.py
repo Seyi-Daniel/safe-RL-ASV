@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from environment import SingleTargetFeatureEnv
+from environment import SingleVessel2FeatureEnv
 from hyperparameters import EnvParams, RewardParams
 from policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
 
@@ -52,14 +52,14 @@ def main() -> None:
         show_grid=args.show_grid,
         seed=args.seed,
     )
-    env = SingleTargetFeatureEnv(envp, RewardParams(), render=args.render)
+    env = SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     policy = None
 
     if args.policy:
         ckpt = torch.load(args.policy, map_location=device)
-        # Fallback dimension matches SingleTargetFeatureEnv.get_obs() default feature shape.
+        # Fallback dimension matches SingleVessel2FeatureEnv.get_obs() default feature shape.
         obs_dim = int(ckpt.get("obs_dim", DEFAULT_OBS_DIM))
         hidden_dim = int(ckpt.get("hidden_dim", args.hidden_dim))
         action_dim = int(ckpt.get("action_dim", ACTION_DIM))
@@ -104,7 +104,7 @@ def main() -> None:
             "return": float(total),
             "steps": env.step_idx,
             "reason": info["reason"],
-            "final_agent_goal_distance": float(info["agent_goal_distance"]),
+            "final_vessel1_goal_distance": float(info["vessel1_goal_distance"]),
         }
         summaries.append(summary)
         print(summary)

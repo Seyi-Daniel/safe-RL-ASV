@@ -41,7 +41,7 @@ class Vessel:
     throttle: float = 0.0
 
 
-class SingleTargetFeatureEnv:
+class SingleVessel2FeatureEnv:
     """Two-vessel setup: vessel-1 straight center->circle goal, vessel-2 follows pure pursuit path."""
 
     def __init__(
@@ -54,44 +54,44 @@ class SingleTargetFeatureEnv:
         self.rewp = reward_params
         self.rng = random.Random(self.envp.seed)
 
-        self.agent: Optional[Vessel] = None
-        self.target: Optional[Vessel] = None
+        self.vessel1: Optional[Vessel] = None
+        self.vessel2: Optional[Vessel] = None
         self.start_x = 0.5 * self.envp.world_w
         self.start_y = 0.5 * self.envp.world_h
         self.time = 0.0
         self.step_idx = 0
         self.max_steps = max(1, int(round(self.envp.episode_seconds / self.envp.dt)))
-        self.prev_goal_d_agent = 0.0
-        self.prev_goal_d_target = 0.0
-        self.agent_reached = False
-        self.target_reached = False
+        self.prev_goal_d_vessel1 = 0.0
+        self.prev_goal_d_vessel2 = 0.0
+        self.vessel1_reached = False
+        self.vessel2_reached = False
 
         # per-vessel telemetry
-        self.agent_steps_taken = 0
-        self.target_steps_taken = 0
+        self.vessel1_steps_taken = 0
+        self.vessel2_steps_taken = 0
         self.colregs_scenario = "safe"
-        self.agent_role = "none"
-        self.target_role = "none"
+        self.vessel1_role = "none"
+        self.vessel2_role = "none"
         self.risk_of_collision = False
         self.last_dcpa = float("inf")
         self.last_tcpa = float("inf")
-        self.agent_rl_active = False
-        self.target_rl_active = False
-        self.agent_relative_bearing_deg = 0.0
-        self.target_relative_bearing_deg = 0.0
-        self.agent_start_speed = 0.0
-        self.target_start_speed = 0.0
-        self.agent_start_pos = (0.0, 0.0)
-        self.target_start_pos = (0.0, 0.0)
-        self.agent_start_heading = 0.0
-        self.target_start_heading = 0.0
+        self.vessel1_rl_active = False
+        self.vessel2_rl_active = False
+        self.vessel1_relative_bearing_deg = 0.0
+        self.vessel2_relative_bearing_deg = 0.0
+        self.vessel1_start_speed = 0.0
+        self.vessel2_start_speed = 0.0
+        self.vessel1_start_pos = (0.0, 0.0)
+        self.vessel2_start_pos = (0.0, 0.0)
+        self.vessel1_start_heading = 0.0
+        self.vessel2_start_heading = 0.0
 
         # Vessel-2 scripted path state
 
         # render-time planned path visualization
         self.show_planned_paths = True
-        self.agent_planned_path: List[Tuple[float, float]] = []
-        self.target_planned_path: List[Tuple[float, float]] = []
+        self.vessel1_planned_path: List[Tuple[float, float]] = []
+        self.vessel2_planned_path: List[Tuple[float, float]] = []
 
         self.render_enabled = render and HAS_PYGAME
         self.paused = False
@@ -99,61 +99,61 @@ class SingleTargetFeatureEnv:
         self.risk_overlay_payload: Dict[str, float | str | int] = {}
         self.rl_ever_triggered: bool = False  # latches True when RL first activates, never resets within episode
         self.rl_overlay_shown: bool = False  # True after overlay has been shown once this episode
-        self.prev_agent_rl_active = False
-        self.prev_target_rl_active = False
+        self.prev_vessel1_rl_active = False
+        self.prev_vessel2_rl_active = False
         self.overtaking_latched = False
         self.latched_scenario = "safe"
-        self.latched_agent_role = "none"
-        self.latched_target_role = "none"
+        self.latched_vessel1_role = "none"
+        self.latched_vessel2_role = "none"
         self.overtaking_clear_steps = 0
         self.encounter_latched = False
         self.latched_encounter_active = False
         self.latched_geometry = "none"
         self.encounter_clear_steps = 0
-        self.designated_agent_role = "none"
-        self.designated_target_role = "none"
+        self.designated_vessel1_role = "none"
+        self.designated_vessel2_role = "none"
         self.rl_controlled_vessel = "none"
         self.candidate_scenario = "safe"
-        self.candidate_agent_role = "none"
-        self.candidate_target_role = "none"
+        self.candidate_vessel1_role = "none"
+        self.candidate_vessel2_role = "none"
         self.candidate_steps = 0
         self.active_non_overtaking_scenario = "safe"
-        self.active_non_overtaking_agent_role = "none"
-        self.active_non_overtaking_target_role = "none"
+        self.active_non_overtaking_vessel1_role = "none"
+        self.active_non_overtaking_vessel2_role = "none"
         self.active_non_overtaking_exit_steps = 0
         self.geometry_scenario = "none"
-        self.agent_standon_escalated = False
-        self.target_standon_escalated = False
-        self.agent_standon_risk_steps = 0
-        self.target_standon_risk_steps = 0
-        self.agent_control_source = "straight"
-        self.target_control_source = "pure_pursuit"
-        self.agent_rl_latched = False
-        self.target_rl_latched = False
+        self.vessel1_standon_escalated = False
+        self.vessel2_standon_escalated = False
+        self.vessel1_standon_risk_steps = 0
+        self.vessel2_standon_risk_steps = 0
+        self.vessel1_control_source = "straight"
+        self.vessel2_control_source = "pure_pursuit"
+        self.vessel1_rl_latched = False
+        self.vessel2_rl_latched = False
         self.any_rl_ever_triggered = False
         self.latched_encounter_active = False
         self.latched_geometry = "none"
         self.encounter_clear_steps = 0
-        self.designated_agent_role = "none"
-        self.designated_target_role = "none"
+        self.designated_vessel1_role = "none"
+        self.designated_vessel2_role = "none"
         self.rl_controlled_vessel = "none"
         self.secondary_policy_fn = None
         self.last_inter_vessel_distance = float("inf")
         self.encounter_was_risky = False
         self.safe_pass_awarded = False
-        self.agent_giveway_action_awarded = False
-        self.target_giveway_action_awarded = False
-        self.agent_standon_hold_awarded = False
-        self.target_standon_hold_awarded = False
-        self.prev_agent_rudder_sign = 0
-        self.prev_target_rudder_sign = 0
+        self.vessel1_giveway_action_awarded = False
+        self.vessel2_giveway_action_awarded = False
+        self.vessel1_standon_hold_awarded = False
+        self.vessel2_standon_hold_awarded = False
+        self.prev_vessel1_rudder_sign = 0
+        self.prev_vessel2_rudder_sign = 0
         self.candidate_scenario = "safe"
-        self.candidate_agent_role = "none"
-        self.candidate_target_role = "none"
+        self.candidate_vessel1_role = "none"
+        self.candidate_vessel2_role = "none"
         self.candidate_steps = 0
         self.active_non_overtaking_scenario = "safe"
-        self.active_non_overtaking_agent_role = "none"
-        self.active_non_overtaking_target_role = "none"
+        self.active_non_overtaking_vessel1_role = "none"
+        self.active_non_overtaking_vessel2_role = "none"
         self.active_non_overtaking_exit_steps = 0
         self._screen = None
         self._clock = None
@@ -196,11 +196,11 @@ class SingleTargetFeatureEnv:
         return math.hypot(v.x - sx, v.y - sy)
 
     def _inter_vessel_distance(self) -> float:
-        return math.hypot(self.target.x - self.agent.x, self.target.y - self.agent.y)
+        return math.hypot(self.vessel2.x - self.vessel1.x, self.vessel2.y - self.vessel1.y)
 
-    def _relative_bearing_deg(self, observer: Vessel, target: Vessel) -> float:
-        dx = target.x - observer.x
-        dy = target.y - observer.y
+    def _relative_bearing_deg(self, observer: Vessel, vessel2: Vessel) -> float:
+        dx = vessel2.x - observer.x
+        dy = vessel2.y - observer.y
         ch = math.cos(observer.h)
         sh = math.sin(observer.h)
         x_rel = ch * dx + sh * dy
@@ -251,32 +251,32 @@ class SingleTargetFeatureEnv:
         dcpa = math.hypot(cx, cy)
         return tcpa, dcpa
 
-    def _classify_pair_geometry(self, agent: Vessel, target: Vessel) -> Dict[str, float | str]:
-        own_bearing = self._relative_bearing_deg(agent, target)
-        tgt_bearing = self._relative_bearing_deg(target, agent)
+    def _classify_pair_geometry(self, vessel1: Vessel, vessel2: Vessel) -> Dict[str, float | str]:
+        own_bearing = self._relative_bearing_deg(vessel1, vessel2)
+        tgt_bearing = self._relative_bearing_deg(vessel2, vessel1)
 
         head_on_half = self.envp.colregs_head_on_half_angle_deg
         head_on_min = (360.0 - head_on_half) % 360.0
         crossing_max = self.envp.colregs_crossing_starboard_max_deg
         overtaking_max = self.envp.colregs_overtaking_aft_max_deg
 
-        agent_overtaking = self._bearing_in_sector(
+        vessel1_overtaking = self._bearing_in_sector(
             tgt_bearing, crossing_max, overtaking_max, inclusive=False
-        ) and self._is_closing(agent, target)
-        target_overtaking = self._bearing_in_sector(
+        ) and self._is_closing(vessel1, vessel2)
+        vessel2_overtaking = self._bearing_in_sector(
             own_bearing, crossing_max, overtaking_max, inclusive=False
-        ) and self._is_closing(target, agent)
-        if agent_overtaking and not target_overtaking:
+        ) and self._is_closing(vessel2, vessel1)
+        if vessel1_overtaking and not vessel2_overtaking:
             return {
-                "geometry": "overtaking_agent_geom",
-                "agent_bearing_deg": own_bearing,
-                "target_bearing_deg": tgt_bearing,
+                "geometry": "overtaking_vessel1_geom",
+                "vessel1_bearing_deg": own_bearing,
+                "vessel2_bearing_deg": tgt_bearing,
             }
-        if target_overtaking and not agent_overtaking:
+        if vessel2_overtaking and not vessel1_overtaking:
             return {
-                "geometry": "overtaking_target_geom",
-                "agent_bearing_deg": own_bearing,
-                "target_bearing_deg": tgt_bearing,
+                "geometry": "overtaking_vessel2_geom",
+                "vessel1_bearing_deg": own_bearing,
+                "vessel2_bearing_deg": tgt_bearing,
             }
 
         head_on = self._bearing_in_sector(own_bearing, head_on_min, head_on_half) and self._bearing_in_sector(
@@ -285,32 +285,32 @@ class SingleTargetFeatureEnv:
         if head_on:
             return {
                 "geometry": "head_on_geom",
-                "agent_bearing_deg": own_bearing,
-                "target_bearing_deg": tgt_bearing,
+                "vessel1_bearing_deg": own_bearing,
+                "vessel2_bearing_deg": tgt_bearing,
             }
 
         if self._bearing_in_sector(own_bearing, head_on_half, crossing_max):
             return {
-                "geometry": "crossing_agent_give_way_geom",
-                "agent_bearing_deg": own_bearing,
-                "target_bearing_deg": tgt_bearing,
+                "geometry": "crossing_vessel1_give_way_geom",
+                "vessel1_bearing_deg": own_bearing,
+                "vessel2_bearing_deg": tgt_bearing,
             }
 
         if self._bearing_in_sector(own_bearing, 360.0 - crossing_max, head_on_min):
             return {
-                "geometry": "crossing_agent_stand_on_geom",
-                "agent_bearing_deg": own_bearing,
-                "target_bearing_deg": tgt_bearing,
+                "geometry": "crossing_vessel1_stand_on_geom",
+                "vessel1_bearing_deg": own_bearing,
+                "vessel2_bearing_deg": tgt_bearing,
             }
 
         return {
             "geometry": "none",
-            "agent_bearing_deg": own_bearing,
-            "target_bearing_deg": tgt_bearing,
+            "vessel1_bearing_deg": own_bearing,
+            "vessel2_bearing_deg": tgt_bearing,
         }
 
-    def _assess_pair_risk(self, agent: Vessel, target: Vessel) -> Dict[str, float | bool]:
-        tcpa, dcpa = self._tcpa_dcpa(agent, target)
+    def _assess_pair_risk(self, vessel1: Vessel, vessel2: Vessel) -> Dict[str, float | bool]:
+        tcpa, dcpa = self._tcpa_dcpa(vessel1, vessel2)
         risk_of_collision = (0.0 <= tcpa <= self.envp.tcpa_risk_threshold) and (dcpa <= self.envp.dcpa_risk_threshold)
         return {
             "tcpa": tcpa,
@@ -318,47 +318,47 @@ class SingleTargetFeatureEnv:
             "risk_of_collision": risk_of_collision,
         }
 
-    def _resolve_colregs_pair(self, agent: Vessel, target: Vessel) -> Dict[str, float | str | bool]:
-        geom = self._classify_pair_geometry(agent, target)
-        risk = self._assess_pair_risk(agent, target)
+    def _resolve_colregs_pair(self, vessel1: Vessel, vessel2: Vessel) -> Dict[str, float | str | bool]:
+        geom = self._classify_pair_geometry(vessel1, vessel2)
+        risk = self._assess_pair_risk(vessel1, vessel2)
         geometry = str(geom["geometry"])
         risk_of_collision = bool(risk["risk_of_collision"])
-        sep = math.hypot(target.x - agent.x, target.y - agent.y)
+        sep = math.hypot(vessel2.x - vessel1.x, vessel2.y - vessel1.y)
 
         raw_scenario = "safe"
-        raw_agent_role = "none"
-        raw_target_role = "none"
+        raw_vessel1_role = "none"
+        raw_vessel2_role = "none"
 
         if geometry == "head_on_geom" and risk_of_collision:
             raw_scenario = "head_on"
             if self.envp.simplified_head_on_single_giveway:
-                raw_agent_role = "give_way"
-                raw_target_role = "stand_on"
+                raw_vessel1_role = "give_way"
+                raw_vessel2_role = "stand_on"
             else:
-                raw_agent_role = "give_way"
-                raw_target_role = "give_way"
-        elif geometry == "crossing_agent_give_way_geom" and risk_of_collision:
+                raw_vessel1_role = "give_way"
+                raw_vessel2_role = "give_way"
+        elif geometry == "crossing_vessel1_give_way_geom" and risk_of_collision:
             raw_scenario = "crossing"
-            raw_agent_role = "give_way"
-            raw_target_role = "stand_on"
-        elif geometry == "crossing_agent_stand_on_geom" and risk_of_collision:
+            raw_vessel1_role = "give_way"
+            raw_vessel2_role = "stand_on"
+        elif geometry == "crossing_vessel1_stand_on_geom" and risk_of_collision:
             raw_scenario = "crossing"
-            raw_agent_role = "stand_on"
-            raw_target_role = "give_way"
-        elif geometry == "overtaking_agent_geom" and risk_of_collision:
+            raw_vessel1_role = "stand_on"
+            raw_vessel2_role = "give_way"
+        elif geometry == "overtaking_vessel1_geom" and risk_of_collision:
             raw_scenario = "overtaking"
-            raw_agent_role = "give_way"
-            raw_target_role = "stand_on"
-        elif geometry == "overtaking_target_geom" and risk_of_collision:
+            raw_vessel1_role = "give_way"
+            raw_vessel2_role = "stand_on"
+        elif geometry == "overtaking_vessel2_geom" and risk_of_collision:
             raw_scenario = "overtaking"
-            raw_agent_role = "stand_on"
-            raw_target_role = "give_way"
+            raw_vessel1_role = "stand_on"
+            raw_vessel2_role = "give_way"
         elif geometry in {
             "head_on_geom",
-            "crossing_agent_give_way_geom",
-            "crossing_agent_stand_on_geom",
-            "overtaking_agent_geom",
-            "overtaking_target_geom",
+            "crossing_vessel1_give_way_geom",
+            "crossing_vessel1_stand_on_geom",
+            "overtaking_vessel1_geom",
+            "overtaking_vessel2_geom",
         }:
             raw_scenario = "no_risk"
 
@@ -367,24 +367,24 @@ class SingleTargetFeatureEnv:
             self.encounter_latched = True
             self.latched_geometry = geometry
             self.latched_scenario = raw_scenario
-            self.latched_agent_role = raw_agent_role
-            self.latched_target_role = raw_target_role
-            self.designated_agent_role = raw_agent_role
-            self.designated_target_role = raw_target_role
+            self.latched_vessel1_role = raw_vessel1_role
+            self.latched_vessel2_role = raw_vessel2_role
+            self.designated_vessel1_role = raw_vessel1_role
+            self.designated_vessel2_role = raw_vessel2_role
             self.overtaking_latched = raw_scenario == "overtaking"
             self.encounter_clear_steps = 0
             self.safe_pass_awarded = False
             self.encounter_was_risky = True
 
         scenario = raw_scenario
-        agent_role = raw_agent_role
-        target_role = raw_target_role
+        vessel1_role = raw_vessel1_role
+        vessel2_role = raw_vessel2_role
         encounter_latched = False
 
         if self.latched_encounter_active:
             scenario = self.latched_scenario
-            agent_role = self.latched_agent_role
-            target_role = self.latched_target_role
+            vessel1_role = self.latched_vessel1_role
+            vessel2_role = self.latched_vessel2_role
             encounter_latched = True
             if (not risk_of_collision) and (sep > self.envp.safe_pass_distance):
                 self.encounter_clear_steps += 1
@@ -397,29 +397,29 @@ class SingleTargetFeatureEnv:
                 self.overtaking_latched = False
                 self.latched_geometry = "none"
                 self.latched_scenario = "safe"
-                self.latched_agent_role = "none"
-                self.latched_target_role = "none"
+                self.latched_vessel1_role = "none"
+                self.latched_vessel2_role = "none"
                 self.encounter_clear_steps = 0
-                self.agent_giveway_action_awarded = False
-                self.target_giveway_action_awarded = False
-                self.agent_standon_hold_awarded = False
-                self.target_standon_hold_awarded = False
+                self.vessel1_giveway_action_awarded = False
+                self.vessel2_giveway_action_awarded = False
+                self.vessel1_standon_hold_awarded = False
+                self.vessel2_standon_hold_awarded = False
                 scenario = raw_scenario
-                agent_role = raw_agent_role
-                target_role = raw_target_role
+                vessel1_role = raw_vessel1_role
+                vessel2_role = raw_vessel2_role
                 encounter_latched = False
 
-        if self.encounter_was_risky and agent_role == "none" and target_role == "none":
-            agent_role = self.designated_agent_role
-            target_role = self.designated_target_role
+        if self.encounter_was_risky and vessel1_role == "none" and vessel2_role == "none":
+            vessel1_role = self.designated_vessel1_role
+            vessel2_role = self.designated_vessel2_role
 
         return {
             "geometry": geometry,
             "scenario": scenario,
-            "agent_role": agent_role,
-            "target_role": target_role,
-            "agent_bearing_deg": float(geom["agent_bearing_deg"]),
-            "target_bearing_deg": float(geom["target_bearing_deg"]),
+            "vessel1_role": vessel1_role,
+            "vessel2_role": vessel2_role,
+            "vessel1_bearing_deg": float(geom["vessel1_bearing_deg"]),
+            "vessel2_bearing_deg": float(geom["vessel2_bearing_deg"]),
             "tcpa": float(risk["tcpa"]),
             "dcpa": float(risk["dcpa"]),
             "risk_of_collision": risk_of_collision,
@@ -428,100 +428,100 @@ class SingleTargetFeatureEnv:
         }
 
     def _apply_non_overtaking_hysteresis(
-        self, scenario: str, agent_role: str, target_role: str
+        self, scenario: str, vessel1_role: str, vessel2_role: str
     ) -> Tuple[str, str, str]:
         if scenario not in {"head_on", "crossing"}:
             self.candidate_scenario = "safe"
-            self.candidate_agent_role = "none"
-            self.candidate_target_role = "none"
+            self.candidate_vessel1_role = "none"
+            self.candidate_vessel2_role = "none"
             self.candidate_steps = 0
             if self.active_non_overtaking_scenario in {"head_on", "crossing"}:
                 self.active_non_overtaking_exit_steps += 1
                 if self.active_non_overtaking_exit_steps < max(1, int(self.envp.encounter_exit_persistence_steps)):
                     return (
                         self.active_non_overtaking_scenario,
-                        self.active_non_overtaking_agent_role,
-                        self.active_non_overtaking_target_role,
+                        self.active_non_overtaking_vessel1_role,
+                        self.active_non_overtaking_vessel2_role,
                     )
             self.active_non_overtaking_scenario = "safe"
-            self.active_non_overtaking_agent_role = "none"
-            self.active_non_overtaking_target_role = "none"
+            self.active_non_overtaking_vessel1_role = "none"
+            self.active_non_overtaking_vessel2_role = "none"
             self.active_non_overtaking_exit_steps = 0
-            return scenario, agent_role, target_role
+            return scenario, vessel1_role, vessel2_role
 
         self.active_non_overtaking_exit_steps = 0
         if (
             self.candidate_scenario == scenario
-            and self.candidate_agent_role == agent_role
-            and self.candidate_target_role == target_role
+            and self.candidate_vessel1_role == vessel1_role
+            and self.candidate_vessel2_role == vessel2_role
         ):
             self.candidate_steps += 1
         else:
             self.candidate_scenario = scenario
-            self.candidate_agent_role = agent_role
-            self.candidate_target_role = target_role
+            self.candidate_vessel1_role = vessel1_role
+            self.candidate_vessel2_role = vessel2_role
             self.candidate_steps = 1
 
         if self.candidate_steps >= max(1, int(self.envp.encounter_enter_persistence_steps)):
             self.active_non_overtaking_scenario = scenario
-            self.active_non_overtaking_agent_role = agent_role
-            self.active_non_overtaking_target_role = target_role
-            return scenario, agent_role, target_role
+            self.active_non_overtaking_vessel1_role = vessel1_role
+            self.active_non_overtaking_vessel2_role = vessel2_role
+            return scenario, vessel1_role, vessel2_role
 
         if self.active_non_overtaking_scenario in {"head_on", "crossing"}:
             return (
                 self.active_non_overtaking_scenario,
-                self.active_non_overtaking_agent_role,
-                self.active_non_overtaking_target_role,
+                self.active_non_overtaking_vessel1_role,
+                self.active_non_overtaking_vessel2_role,
             )
         return "no_risk", "none", "none"
 
     def _classify_colregs(self) -> Dict[str, float | str | bool]:
-        if self.agent_reached or self.target_reached:
-            fallback_agent_role = self.designated_agent_role if self.encounter_was_risky else "none"
-            fallback_target_role = self.designated_target_role if self.encounter_was_risky else "none"
-            if self.rl_controlled_vessel == "agent":
-                fallback_agent_role = "give_way"
-                fallback_target_role = "stand_on" if fallback_target_role == "none" else fallback_target_role
-            elif self.rl_controlled_vessel == "target":
-                fallback_target_role = "give_way"
-                fallback_agent_role = "stand_on" if fallback_agent_role == "none" else fallback_agent_role
+        if self.vessel1_reached or self.vessel2_reached:
+            fallback_vessel1_role = self.designated_vessel1_role if self.encounter_was_risky else "none"
+            fallback_vessel2_role = self.designated_vessel2_role if self.encounter_was_risky else "none"
+            if self.rl_controlled_vessel == "vessel1":
+                fallback_vessel1_role = "give_way"
+                fallback_vessel2_role = "stand_on" if fallback_vessel2_role == "none" else fallback_vessel2_role
+            elif self.rl_controlled_vessel == "vessel2":
+                fallback_vessel2_role = "give_way"
+                fallback_vessel1_role = "stand_on" if fallback_vessel1_role == "none" else fallback_vessel1_role
             return {
                 "geometry": "none",
                 "scenario": "safe",
-                "agent_role": fallback_agent_role,
-                "target_role": fallback_target_role,
-                "agent_bearing_deg": 0.0,
-                "target_bearing_deg": 0.0,
+                "vessel1_role": fallback_vessel1_role,
+                "vessel2_role": fallback_vessel2_role,
+                "vessel1_bearing_deg": 0.0,
+                "vessel2_bearing_deg": 0.0,
                 "tcpa": float("inf"),
                 "dcpa": float("inf"),
                 "risk_of_collision": False,
                 "encounter_latched": self.encounter_latched,
                 "overtaking_latched": self.overtaking_latched,
             }
-        return self._resolve_colregs_pair(self.agent, self.target)
+        return self._resolve_colregs_pair(self.vessel1, self.vessel2)
 
-    def _reset_sample_triggers_takeover(self, agent: Vessel, target: Vessel) -> bool:
+    def _reset_sample_triggers_takeover(self, vessel1: Vessel, vessel2: Vessel) -> bool:
         saved_latch_state = (
             self.overtaking_latched,
             self.latched_scenario,
-            self.latched_agent_role,
-            self.latched_target_role,
+            self.latched_vessel1_role,
+            self.latched_vessel2_role,
             self.overtaking_clear_steps,
             self.encounter_latched,
             self.latched_encounter_active,
             self.latched_geometry,
             self.encounter_clear_steps,
-            self.designated_agent_role,
-            self.designated_target_role,
+            self.designated_vessel1_role,
+            self.designated_vessel2_role,
             self.rl_controlled_vessel,
             self.candidate_scenario,
-            self.candidate_agent_role,
-            self.candidate_target_role,
+            self.candidate_vessel1_role,
+            self.candidate_vessel2_role,
             self.candidate_steps,
             self.active_non_overtaking_scenario,
-            self.active_non_overtaking_agent_role,
-            self.active_non_overtaking_target_role,
+            self.active_non_overtaking_vessel1_role,
+            self.active_non_overtaking_vessel2_role,
             self.active_non_overtaking_exit_steps,
         )
 
@@ -529,116 +529,116 @@ class SingleTargetFeatureEnv:
             (
                 self.overtaking_latched,
                 self.latched_scenario,
-                self.latched_agent_role,
-                self.latched_target_role,
+                self.latched_vessel1_role,
+                self.latched_vessel2_role,
                 self.overtaking_clear_steps,
                 self.encounter_latched,
                 self.latched_encounter_active,
                 self.latched_geometry,
                 self.encounter_clear_steps,
-                self.designated_agent_role,
-                self.designated_target_role,
+                self.designated_vessel1_role,
+                self.designated_vessel2_role,
                 self.rl_controlled_vessel,
                 self.candidate_scenario,
-                self.candidate_agent_role,
-                self.candidate_target_role,
+                self.candidate_vessel1_role,
+                self.candidate_vessel2_role,
                 self.candidate_steps,
                 self.active_non_overtaking_scenario,
-                self.active_non_overtaking_agent_role,
-                self.active_non_overtaking_target_role,
+                self.active_non_overtaking_vessel1_role,
+                self.active_non_overtaking_vessel2_role,
                 self.active_non_overtaking_exit_steps,
             ) = saved_latch_state
 
         self.overtaking_latched = False
         self.latched_scenario = "safe"
-        self.latched_agent_role = "none"
-        self.latched_target_role = "none"
+        self.latched_vessel1_role = "none"
+        self.latched_vessel2_role = "none"
         self.overtaking_clear_steps = 0
         self.encounter_latched = False
         self.latched_encounter_active = False
         self.latched_geometry = "none"
         self.encounter_clear_steps = 0
-        self.designated_agent_role = "none"
-        self.designated_target_role = "none"
+        self.designated_vessel1_role = "none"
+        self.designated_vessel2_role = "none"
         self.rl_controlled_vessel = "none"
 
-        agent_sim = Vessel(agent.x, agent.y, agent.h, agent.speed, agent.goal_x, agent.goal_y, agent.rudder, agent.throttle)
-        target_sim = Vessel(target.x, target.y, target.h, target.speed, target.goal_x, target.goal_y, target.rudder, target.throttle)
+        vessel1_sim = Vessel(vessel1.x, vessel1.y, vessel1.h, vessel1.speed, vessel1.goal_x, vessel1.goal_y, vessel1.rudder, vessel1.throttle)
+        vessel2_sim = Vessel(vessel2.x, vessel2.y, vessel2.h, vessel2.speed, vessel2.goal_x, vessel2.goal_y, vessel2.rudder, vessel2.throttle)
 
-        agent_reached = False
-        target_reached = False
-        agent_start = (agent_sim.x, agent_sim.y)
-        target_start = (target_sim.x, target_sim.y)
+        vessel1_reached = False
+        vessel2_reached = False
+        vessel1_start = (vessel1_sim.x, vessel1_sim.y)
+        vessel2_start = (vessel2_sim.x, vessel2_sim.y)
         h = self.envp.dt / max(1, self.envp.substeps)
 
         takeover_viable = False
         min_separation = float("inf")
 
         for _ in range(self.max_steps):
-            if agent_reached or target_reached:
+            if vessel1_reached or vessel2_reached:
                 encounter = {
-                    "agent_role": "none",
-                    "target_role": "none",
+                    "vessel1_role": "none",
+                    "vessel2_role": "none",
                     "risk_of_collision": False,
                     "dcpa": float("inf"),
                     "tcpa": float("inf"),
                 }
             else:
-                encounter = self._resolve_colregs_pair(agent_sim, target_sim)
+                encounter = self._resolve_colregs_pair(vessel1_sim, vessel2_sim)
 
-            separation = math.hypot(target_sim.x - agent_sim.x, target_sim.y - agent_sim.y)
+            separation = math.hypot(vessel2_sim.x - vessel1_sim.x, vessel2_sim.y - vessel1_sim.y)
             min_separation = min(min_separation, separation)
 
             risk_now = bool(encounter.get("risk_of_collision", False))
 
-            agent_dist = self._distance_from_start(agent_sim, agent_start)
-            target_dist = self._distance_from_start(target_sim, target_start)
+            vessel1_dist = self._distance_from_start(vessel1_sim, vessel1_start)
+            vessel2_dist = self._distance_from_start(vessel2_sim, vessel2_start)
             if (
                 risk_now
-                and encounter["agent_role"] == "give_way"
-                and not agent_reached
-                and agent_dist >= self.envp.rl_takeover_distance
+                and encounter["vessel1_role"] == "give_way"
+                and not vessel1_reached
+                and vessel1_dist >= self.envp.rl_takeover_distance
             ):
                 takeover_viable = True
             if (
                 risk_now
-                and encounter["target_role"] == "give_way"
-                and not target_reached
-                and target_dist >= self.envp.rl_takeover_distance
+                and encounter["vessel2_role"] == "give_way"
+                and not vessel2_reached
+                and vessel2_dist >= self.envp.rl_takeover_distance
             ):
                 takeover_viable = True
 
             for _ in range(max(1, self.envp.substeps)):
-                if not agent_reached:
-                    d_agent = math.hypot(agent_sim.goal_x - agent_sim.x, agent_sim.goal_y - agent_sim.y)
-                    if d_agent <= self.envp.goal_radius:
-                        agent_reached = True
-                        agent_sim.speed = 0.0
+                if not vessel1_reached:
+                    d_vessel1 = math.hypot(vessel1_sim.goal_x - vessel1_sim.x, vessel1_sim.goal_y - vessel1_sim.y)
+                    if d_vessel1 <= self.envp.goal_radius:
+                        vessel1_reached = True
+                        vessel1_sim.speed = 0.0
                     else:
-                        travel = min(agent_sim.speed * h, d_agent)
-                        agent_sim.x += math.cos(agent_sim.h) * travel
-                        agent_sim.y += math.sin(agent_sim.h) * travel
-                        if math.hypot(agent_sim.goal_x - agent_sim.x, agent_sim.goal_y - agent_sim.y) <= self.envp.goal_radius:
-                            agent_reached = True
-                            agent_sim.speed = 0.0
+                        travel = min(vessel1_sim.speed * h, d_vessel1)
+                        vessel1_sim.x += math.cos(vessel1_sim.h) * travel
+                        vessel1_sim.y += math.sin(vessel1_sim.h) * travel
+                        if math.hypot(vessel1_sim.goal_x - vessel1_sim.x, vessel1_sim.goal_y - vessel1_sim.y) <= self.envp.goal_radius:
+                            vessel1_reached = True
+                            vessel1_sim.speed = 0.0
 
-                if not target_reached:
-                    d_target = math.hypot(target_sim.goal_x - target_sim.x, target_sim.goal_y - target_sim.y)
-                    if d_target <= self.envp.goal_radius:
-                        target_reached = True
-                        target_sim.speed = 0.0
+                if not vessel2_reached:
+                    d_vessel2 = math.hypot(vessel2_sim.goal_x - vessel2_sim.x, vessel2_sim.goal_y - vessel2_sim.y)
+                    if d_vessel2 <= self.envp.goal_radius:
+                        vessel2_reached = True
+                        vessel2_sim.speed = 0.0
                     else:
-                        rudder_cmd = self._pure_pursuit_rudder_cmd(target_sim, target_sim.goal_x, target_sim.goal_y)
-                        self._integrate_rudder_heading(target_sim, rudder_cmd, h)
-                        target_sim.speed = clamp(target_sim.speed, self.envp.target_min_speed, self.envp.target_max_speed)
-                        travel = min(target_sim.speed * h, d_target)
-                        target_sim.x += travel * math.cos(target_sim.h)
-                        target_sim.y += travel * math.sin(target_sim.h)
-                        if math.hypot(target_sim.goal_x - target_sim.x, target_sim.goal_y - target_sim.y) <= self.envp.goal_radius:
-                            target_reached = True
-                            target_sim.speed = 0.0
+                        rudder_cmd = self._pure_pursuit_rudder_cmd(vessel2_sim, vessel2_sim.goal_x, vessel2_sim.goal_y)
+                        self._integrate_rudder_heading(vessel2_sim, rudder_cmd, h)
+                        vessel2_sim.speed = clamp(vessel2_sim.speed, self.envp.vessel2_min_speed, self.envp.vessel2_max_speed)
+                        travel = min(vessel2_sim.speed * h, d_vessel2)
+                        vessel2_sim.x += travel * math.cos(vessel2_sim.h)
+                        vessel2_sim.y += travel * math.sin(vessel2_sim.h)
+                        if math.hypot(vessel2_sim.goal_x - vessel2_sim.x, vessel2_sim.goal_y - vessel2_sim.y) <= self.envp.goal_radius:
+                            vessel2_reached = True
+                            vessel2_sim.speed = 0.0
 
-            if (agent_reached and target_reached) or self._outside(agent_sim) or self._outside(target_sim):
+            if (vessel1_reached and vessel2_reached) or self._outside(vessel1_sim) or self._outside(vessel2_sim):
                 break
 
         unavoidable_hazard = min_separation <= self.envp.near_miss_distance
@@ -647,7 +647,7 @@ class SingleTargetFeatureEnv:
         return qualifies
 
     def _point_on_big_circle(self, ang: float) -> Tuple[float, float]:
-        r = self.envp.target_outer_radius
+        r = self.envp.vessel2_outer_radius
         return self.start_x + r * math.cos(ang), self.start_y + r * math.sin(ang)
 
     def _arc_gap(self, a0: float, a1: float) -> float:
@@ -667,10 +667,10 @@ class SingleTargetFeatureEnv:
         lookahead_dist = max(1e-6, self.envp.pp_lookahead_factor * turning_radius)
 
         bearing_to_goal = math.atan2(goal_y - v.y, goal_x - v.x)
-        target_x = v.x + lookahead_dist * math.cos(bearing_to_goal)
-        target_y = v.y + lookahead_dist * math.sin(bearing_to_goal)
+        vessel2_x = v.x + lookahead_dist * math.cos(bearing_to_goal)
+        vessel2_y = v.y + lookahead_dist * math.sin(bearing_to_goal)
 
-        bearing = math.atan2(target_y - v.y, target_x - v.x)
+        bearing = math.atan2(vessel2_y - v.y, vessel2_x - v.x)
         heading_error = wrap_pi(bearing - v.h)
         return clamp(
             heading_error / math.radians(self.envp.pp_heading_gain_deg),
@@ -678,7 +678,7 @@ class SingleTargetFeatureEnv:
             1.0,
         )
 
-    def _sample_target_path(self) -> Vessel:
+    def _sample_vessel2_path(self) -> Vessel:
         # Vessel 2: random start/goal on big circle with inward-facing start heading.
         # Goal is sampled to remain beyond a minimum start->goal distance for local pure-pursuit behavior checks.
         start_ang_2 = self.rng.uniform(0.0, 2.0 * math.pi)
@@ -688,19 +688,19 @@ class SingleTargetFeatureEnv:
         gx2, gy2 = self._point_on_big_circle(goal_ang_2)
 
         sh2 = self._inward_facing_heading(sx2, sy2)
-        sp2 = self.rng.uniform(self.envp.target_min_speed, self.envp.target_max_speed)
+        sp2 = self.rng.uniform(self.envp.vessel2_min_speed, self.envp.vessel2_max_speed)
 
         tries = 0
-        min_goal_chord_dist = max(0.0, float(self.envp.target_min_goal_arc_distance_from_start))
+        min_goal_chord_dist = max(0.0, float(self.envp.vessel2_min_goal_arc_distance_from_start))
         # Backward compatibility: allow legacy parameter names to override when explicitly provided.
-        if self.envp.target_max_goal_arc_distance_from_start is not None:
-            min_goal_chord_dist = max(0.0, float(self.envp.target_max_goal_arc_distance_from_start))
-        if self.envp.target_max_goal_distance_from_start is not None:
-            min_goal_chord_dist = max(0.0, float(self.envp.target_max_goal_distance_from_start))
+        if self.envp.vessel2_max_goal_arc_distance_from_start is not None:
+            min_goal_chord_dist = max(0.0, float(self.envp.vessel2_max_goal_arc_distance_from_start))
+        if self.envp.vessel2_max_goal_distance_from_start is not None:
+            min_goal_chord_dist = max(0.0, float(self.envp.vessel2_max_goal_distance_from_start))
 
-        if bool(self.envp.adaptive_target_min_goal_arc_from_speed):
+        if bool(self.envp.adaptive_vessel2_min_goal_arc_from_speed):
             omega_max = max(1e-9, float(self.envp.rudder_max_yaw_rate_rad_s))
-            dcrit_chord = max(0.0, float(self.envp.target_min_goal_dcrit_factor)) * (2.0 * sp2 / omega_max)
+            dcrit_chord = max(0.0, float(self.envp.vessel2_min_goal_dcrit_factor)) * (2.0 * sp2 / omega_max)
             min_goal_chord_dist = max(min_goal_chord_dist, dcrit_chord)
 
         while math.hypot(gx2 - sx2, gy2 - sy2) < min_goal_chord_dist and tries < 40:
@@ -711,30 +711,30 @@ class SingleTargetFeatureEnv:
         return Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
 
     def _advance_target(self, dt: float) -> None:
-        if self.target is None or self.target_reached:
+        if self.vessel2 is None or self.vessel2_reached:
             return
 
-        d_goal = self._goal_distance(self.target)
+        d_goal = self._goal_distance(self.vessel2)
         if d_goal <= self.envp.goal_radius:
-            self.target_reached = True
-            self.target.speed = 0.0
+            self.vessel2_reached = True
+            self.vessel2.speed = 0.0
             return
 
-        rudder_cmd = self._pure_pursuit_rudder_cmd(self.target, self.target.goal_x, self.target.goal_y)
+        rudder_cmd = self._pure_pursuit_rudder_cmd(self.vessel2, self.vessel2.goal_x, self.vessel2.goal_y)
 
-        self._integrate_rudder_heading(self.target, rudder_cmd, dt)
+        self._integrate_rudder_heading(self.vessel2, rudder_cmd, dt)
 
         # hold constant scripted speed in nominal mode
-        self.target.speed = clamp(self.target.speed, self.envp.target_min_speed, self.envp.target_max_speed)
+        self.vessel2.speed = clamp(self.vessel2.speed, self.envp.vessel2_min_speed, self.envp.vessel2_max_speed)
 
-        d_goal = self._goal_distance(self.target)
-        travel = min(self.target.speed * dt, d_goal)
-        self.target.x += travel * math.cos(self.target.h)
-        self.target.y += travel * math.sin(self.target.h)
+        d_goal = self._goal_distance(self.vessel2)
+        travel = min(self.vessel2.speed * dt, d_goal)
+        self.vessel2.x += travel * math.cos(self.vessel2.h)
+        self.vessel2.y += travel * math.sin(self.vessel2.h)
 
-        if self._goal_distance(self.target) <= self.envp.goal_radius:
-            self.target_reached = True
-            self.target.speed = 0.0
+        if self._goal_distance(self.vessel2) <= self.envp.goal_radius:
+            self.vessel2_reached = True
+            self.vessel2.speed = 0.0
 
     def _integrate_rudder_heading(self, v: Vessel, rudder_cmd: float, dt: float) -> None:
         rudder_cmd = clamp(rudder_cmd, -1.0, 1.0)
@@ -802,7 +802,7 @@ class SingleTargetFeatureEnv:
         if scenario == "overtaking" and role == "stand_on":
             return 0.0, 0.0, "hold_course_speed"
 
-        if vessel_name == "target":
+        if vessel_name == "vessel2":
             return 0.0, 0.0, "pure_pursuit"
         return 0.0, 0.0, "straight"
 
@@ -839,13 +839,13 @@ class SingleTargetFeatureEnv:
             setattr(self, reached_attr, True)
             v.speed = 0.0
 
-    def _build_agent_planned_path(self) -> None:
-        if self.agent is None:
-            self.agent_planned_path = []
+    def _build_vessel1_planned_path(self) -> None:
+        if self.vessel1 is None:
+            self.vessel1_planned_path = []
             return
-        self.agent_planned_path = [(self.start_x, self.start_y), (self.agent.goal_x, self.agent.goal_y)]
+        self.vessel1_planned_path = [(self.start_x, self.start_y), (self.vessel1.goal_x, self.vessel1.goal_y)]
 
-    def _build_target_planned_path(self, sx: float, sy: float, sh: float, speed: float, goal_x: float, goal_y: float) -> None:
+    def _build_vessel2_planned_path(self, sx: float, sy: float, sh: float, speed: float, goal_x: float, goal_y: float) -> None:
         sim = Vessel(sx, sy, sh, speed, goal_x, goal_y, rudder=0.0, throttle=0.0)
         pts: List[Tuple[float, float]] = [(sim.x, sim.y)]
         dt = self.envp.dt / max(1, self.envp.substeps)
@@ -867,11 +867,11 @@ class SingleTargetFeatureEnv:
             if travel + 1e-9 >= d_goal:
                 break
 
-        self.target_planned_path = pts
+        self.vessel2_planned_path = pts
 
     def _get_obs_for_perspective(self, own: Vessel, other: Vessel, own_is_agent: bool) -> np.ndarray:
-        own_speed_den = self.envp.max_speed if own_is_agent else self.envp.target_max_speed
-        other_speed_den = self.envp.target_max_speed if own_is_agent else self.envp.max_speed
+        own_speed_den = self.envp.max_speed if own_is_agent else self.envp.vessel2_max_speed
+        other_speed_den = self.envp.vessel2_max_speed if own_is_agent else self.envp.max_speed
         return np.asarray(
             [
                 own.x / self.envp.world_w,
@@ -890,14 +890,14 @@ class SingleTargetFeatureEnv:
             dtype=np.float32,
         )
 
-    def _get_obs_agent_perspective(self) -> np.ndarray:
-        return self._get_obs_for_perspective(self.agent, self.target, own_is_agent=True)
+    def _get_obs_vessel1_perspective(self) -> np.ndarray:
+        return self._get_obs_for_perspective(self.vessel1, self.vessel2, own_is_agent=True)
 
-    def _get_obs_target_perspective(self) -> np.ndarray:
-        return self._get_obs_for_perspective(self.target, self.agent, own_is_agent=False)
+    def _get_obs_vessel2_perspective(self) -> np.ndarray:
+        return self._get_obs_for_perspective(self.vessel2, self.vessel1, own_is_agent=False)
 
     def get_obs(self) -> np.ndarray:
-        return self._get_obs_agent_perspective()
+        return self._get_obs_vessel1_perspective()
 
     def reset(self, seed: Optional[int] = None) -> np.ndarray:
         if seed is not None:
@@ -905,111 +905,111 @@ class SingleTargetFeatureEnv:
 
         max_tries = max(1, int(self.envp.reset_viable_episode_max_tries))
         require_viable_path = bool(self.envp.require_reset_viable_takeover_path)
-        sampled_agent: Vessel | None = None
-        sampled_target: Vessel | None = None
+        sampled_vessel1: Vessel | None = None
+        sampled_vessel2: Vessel | None = None
         for _ in range(max_tries):
             goal_ang_1 = self.rng.uniform(0.0, 2.0 * math.pi)
             agx, agy = self._point_on_big_circle(goal_ang_1)
             ah = math.atan2(agy - self.start_y, agx - self.start_x)
             aspeed = self.rng.uniform(self.envp.min_speed, self.envp.max_speed)
             candidate_agent = Vessel(self.start_x, self.start_y, ah, aspeed, agx, agy)
-            candidate_target = self._sample_target_path()
+            candidate_target = self._sample_vessel2_path()
             if (not require_viable_path) or self._reset_sample_triggers_takeover(candidate_agent, candidate_target):
-                sampled_agent = candidate_agent
-                sampled_target = candidate_target
+                sampled_vessel1 = candidate_agent
+                sampled_vessel2 = candidate_target
                 break
 
-        self.reset_has_takeover_path = sampled_agent is not None and sampled_target is not None
-        if sampled_agent is None or sampled_target is None:
-            sampled_agent = candidate_agent
-            sampled_target = candidate_target
+        self.reset_has_takeover_path = sampled_vessel1 is not None and sampled_vessel2 is not None
+        if sampled_vessel1 is None or sampled_vessel2 is None:
+            sampled_vessel1 = candidate_agent
+            sampled_vessel2 = candidate_target
 
-        self.agent = sampled_agent
-        self.target = sampled_target
+        self.vessel1 = sampled_vessel1
+        self.vessel2 = sampled_vessel2
 
-        sx2, sy2 = self.target.x, self.target.y
-        sh2 = self.target.h
-        sp2 = self.target.speed
-        gx2, gy2 = self.target.goal_x, self.target.goal_y
+        sx2, sy2 = self.vessel2.x, self.vessel2.y
+        sh2 = self.vessel2.h
+        sp2 = self.vessel2.speed
+        gx2, gy2 = self.vessel2.goal_x, self.vessel2.goal_y
 
-        self.agent_start_speed = self.agent.speed
-        self.agent_start_pos = (self.agent.x, self.agent.y)
-        self.agent_start_heading = self.agent.h
-        self.target_start_speed = sp2
-        self.target_start_pos = (self.target.x, self.target.y)
-        self.target_start_heading = self.target.h
+        self.vessel1_start_speed = self.vessel1.speed
+        self.vessel1_start_pos = (self.vessel1.x, self.vessel1.y)
+        self.vessel1_start_heading = self.vessel1.h
+        self.vessel2_start_speed = sp2
+        self.vessel2_start_pos = (self.vessel2.x, self.vessel2.y)
+        self.vessel2_start_heading = self.vessel2.h
 
         self.time = 0.0
         self.step_idx = 0
-        self.agent_reached = False
-        self.target_reached = False
+        self.vessel1_reached = False
+        self.vessel2_reached = False
 
-        self.prev_goal_d_agent = self._goal_distance(self.agent)
-        self.prev_goal_d_target = self._goal_distance(self.target)
-        self.agent_steps_taken = 0
-        self.target_steps_taken = 0
+        self.prev_goal_d_vessel1 = self._goal_distance(self.vessel1)
+        self.prev_goal_d_vessel2 = self._goal_distance(self.vessel2)
+        self.vessel1_steps_taken = 0
+        self.vessel2_steps_taken = 0
         self.colregs_scenario = "safe"
-        self.agent_role = "none"
-        self.target_role = "none"
+        self.vessel1_role = "none"
+        self.vessel2_role = "none"
         self.risk_of_collision = False
         self.last_dcpa = float("inf")
         self.last_tcpa = float("inf")
-        self.agent_rl_active = False
-        self.target_rl_active = False
-        self.agent_relative_bearing_deg = 0.0
-        self.target_relative_bearing_deg = 0.0
+        self.vessel1_rl_active = False
+        self.vessel2_rl_active = False
+        self.vessel1_relative_bearing_deg = 0.0
+        self.vessel2_relative_bearing_deg = 0.0
         self.paused = False
         self.risk_overlay_active = False
         self.risk_overlay_payload = {}
         self.rl_ever_triggered = False
         self.rl_overlay_shown = False
-        self.prev_agent_rl_active = False
-        self.prev_target_rl_active = False
+        self.prev_vessel1_rl_active = False
+        self.prev_vessel2_rl_active = False
         self.overtaking_latched = False
         self.latched_scenario = "safe"
-        self.latched_agent_role = "none"
-        self.latched_target_role = "none"
+        self.latched_vessel1_role = "none"
+        self.latched_vessel2_role = "none"
         self.overtaking_clear_steps = 0
         self.encounter_latched = False
         self.geometry_scenario = "none"
-        self.agent_standon_escalated = False
-        self.target_standon_escalated = False
-        self.agent_standon_risk_steps = 0
-        self.target_standon_risk_steps = 0
-        self.agent_control_source = "straight"
-        self.target_control_source = "pure_pursuit"
-        self.agent_rl_latched = False
-        self.target_rl_latched = False
+        self.vessel1_standon_escalated = False
+        self.vessel2_standon_escalated = False
+        self.vessel1_standon_risk_steps = 0
+        self.vessel2_standon_risk_steps = 0
+        self.vessel1_control_source = "straight"
+        self.vessel2_control_source = "pure_pursuit"
+        self.vessel1_rl_latched = False
+        self.vessel2_rl_latched = False
         self.any_rl_ever_triggered = False
         self.latched_encounter_active = False
         self.latched_geometry = "none"
         self.encounter_clear_steps = 0
-        self.designated_agent_role = "none"
-        self.designated_target_role = "none"
+        self.designated_vessel1_role = "none"
+        self.designated_vessel2_role = "none"
         self.rl_controlled_vessel = "none"
         self.last_inter_vessel_distance = float("inf")
         self.encounter_was_risky = False
         self.safe_pass_awarded = False
-        self.agent_giveway_action_awarded = False
-        self.target_giveway_action_awarded = False
-        self.agent_standon_hold_awarded = False
-        self.target_standon_hold_awarded = False
-        self.prev_agent_rudder_sign = 0
-        self.prev_target_rudder_sign = 0
+        self.vessel1_giveway_action_awarded = False
+        self.vessel2_giveway_action_awarded = False
+        self.vessel1_standon_hold_awarded = False
+        self.vessel2_standon_hold_awarded = False
+        self.prev_vessel1_rudder_sign = 0
+        self.prev_vessel2_rudder_sign = 0
         self.candidate_scenario = "safe"
-        self.candidate_agent_role = "none"
-        self.candidate_target_role = "none"
+        self.candidate_vessel1_role = "none"
+        self.candidate_vessel2_role = "none"
         self.candidate_steps = 0
         self.active_non_overtaking_scenario = "safe"
-        self.active_non_overtaking_agent_role = "none"
-        self.active_non_overtaking_target_role = "none"
+        self.active_non_overtaking_vessel1_role = "none"
+        self.active_non_overtaking_vessel2_role = "none"
         self.active_non_overtaking_exit_steps = 0
 
         # Episode termination is fixed-time or both-reached (whichever occurs first).
         self.max_steps = max(1, int(round(self.envp.episode_seconds / self.envp.dt)))
 
-        self._build_agent_planned_path()
-        self._build_target_planned_path(sx2, sy2, sh2, sp2, gx2, gy2)
+        self._build_vessel1_planned_path()
+        self._build_vessel2_planned_path(sx2, sy2, sh2, sp2, gx2, gy2)
         self.last_inter_vessel_distance = self._inter_vessel_distance()
 
         return self.get_obs()
@@ -1017,9 +1017,9 @@ class SingleTargetFeatureEnv:
     def _select_rl_action_for_vessel(
         self, vessel_name: str, external_action: np.ndarray
     ) -> Tuple[Optional[Tuple[float, float]], str]:
-        if vessel_name == "agent" and not self.agent_rl_active:
+        if vessel_name == "vessel1" and not self.vessel1_rl_active:
             return None, ""
-        if vessel_name == "target" and not self.target_rl_active:
+        if vessel_name == "vessel2" and not self.vessel2_rl_active:
             return None, ""
         a = np.asarray(external_action, dtype=np.float32).reshape(-1)
         if a.size < 2:
@@ -1032,17 +1032,17 @@ class SingleTargetFeatureEnv:
             raise ValueError("Action must contain [rudder_cmd, throttle_cmd].")
         rudder_cmd = clamp(float(a[0]), -1.0, 1.0)
         throttle_cmd = clamp(float(a[1]), -1.0, 1.0)
-        give_way_vessel = "agent" if self.agent_role == "give_way" else "target" if self.target_role == "give_way" else "none"
-        stand_on_vessel = "agent" if self.agent_role == "stand_on" else "target" if self.target_role == "stand_on" else "none"
-        stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "target" else "straight" if stand_on_vessel == "agent" else "none"
+        give_way_vessel = "vessel1" if self.vessel1_role == "give_way" else "vessel2" if self.vessel2_role == "give_way" else "none"
+        stand_on_vessel = "vessel1" if self.vessel1_role == "stand_on" else "vessel2" if self.vessel2_role == "stand_on" else "none"
+        stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "vessel2" else "straight" if stand_on_vessel == "vessel1" else "none"
 
         if self.paused:
             info: Dict[str, float | str | int] = {
                 "reason": "paused",
-                "agent_goal_distance": self._goal_distance(self.agent),
-                "target_goal_distance": self._goal_distance(self.target),
-                "agent_reached": int(self.agent_reached),
-                "target_reached": int(self.target_reached),
+                "vessel1_goal_distance": self._goal_distance(self.vessel1),
+                "vessel2_goal_distance": self._goal_distance(self.vessel2),
+                "vessel1_reached": int(self.vessel1_reached),
+                "vessel2_reached": int(self.vessel2_reached),
                 "rudder_cmd": rudder_cmd,
                 "throttle_cmd": throttle_cmd,
                 "dcpa": float(self.last_dcpa),
@@ -1053,23 +1053,23 @@ class SingleTargetFeatureEnv:
                 "encounter_latched": int(self.encounter_latched),
                 "overtaking_latched": int(self.overtaking_latched),
                 "latched_scenario": self.latched_scenario,
-                "agent_role": self.agent_role,
-                "target_role": self.target_role,
+                "vessel1_role": self.vessel1_role,
+                "vessel2_role": self.vessel2_role,
                 "designated_give_way_vessel": give_way_vessel,
                 "designated_stand_on_vessel": stand_on_vessel,
                 "stand_on_nominal_mode": stand_on_nominal_mode,
-                "agent_rl_active": int(self.agent_rl_active),
-                "target_rl_active": int(self.target_rl_active),
-                "agent_rl_latched": int(self.agent_rl_latched),
-                "target_rl_latched": int(self.target_rl_latched),
-                "agent_distance_from_start": float(self._distance_from_start(self.agent, self.agent_start_pos)),
-                "target_distance_from_start": float(self._distance_from_start(self.target, self.target_start_pos)),
-                "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
-                "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
-                "agent_control_source": self.agent_control_source,
-                "target_control_source": self.target_control_source,
-                "agent_standon_escalated": int(self.agent_standon_escalated),
-                "target_standon_escalated": int(self.target_standon_escalated),
+                "vessel1_rl_active": int(self.vessel1_rl_active),
+                "vessel2_rl_active": int(self.vessel2_rl_active),
+                "vessel1_rl_latched": int(self.vessel1_rl_latched),
+                "vessel2_rl_latched": int(self.vessel2_rl_latched),
+                "vessel1_distance_from_start": float(self._distance_from_start(self.vessel1, self.vessel1_start_pos)),
+                "vessel2_distance_from_start": float(self._distance_from_start(self.vessel2, self.vessel2_start_pos)),
+                "vessel1_relative_bearing_deg": float(self.vessel1_relative_bearing_deg),
+                "vessel2_relative_bearing_deg": float(self.vessel2_relative_bearing_deg),
+                "vessel1_control_source": self.vessel1_control_source,
+                "vessel2_control_source": self.vessel2_control_source,
+                "vessel1_standon_escalated": int(self.vessel1_standon_escalated),
+                "vessel2_standon_escalated": int(self.vessel2_standon_escalated),
                 "inter_vessel_distance": float(self._inter_vessel_distance()),
                 "collision": 0,
                 "near_miss": int(self._inter_vessel_distance() <= self.envp.near_miss_distance),
@@ -1080,12 +1080,12 @@ class SingleTargetFeatureEnv:
         encounter = self._classify_colregs()
         self.colregs_scenario = str(encounter["scenario"])
         self.geometry_scenario = str(encounter["geometry"])
-        self.agent_role = str(encounter["agent_role"])
-        self.target_role = str(encounter["target_role"])
+        self.vessel1_role = str(encounter["vessel1_role"])
+        self.vessel2_role = str(encounter["vessel2_role"])
         self.overtaking_latched = bool(encounter["overtaking_latched"])
         self.encounter_latched = bool(encounter["encounter_latched"])
-        self.agent_relative_bearing_deg = float(encounter["agent_bearing_deg"])
-        self.target_relative_bearing_deg = float(encounter["target_bearing_deg"])
+        self.vessel1_relative_bearing_deg = float(encounter["vessel1_bearing_deg"])
+        self.vessel2_relative_bearing_deg = float(encounter["vessel2_bearing_deg"])
         self.last_tcpa = float(encounter["tcpa"])
         self.last_dcpa = float(encounter["dcpa"])
         self.risk_of_collision = bool(encounter["risk_of_collision"])
@@ -1101,33 +1101,33 @@ class SingleTargetFeatureEnv:
             f"risk={self.risk_of_collision} "
             f"scenario={self.colregs_scenario} geometry={self.geometry_scenario}"
         )
-        give_way_vessel = "agent" if self.agent_role == "give_way" else "target" if self.target_role == "give_way" else "none"
-        stand_on_vessel = "agent" if self.agent_role == "stand_on" else "target" if self.target_role == "stand_on" else "none"
-        stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "target" else "straight" if stand_on_vessel == "agent" else "none"
+        give_way_vessel = "vessel1" if self.vessel1_role == "give_way" else "vessel2" if self.vessel2_role == "give_way" else "none"
+        stand_on_vessel = "vessel1" if self.vessel1_role == "stand_on" else "vessel2" if self.vessel2_role == "stand_on" else "none"
+        stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "vessel2" else "straight" if stand_on_vessel == "vessel1" else "none"
 
-        agent_dist = self._distance_from_start(self.agent, self.agent_start_pos)
-        target_dist = self._distance_from_start(self.target, self.target_start_pos)
+        vessel1_dist = self._distance_from_start(self.vessel1, self.vessel1_start_pos)
+        vessel2_dist = self._distance_from_start(self.vessel2, self.vessel2_start_pos)
 
         # Stand-on escalation disabled for this contract: stand-on remains nominal path-following.
-        self.agent_standon_risk_steps = 0
-        self.target_standon_risk_steps = 0
-        self.agent_standon_escalated = False
-        self.target_standon_escalated = False
+        self.vessel1_standon_risk_steps = 0
+        self.vessel2_standon_risk_steps = 0
+        self.vessel1_standon_escalated = False
+        self.vessel2_standon_escalated = False
 
         encounter_active = bool(self.latched_encounter_active)
-        allow_agent_rl = encounter_active and self.agent_role == "give_way"
-        allow_target_rl = encounter_active and self.target_role == "give_way"
+        allow_vessel1_rl = encounter_active and self.vessel1_role == "give_way"
+        allow_vessel2_rl = encounter_active and self.vessel2_role == "give_way"
 
         if self.rl_controlled_vessel == "none":
-            if allow_agent_rl and self.risk_of_collision and agent_dist >= self.envp.rl_takeover_distance and not self.agent_reached:
-                self.rl_controlled_vessel = "agent"
-            elif allow_target_rl and self.risk_of_collision and target_dist >= self.envp.rl_takeover_distance and not self.target_reached:
-                self.rl_controlled_vessel = "target"
+            if allow_vessel1_rl and self.risk_of_collision and vessel1_dist >= self.envp.rl_takeover_distance and not self.vessel1_reached:
+                self.rl_controlled_vessel = "vessel1"
+            elif allow_vessel2_rl and self.risk_of_collision and vessel2_dist >= self.envp.rl_takeover_distance and not self.vessel2_reached:
+                self.rl_controlled_vessel = "vessel2"
 
-        self.agent_rl_latched = self.agent_rl_latched or (self.rl_controlled_vessel == "agent")
-        self.target_rl_latched = self.target_rl_latched or (self.rl_controlled_vessel == "target")
-        self.agent_rl_active = (self.rl_controlled_vessel == "agent") and (not self.agent_reached)
-        self.target_rl_active = (self.rl_controlled_vessel == "target") and (not self.target_reached)
+        self.vessel1_rl_latched = self.vessel1_rl_latched or (self.rl_controlled_vessel == "vessel1")
+        self.vessel2_rl_latched = self.vessel2_rl_latched or (self.rl_controlled_vessel == "vessel2")
+        self.vessel1_rl_active = (self.rl_controlled_vessel == "vessel1") and (not self.vessel1_reached)
+        self.vessel2_rl_active = (self.rl_controlled_vessel == "vessel2") and (not self.vessel2_reached)
         self.any_rl_ever_triggered = self.any_rl_ever_triggered or (self.rl_controlled_vessel != "none")
         self.rl_ever_triggered = self.any_rl_ever_triggered
 
@@ -1135,29 +1135,29 @@ class SingleTargetFeatureEnv:
         if bool(self.envp.enable_no_takeover_early_done) and (not self.reset_has_takeover_path) and (not self.any_rl_ever_triggered) and (self.step_idx + 1) >= early_cutoff_steps:
             self.step_idx += 1
             self.time += self.envp.dt
-            d_agent = self._goal_distance(self.agent)
-            d_target = self._goal_distance(self.target)
+            d_vessel1 = self._goal_distance(self.vessel1)
+            d_vessel2 = self._goal_distance(self.vessel2)
             reward = self.rewp.living_penalty
-            reward += self.rewp.progress_weight * (self.prev_goal_d_agent - d_agent)
-            reward += self.rewp.progress_weight * (self.prev_goal_d_target - d_target)
-            self.prev_goal_d_agent = d_agent
-            self.prev_goal_d_target = d_target
+            reward += self.rewp.progress_weight * (self.prev_goal_d_vessel1 - d_vessel1)
+            reward += self.rewp.progress_weight * (self.prev_goal_d_vessel2 - d_vessel2)
+            self.prev_goal_d_vessel1 = d_vessel1
+            self.prev_goal_d_vessel2 = d_vessel2
             info: Dict[str, float | str | int] = {
                 "reason": "no_takeover_trigger",
-                "agent_goal_distance": d_agent,
-                "target_goal_distance": d_target,
-                "agent_reached": int(self.agent_reached),
-                "target_reached": int(self.target_reached),
+                "vessel1_goal_distance": d_vessel1,
+                "vessel2_goal_distance": d_vessel2,
+                "vessel1_reached": int(self.vessel1_reached),
+                "vessel2_reached": int(self.vessel2_reached),
                 "rudder_cmd": rudder_cmd,
                 "throttle_cmd": throttle_cmd,
-                "agent_steps_taken": int(self.agent_steps_taken),
-                "target_steps_taken": int(self.target_steps_taken),
-                "agent_start_speed": float(self.agent_start_speed),
-                "target_start_speed": float(self.target_start_speed),
-                "agent_heading_deg": float(math.degrees(self.agent.h)),
-                "target_heading_deg": float(math.degrees(self.target.h)),
-                "agent_rudder_deg": float(math.degrees(self.agent.rudder)),
-                "target_rudder_deg": float(math.degrees(self.target.rudder)),
+                "vessel1_steps_taken": int(self.vessel1_steps_taken),
+                "vessel2_steps_taken": int(self.vessel2_steps_taken),
+                "vessel1_start_speed": float(self.vessel1_start_speed),
+                "vessel2_start_speed": float(self.vessel2_start_speed),
+                "vessel1_heading_deg": float(math.degrees(self.vessel1.h)),
+                "vessel2_heading_deg": float(math.degrees(self.vessel2.h)),
+                "vessel1_rudder_deg": float(math.degrees(self.vessel1.rudder)),
+                "vessel2_rudder_deg": float(math.degrees(self.vessel2.rudder)),
                 "dcpa": float(dcpa),
                 "tcpa": float(tcpa),
                 "risk_of_collision": int(self.risk_of_collision),
@@ -1165,60 +1165,60 @@ class SingleTargetFeatureEnv:
                 "geometry_scenario": self.geometry_scenario,
                 "encounter_latched": int(self.encounter_latched),
                 "overtaking_latched": int(self.overtaking_latched),
-                "agent_role": self.agent_role,
-                "target_role": self.target_role,
-                "agent_rl_active": int(self.agent_rl_active),
-                "target_rl_active": int(self.target_rl_active),
-                "agent_rl_latched": int(self.agent_rl_latched),
-                "target_rl_latched": int(self.target_rl_latched),
-                "agent_distance_from_start": float(agent_dist),
-                "target_distance_from_start": float(target_dist),
-                "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
-                "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
-                "agent_control_source": self.agent_control_source,
-                "target_control_source": self.target_control_source,
-                "agent_standon_escalated": int(self.agent_standon_escalated),
-                "target_standon_escalated": int(self.target_standon_escalated),
+                "vessel1_role": self.vessel1_role,
+                "vessel2_role": self.vessel2_role,
+                "vessel1_rl_active": int(self.vessel1_rl_active),
+                "vessel2_rl_active": int(self.vessel2_rl_active),
+                "vessel1_rl_latched": int(self.vessel1_rl_latched),
+                "vessel2_rl_latched": int(self.vessel2_rl_latched),
+                "vessel1_distance_from_start": float(vessel1_dist),
+                "vessel2_distance_from_start": float(vessel2_dist),
+                "vessel1_relative_bearing_deg": float(self.vessel1_relative_bearing_deg),
+                "vessel2_relative_bearing_deg": float(self.vessel2_relative_bearing_deg),
+                "vessel1_control_source": self.vessel1_control_source,
+                "vessel2_control_source": self.vessel2_control_source,
+                "vessel1_standon_escalated": int(self.vessel1_standon_escalated),
+                "vessel2_standon_escalated": int(self.vessel2_standon_escalated),
             }
-            self.prev_agent_rl_active = self.agent_rl_active
-            self.prev_target_rl_active = self.target_rl_active
+            self.prev_vessel1_rl_active = self.vessel1_rl_active
+            self.prev_vessel2_rl_active = self.vessel2_rl_active
             return self.get_obs(), float(reward), True, info
 
         h = self.envp.dt / max(1, self.envp.substeps)
-        was_agent_active = not self.agent_reached
-        was_target_active = not self.target_reached
+        was_vessel1_active = not self.vessel1_reached
+        was_vessel2_active = not self.vessel2_reached
         encounter_active = bool(self.latched_encounter_active)
         for _ in range(max(1, self.envp.substeps)):
-            if self.rl_controlled_vessel == "agent":
-                agent_rl_cmd, agent_rl_src = self._select_rl_action_for_vessel("agent", a)
-                if agent_rl_cmd is not None:
-                    self.agent_control_source = agent_rl_src
-                    self._advance_controlled(self.agent, "agent_reached", agent_rl_cmd[0], agent_rl_cmd[1], h)
+            if self.rl_controlled_vessel == "vessel1":
+                vessel1_rl_cmd, vessel1_rl_src = self._select_rl_action_for_vessel("vessel1", a)
+                if vessel1_rl_cmd is not None:
+                    self.vessel1_control_source = vessel1_rl_src
+                    self._advance_controlled(self.vessel1, "vessel1_reached", vessel1_rl_cmd[0], vessel1_rl_cmd[1], h)
                 else:
-                    self.agent_control_source = "straight"
-                    self._advance_straight(self.agent, "agent_reached", h)
-                self.target_control_source = "pure_pursuit"
+                    self.vessel1_control_source = "straight"
+                    self._advance_straight(self.vessel1, "vessel1_reached", h)
+                self.vessel2_control_source = "pure_pursuit"
                 self._advance_target(h)
-            elif self.rl_controlled_vessel == "target":
-                self.agent_control_source = "straight"
-                self._advance_straight(self.agent, "agent_reached", h)
-                target_rl_cmd, target_rl_src = self._select_rl_action_for_vessel("target", a)
-                if target_rl_cmd is not None:
-                    self.target_control_source = target_rl_src
-                    self._advance_controlled(self.target, "target_reached", target_rl_cmd[0], target_rl_cmd[1], h)
+            elif self.rl_controlled_vessel == "vessel2":
+                self.vessel1_control_source = "straight"
+                self._advance_straight(self.vessel1, "vessel1_reached", h)
+                vessel2_rl_cmd, vessel2_rl_src = self._select_rl_action_for_vessel("vessel2", a)
+                if vessel2_rl_cmd is not None:
+                    self.vessel2_control_source = vessel2_rl_src
+                    self._advance_controlled(self.vessel2, "vessel2_reached", vessel2_rl_cmd[0], vessel2_rl_cmd[1], h)
                 else:
-                    self.target_control_source = "pure_pursuit"
+                    self.vessel2_control_source = "pure_pursuit"
                     self._advance_target(h)
             else:
-                self.agent_control_source = "straight"
-                self._advance_straight(self.agent, "agent_reached", h)
-                self.target_control_source = "pure_pursuit"
+                self.vessel1_control_source = "straight"
+                self._advance_straight(self.vessel1, "vessel1_reached", h)
+                self.vessel2_control_source = "pure_pursuit"
                 self._advance_target(h)
 
-        if was_agent_active:
-            self.agent_steps_taken += 1
-        if was_target_active:
-            self.target_steps_taken += 1
+        if was_vessel1_active:
+            self.vessel1_steps_taken += 1
+        if was_vessel2_active:
+            self.vessel2_steps_taken += 1
 
         inter_vessel_distance = self._inter_vessel_distance()
         collision = inter_vessel_distance <= self.envp.collision_distance
@@ -1231,20 +1231,20 @@ class SingleTargetFeatureEnv:
         reason = ""
         if collision:
             done, reason = True, "collision"
-        elif self._outside(self.agent) or self._outside(self.target):
+        elif self._outside(self.vessel1) or self._outside(self.vessel2):
             done, reason = True, "out_of_bounds"
         elif self.step_idx >= self.max_steps:
             done, reason = True, "timeout"
-        elif self.agent_reached and self.target_reached:
+        elif self.vessel1_reached and self.vessel2_reached:
             done, reason = True, "both_reached"
 
         reward = self.rewp.living_penalty
-        d_agent = self._goal_distance(self.agent)
-        d_target = self._goal_distance(self.target)
-        reward += self.rewp.progress_weight * (self.prev_goal_d_agent - d_agent)
-        reward += self.rewp.progress_weight * (self.prev_goal_d_target - d_target)
+        d_vessel1 = self._goal_distance(self.vessel1)
+        d_vessel2 = self._goal_distance(self.vessel2)
+        reward += self.rewp.progress_weight * (self.prev_goal_d_vessel1 - d_vessel1)
+        reward += self.rewp.progress_weight * (self.prev_goal_d_vessel2 - d_vessel2)
 
-        if self.agent_reached and self.target_reached and reason == "both_reached":
+        if self.vessel1_reached and self.vessel2_reached and reason == "both_reached":
             reward += self.rewp.goal_bonus
 
         if reason == "out_of_bounds":
@@ -1266,69 +1266,69 @@ class SingleTargetFeatureEnv:
             self.safe_pass_awarded = True
 
         if self.colregs_scenario in {"crossing", "head_on", "overtaking"} and self.risk_of_collision:
-            if self.agent_role == "give_way" and not self.agent_giveway_action_awarded:
-                if self.agent_control_source in {"starboard_avoid", "rl_external", "rl_internal"} and abs(self.agent.rudder) > 0.1:
+            if self.vessel1_role == "give_way" and not self.vessel1_giveway_action_awarded:
+                if self.vessel1_control_source in {"starboard_avoid", "rl_external", "rl_internal"} and abs(self.vessel1.rudder) > 0.1:
                     if tcpa > self.envp.standon_escalation_tcpa:
                         reward += self.rewp.give_way_early_action_bonus
                     else:
                         reward += self.rewp.late_action_penalty
-                    self.agent_giveway_action_awarded = True
-            if self.target_role == "give_way" and not self.target_giveway_action_awarded:
-                if self.target_control_source in {"starboard_avoid", "rl_external", "rl_internal"} and abs(self.target.rudder) > 0.1:
+                    self.vessel1_giveway_action_awarded = True
+            if self.vessel2_role == "give_way" and not self.vessel2_giveway_action_awarded:
+                if self.vessel2_control_source in {"starboard_avoid", "rl_external", "rl_internal"} and abs(self.vessel2.rudder) > 0.1:
                     if tcpa > self.envp.standon_escalation_tcpa:
                         reward += self.rewp.give_way_early_action_bonus
                     else:
                         reward += self.rewp.late_action_penalty
-                    self.target_giveway_action_awarded = True
+                    self.vessel2_giveway_action_awarded = True
 
-            if self.agent_role == "stand_on" and not self.agent_standon_escalated and not self.agent_standon_hold_awarded:
-                if self.agent_control_source == "hold_course_speed":
+            if self.vessel1_role == "stand_on" and not self.vessel1_standon_escalated and not self.vessel1_standon_hold_awarded:
+                if self.vessel1_control_source == "hold_course_speed":
                     reward += self.rewp.stand_on_hold_bonus
-                    self.agent_standon_hold_awarded = True
-                elif abs(self.agent.rudder) > 0.1:
+                    self.vessel1_standon_hold_awarded = True
+                elif abs(self.vessel1.rudder) > 0.1:
                     reward += self.rewp.stand_on_unnecessary_action_penalty
-            if self.target_role == "stand_on" and not self.target_standon_escalated and not self.target_standon_hold_awarded:
-                if self.target_control_source == "hold_course_speed":
+            if self.vessel2_role == "stand_on" and not self.vessel2_standon_escalated and not self.vessel2_standon_hold_awarded:
+                if self.vessel2_control_source == "hold_course_speed":
                     reward += self.rewp.stand_on_hold_bonus
-                    self.target_standon_hold_awarded = True
-                elif abs(self.target.rudder) > 0.1:
+                    self.vessel2_standon_hold_awarded = True
+                elif abs(self.vessel2.rudder) > 0.1:
                     reward += self.rewp.stand_on_unnecessary_action_penalty
 
             if self.colregs_scenario == "crossing":
-                if self.agent_role == "give_way" and tcpa <= self.envp.standon_escalation_tcpa and abs(self.agent_relative_bearing_deg) < self.envp.colregs_crossing_starboard_max_deg:
+                if self.vessel1_role == "give_way" and tcpa <= self.envp.standon_escalation_tcpa and abs(self.vessel1_relative_bearing_deg) < self.envp.colregs_crossing_starboard_max_deg:
                     reward += self.rewp.crossing_ahead_penalty
-                if self.target_role == "give_way" and tcpa <= self.envp.standon_escalation_tcpa and abs(self.target_relative_bearing_deg) < self.envp.colregs_crossing_starboard_max_deg:
+                if self.vessel2_role == "give_way" and tcpa <= self.envp.standon_escalation_tcpa and abs(self.vessel2_relative_bearing_deg) < self.envp.colregs_crossing_starboard_max_deg:
                     reward += self.rewp.crossing_ahead_penalty
 
-        agent_rudder_sign = 1 if self.agent.rudder > 1e-3 else -1 if self.agent.rudder < -1e-3 else 0
-        target_rudder_sign = 1 if self.target.rudder > 1e-3 else -1 if self.target.rudder < -1e-3 else 0
-        if self.prev_agent_rudder_sign != 0 and agent_rudder_sign != 0 and agent_rudder_sign != self.prev_agent_rudder_sign:
+        vessel1_rudder_sign = 1 if self.vessel1.rudder > 1e-3 else -1 if self.vessel1.rudder < -1e-3 else 0
+        vessel2_rudder_sign = 1 if self.vessel2.rudder > 1e-3 else -1 if self.vessel2.rudder < -1e-3 else 0
+        if self.prev_vessel1_rudder_sign != 0 and vessel1_rudder_sign != 0 and vessel1_rudder_sign != self.prev_vessel1_rudder_sign:
             reward -= self.rewp.oscillation_penalty_weight
-        if self.prev_target_rudder_sign != 0 and target_rudder_sign != 0 and target_rudder_sign != self.prev_target_rudder_sign:
+        if self.prev_vessel2_rudder_sign != 0 and vessel2_rudder_sign != 0 and vessel2_rudder_sign != self.prev_vessel2_rudder_sign:
             reward -= self.rewp.oscillation_penalty_weight
-        self.prev_agent_rudder_sign = agent_rudder_sign
-        self.prev_target_rudder_sign = target_rudder_sign
+        self.prev_vessel1_rudder_sign = vessel1_rudder_sign
+        self.prev_vessel2_rudder_sign = vessel2_rudder_sign
         self.last_inter_vessel_distance = inter_vessel_distance
 
-        self.prev_goal_d_agent = d_agent
-        self.prev_goal_d_target = d_target
+        self.prev_goal_d_vessel1 = d_vessel1
+        self.prev_goal_d_vessel2 = d_vessel2
 
         info: Dict[str, float | str | int] = {
             "reason": reason,
-            "agent_goal_distance": d_agent,
-            "target_goal_distance": d_target,
-            "agent_reached": int(self.agent_reached),
-            "target_reached": int(self.target_reached),
+            "vessel1_goal_distance": d_vessel1,
+            "vessel2_goal_distance": d_vessel2,
+            "vessel1_reached": int(self.vessel1_reached),
+            "vessel2_reached": int(self.vessel2_reached),
             "rudder_cmd": rudder_cmd,
             "throttle_cmd": throttle_cmd,
-            "agent_steps_taken": int(self.agent_steps_taken),
-            "target_steps_taken": int(self.target_steps_taken),
-            "agent_start_speed": float(self.agent_start_speed),
-            "target_start_speed": float(self.target_start_speed),
-            "agent_heading_deg": float(math.degrees(self.agent.h)),
-            "target_heading_deg": float(math.degrees(self.target.h)),
-            "agent_rudder_deg": float(math.degrees(self.agent.rudder)),
-            "target_rudder_deg": float(math.degrees(self.target.rudder)),
+            "vessel1_steps_taken": int(self.vessel1_steps_taken),
+            "vessel2_steps_taken": int(self.vessel2_steps_taken),
+            "vessel1_start_speed": float(self.vessel1_start_speed),
+            "vessel2_start_speed": float(self.vessel2_start_speed),
+            "vessel1_heading_deg": float(math.degrees(self.vessel1.h)),
+            "vessel2_heading_deg": float(math.degrees(self.vessel2.h)),
+            "vessel1_rudder_deg": float(math.degrees(self.vessel1.rudder)),
+            "vessel2_rudder_deg": float(math.degrees(self.vessel2.rudder)),
             "dcpa": float(dcpa),
             "tcpa": float(tcpa),
             "risk_of_collision": int(self.risk_of_collision),
@@ -1336,28 +1336,28 @@ class SingleTargetFeatureEnv:
             "geometry_scenario": self.geometry_scenario,
             "encounter_latched": int(self.encounter_latched),
             "overtaking_latched": int(self.overtaking_latched),
-            "agent_role": self.agent_role,
-            "target_role": self.target_role,
+            "vessel1_role": self.vessel1_role,
+            "vessel2_role": self.vessel2_role,
             "latched_scenario": self.latched_scenario,
             "designated_give_way_vessel": give_way_vessel,
             "designated_stand_on_vessel": stand_on_vessel,
             "stand_on_nominal_mode": stand_on_nominal_mode,
-            "agent_rl_active": int(self.agent_rl_active),
-            "target_rl_active": int(self.target_rl_active),
-            "agent_rl_latched": int(self.agent_rl_latched),
-            "target_rl_latched": int(self.target_rl_latched),
-            "agent_distance_from_start": float(agent_dist),
-            "target_distance_from_start": float(target_dist),
-            "agent_relative_bearing_deg": float(self.agent_relative_bearing_deg),
-            "target_relative_bearing_deg": float(self.target_relative_bearing_deg),
+            "vessel1_rl_active": int(self.vessel1_rl_active),
+            "vessel2_rl_active": int(self.vessel2_rl_active),
+            "vessel1_rl_latched": int(self.vessel1_rl_latched),
+            "vessel2_rl_latched": int(self.vessel2_rl_latched),
+            "vessel1_distance_from_start": float(vessel1_dist),
+            "vessel2_distance_from_start": float(vessel2_dist),
+            "vessel1_relative_bearing_deg": float(self.vessel1_relative_bearing_deg),
+            "vessel2_relative_bearing_deg": float(self.vessel2_relative_bearing_deg),
             "inter_vessel_distance": float(inter_vessel_distance),
             "collision": int(collision),
             "near_miss": int(near_miss),
             "safe_pass_awarded": int(self.safe_pass_awarded),
-            "agent_control_source": self.agent_control_source,
-            "target_control_source": self.target_control_source,
-            "agent_standon_escalated": int(self.agent_standon_escalated),
-            "target_standon_escalated": int(self.target_standon_escalated),
+            "vessel1_control_source": self.vessel1_control_source,
+            "vessel2_control_source": self.vessel2_control_source,
+            "vessel1_standon_escalated": int(self.vessel1_standon_escalated),
+            "vessel2_standon_escalated": int(self.vessel2_standon_escalated),
         }
 
         # Show the RL takeover overlay exactly once per episode, on the first step RL activates.
@@ -1365,7 +1365,7 @@ class SingleTargetFeatureEnv:
             self.render_enabled
             and not self.rl_overlay_shown
             and self.rl_ever_triggered
-            and (self.agent_rl_active or self.target_rl_active)
+            and (self.vessel1_rl_active or self.vessel2_rl_active)
         ):
             self.rl_overlay_shown = True
             self.paused = True
@@ -1378,27 +1378,27 @@ class SingleTargetFeatureEnv:
                 "risk_of_collision": int(self.risk_of_collision),
                 "encounter_latched": int(self.encounter_latched),
                 "overtaking_latched": int(self.overtaking_latched),
-                "agent_role": self.agent_role,
-                "target_role": self.target_role,
+                "vessel1_role": self.vessel1_role,
+                "vessel2_role": self.vessel2_role,
                 "dcpa": float(self.last_dcpa),
                 "tcpa": float(self.last_tcpa),
-                "agent_bearing": float(self.agent_relative_bearing_deg),
-                "target_bearing": float(self.target_relative_bearing_deg),
-                "agent_rl_active": int(self.agent_rl_active),
-                "target_rl_active": int(self.target_rl_active),
-                "agent_rl_latched": int(self.agent_rl_latched),
-                "target_rl_latched": int(self.target_rl_latched),
-                "agent_control_source": self.agent_control_source,
-                "target_control_source": self.target_control_source,
-                "agent_standon_escalated": int(self.agent_standon_escalated),
-                "target_standon_escalated": int(self.target_standon_escalated),
-                "agent_distance": float(agent_dist),
-                "target_distance": float(target_dist),
+                "vessel1_bearing": float(self.vessel1_relative_bearing_deg),
+                "vessel2_bearing": float(self.vessel2_relative_bearing_deg),
+                "vessel1_rl_active": int(self.vessel1_rl_active),
+                "vessel2_rl_active": int(self.vessel2_rl_active),
+                "vessel1_rl_latched": int(self.vessel1_rl_latched),
+                "vessel2_rl_latched": int(self.vessel2_rl_latched),
+                "vessel1_control_source": self.vessel1_control_source,
+                "vessel2_control_source": self.vessel2_control_source,
+                "vessel1_standon_escalated": int(self.vessel1_standon_escalated),
+                "vessel2_standon_escalated": int(self.vessel2_standon_escalated),
+                "vessel1_distance": float(vessel1_dist),
+                "vessel2_distance": float(vessel2_dist),
                 "takeover_distance": float(self.envp.rl_takeover_distance),
             }
 
-        self.prev_agent_rl_active = self.agent_rl_active
-        self.prev_target_rl_active = self.target_rl_active
+        self.prev_vessel1_rl_active = self.vessel1_rl_active
+        self.prev_vessel2_rl_active = self.vessel2_rl_active
         return self.get_obs(), float(reward), done, info
 
     def _draw_risk_overlay(self, surf) -> None:
@@ -1413,14 +1413,14 @@ class SingleTargetFeatureEnv:
         p = self.risk_overlay_payload
         tcpa = float(p.get("tcpa", float("inf")))
         tcpa_txt = "inf" if math.isinf(tcpa) else f"{tcpa:.1f}s"
-        agent_active = int(p.get("agent_rl_active", 0))
-        target_active = int(p.get("target_rl_active", 0))
-        if agent_active and target_active:
+        vessel1_active = int(p.get("vessel1_rl_active", 0))
+        vessel2_active = int(p.get("vessel2_rl_active", 0))
+        if vessel1_active and vessel2_active:
             rl_summary = "RL control active on BOTH vessels"
-        elif agent_active:
-            rl_summary = "RL control active on V1(agent); V2 uses fallback"
-        elif target_active:
-            rl_summary = "RL control active on V2(target); V1 uses fallback"
+        elif vessel1_active:
+            rl_summary = "RL control active on V1; V2 uses fallback"
+        elif vessel2_active:
+            rl_summary = "RL control active on V2; V1 uses fallback"
         else:
             rl_summary = "No vessel currently under RL control"
 
@@ -1429,10 +1429,10 @@ class SingleTargetFeatureEnv:
             f"Step {int(p.get('step', self.step_idx))}   Sim time {float(p.get('time', self.time)):.1f}s",
             f"Geometry={str(p.get('geometry', self.geometry_scenario)).upper()}   Scenario={str(p.get('scenario', self.colregs_scenario)).upper()}   Risk={int(p.get('risk_of_collision', int(self.risk_of_collision)))}",
             f"Encounter latched={int(p.get('encounter_latched', int(self.encounter_latched)))}   Overtaking latched={int(p.get('overtaking_latched', int(self.overtaking_latched)))}",
-            f"V1 role={p.get('agent_role', self.agent_role)}  rl_active={agent_active}  rl_latched={int(p.get('agent_rl_latched', int(self.agent_rl_latched)))}  src={p.get('agent_control_source', self.agent_control_source)}  escalated={int(p.get('agent_standon_escalated', int(self.agent_standon_escalated)))}",
-            f"V2 role={p.get('target_role', self.target_role)}  rl_active={target_active}  rl_latched={int(p.get('target_rl_latched', int(self.target_rl_latched)))}  src={p.get('target_control_source', self.target_control_source)}  escalated={int(p.get('target_standon_escalated', int(self.target_standon_escalated)))}",
-            f"DCPA={float(p.get('dcpa', self.last_dcpa)):.1f}m  TCPA={tcpa_txt}  V1→V2={float(p.get('agent_bearing', self.agent_relative_bearing_deg)):.1f}°  V2→V1={float(p.get('target_bearing', self.target_relative_bearing_deg)):.1f}°",
-            f"Distances from start: V1={float(p.get('agent_distance', 0.0)):.1f}m  V2={float(p.get('target_distance', 0.0)):.1f}m  takeover>= {float(p.get('takeover_distance', self.envp.rl_takeover_distance)):.1f}m",
+            f"V1 role={p.get('vessel1_role', self.vessel1_role)}  rl_active={vessel1_active}  rl_latched={int(p.get('vessel1_rl_latched', int(self.vessel1_rl_latched)))}  src={p.get('vessel1_control_source', self.vessel1_control_source)}  escalated={int(p.get('vessel1_standon_escalated', int(self.vessel1_standon_escalated)))}",
+            f"V2 role={p.get('vessel2_role', self.vessel2_role)}  rl_active={vessel2_active}  rl_latched={int(p.get('vessel2_rl_latched', int(self.vessel2_rl_latched)))}  src={p.get('vessel2_control_source', self.vessel2_control_source)}  escalated={int(p.get('vessel2_standon_escalated', int(self.vessel2_standon_escalated)))}",
+            f"DCPA={float(p.get('dcpa', self.last_dcpa)):.1f}m  TCPA={tcpa_txt}  V1→V2={float(p.get('vessel1_bearing', self.vessel1_relative_bearing_deg)):.1f}°  V2→V1={float(p.get('vessel2_bearing', self.vessel2_relative_bearing_deg)):.1f}°",
+            f"Distances from start: V1={float(p.get('vessel1_distance', 0.0)):.1f}m  V2={float(p.get('vessel2_distance', 0.0)):.1f}m  takeover>= {float(p.get('takeover_distance', self.envp.rl_takeover_distance)):.1f}m",
             f"Designated give-way={p.get('designated_give_way_vessel', 'none')}  stand-on={p.get('designated_stand_on_vessel', 'none')}  stand-on nominal={p.get('stand_on_nominal_mode', 'none')}",
             rl_summary,
             "Press SPACE or ENTER to dismiss and continue.",
@@ -1488,24 +1488,24 @@ class SingleTargetFeatureEnv:
             for y in range(0, int(self.envp.world_h) + 1, step):
                 pygame.draw.line(surf, (40, 80, 110), (0, self.sy(y)), (self.sx(self.envp.world_w), self.sy(y)))
 
-        self._draw_goal(self.agent.goal_x, self.agent.goal_y, (250, 215, 60))
-        self._draw_goal(self.target.goal_x, self.target.goal_y, (255, 140, 90))
+        self._draw_goal(self.vessel1.goal_x, self.vessel1.goal_y, (250, 215, 60))
+        self._draw_goal(self.vessel2.goal_x, self.vessel2.goal_y, (255, 140, 90))
 
         if self.envp.show_spawn_rings:
             pygame.draw.circle(
                 self._screen,
                 (255, 225, 120),
                 (self.sx(self.start_x), self.sy(self.start_y)),
-                int(round(self.envp.target_outer_radius * self.envp.pixels_per_meter)),
+                int(round(self.envp.vessel2_outer_radius * self.envp.pixels_per_meter)),
                 1,
             )
 
         if self.show_planned_paths:
-            self._draw_planned_path(self.agent_planned_path, (150, 210, 255))
-            self._draw_planned_path(self.target_planned_path, (255, 170, 170))
+            self._draw_planned_path(self.vessel1_planned_path, (150, 210, 255))
+            self._draw_planned_path(self.vessel2_planned_path, (255, 170, 170))
 
-        self._draw_vessel(self.agent, (95, 170, 255), "V1")
-        self._draw_vessel(self.target, (255, 120, 120), "V2")
+        self._draw_vessel(self.vessel1, (95, 170, 255), "V1")
+        self._draw_vessel(self.vessel2, (255, 120, 120), "V2")
 
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
 
@@ -1514,23 +1514,23 @@ class SingleTargetFeatureEnv:
             True, (255, 255, 255),
         )
         hud1 = self._font.render(
-            f"DCPA={self.last_dcpa:.1f}m TCPA={tcpa_txt} BRG V1→V2={self.agent_relative_bearing_deg:.1f}° V2→V1={self.target_relative_bearing_deg:.1f}°",
+            f"DCPA={self.last_dcpa:.1f}m TCPA={tcpa_txt} BRG V1→V2={self.vessel1_relative_bearing_deg:.1f}° V2→V1={self.vessel2_relative_bearing_deg:.1f}°",
             True, (255, 240, 170),
         )
         hud2 = self._font.render(
-            f"V1 spd={self.agent.speed:.2f}",
+            f"V1 spd={self.vessel1.speed:.2f}",
             True, (170, 220, 255),
         )
         hud3 = self._font.render(
-            f"V2 spd={self.target.speed:.2f}",
+            f"V2 spd={self.vessel2.speed:.2f}",
             True, (255, 190, 190),
         )
         hud4 = self._font.render(
-            f"V1 start=({self.agent_start_pos[0]:.1f},{self.agent_start_pos[1]:.1f}) goal=({self.agent.goal_x:.1f},{self.agent.goal_y:.1f}) h0={math.degrees(self.agent_start_heading):.1f}° v0={self.agent_start_speed:.2f}",
+            f"V1 start=({self.vessel1_start_pos[0]:.1f},{self.vessel1_start_pos[1]:.1f}) goal=({self.vessel1.goal_x:.1f},{self.vessel1.goal_y:.1f}) h0={math.degrees(self.vessel1_start_heading):.1f}° v0={self.vessel1_start_speed:.2f}",
             True, (170, 220, 255),
         )
         hud5 = self._font.render(
-            f"V2 start=({self.target_start_pos[0]:.1f},{self.target_start_pos[1]:.1f}) goal=({self.target.goal_x:.1f},{self.target.goal_y:.1f}) h0={math.degrees(self.target_start_heading):.1f}° v0={self.target_start_speed:.2f}",
+            f"V2 start=({self.vessel2_start_pos[0]:.1f},{self.vessel2_start_pos[1]:.1f}) goal=({self.vessel2.goal_x:.1f},{self.vessel2.goal_y:.1f}) h0={math.degrees(self.vessel2_start_heading):.1f}° v0={self.vessel2_start_speed:.2f}",
             True, (255, 190, 190),
         )
 

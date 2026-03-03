@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from environment import SingleTargetFeatureEnv
+from environment import SingleVessel2FeatureEnv
 from hyperparameters import EnvParams, RewardParams, TrainParams
 from policy import ACTION_DIM, ContinuousActor, ContinuousCritic
 
@@ -151,7 +151,7 @@ def main() -> None:
         min_replay=args.min_replay,
         gamma=args.gamma,
         learning_rate=args.learning_rate,
-        target_update=args.target_update,
+        vessel2_update=args.vessel2_update,
         eps_start=args.eps_start,
         eps_end=args.eps_end,
         eps_decay_steps=args.eps_decay_steps,
@@ -161,7 +161,7 @@ def main() -> None:
         out_dir=args.out_dir,
     )
 
-    env = SingleTargetFeatureEnv(EnvParams(seed=args.seed), RewardParams(), render=args.render)
+    env = SingleVessel2FeatureEnv(EnvParams(seed=args.seed), RewardParams(), render=args.render)
     # Single source of truth for observation dimension: infer directly from environment output.
     obs_dim = int(env.reset(seed=args.seed).shape[0])
 
