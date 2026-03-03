@@ -9,9 +9,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from environment import SingleVessel2FeatureEnv
-from hyperparameters import EnvParams, RewardParams
-from policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
+from training.environment import SingleVessel2FeatureEnv
+from training.hyperparameters import EnvParams, RewardParams
+from training.policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
 
 
 def parse_args() -> argparse.Namespace:

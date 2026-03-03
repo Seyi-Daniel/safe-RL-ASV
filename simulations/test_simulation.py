@@ -6,7 +6,7 @@ import random
 
 import numpy as np
 
-from sim_views import VIEW_REGISTRY
+from simulations.sim_views import VIEW_REGISTRY
 
 
 def parse_args() -> argparse.Namespace:

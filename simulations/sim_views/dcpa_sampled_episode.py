@@ -4,7 +4,7 @@ import argparse
 
 import numpy as np
 
-from environment import HAS_PYGAME, SingleVessel2FeatureEnv
+from simulations.environment import HAS_PYGAME, SingleVessel2FeatureEnv
 
 from .runtime import (
     SimulationRuntimeConfig,
