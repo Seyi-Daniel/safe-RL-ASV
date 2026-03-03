@@ -4,17 +4,23 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from collections import deque, namedtuple
 from pathlib import Path
+
+if __package__ is None or __package__ == "":
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from environment import SingleVessel2FeatureEnv
-from hyperparameters import EnvParams, RewardParams, TrainParams
-from policy import ACTION_DIM, ContinuousActor, ContinuousCritic
+from trainings.perimeter_start.environment import SingleVessel2FeatureEnv
+from trainings.perimeter_start.hyperparameters import EnvParams, RewardParams, TrainParams
+from trainings.perimeter_start.policy import ACTION_DIM, ContinuousActor, ContinuousCritic
 
 Transition = namedtuple("Transition", ("state", "action", "reward", "next_state", "done"))
 
@@ -152,7 +158,7 @@ def _episode_hits_dcpa_threshold(
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train continuous-control policy (DDPG-style)")
+    p = argparse.ArgumentParser(description="Train continuous-control policy (DDPG-style) for perimeter_start")
     p.add_argument("--episodes", type=int, default=TrainParams().episodes)
     p.add_argument("--batch-size", type=int, default=TrainParams().batch_size)
     p.add_argument("--replay-size", type=int, default=TrainParams().replay_size)
@@ -177,7 +183,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-sampling-logs", dest="sampling_logs", action="store_false")
     p.set_defaults(sampling_logs=True)
     p.add_argument("--save-every", type=int, default=TrainParams().save_every)
-    p.add_argument("--out-dir", type=str, default=TrainParams().out_dir)
+    p.add_argument("--out-dir", type=str, default="runs/perimeter_start")
     p.add_argument("--render", action="store_true", help="render during training")
     p.add_argument("--no-render", dest="render", action="store_false")
     p.set_defaults(render=False)
@@ -280,6 +286,7 @@ def main() -> None:
         ep_actor_loss = 0.0
         ep_critic_loss = 0.0
         loss_count = 0
+        takeover_triggered = False
 
         while not done:
             if args.render and getattr(env, "paused", False):
@@ -287,14 +294,15 @@ def main() -> None:
                 continue
 
             action = agent.act(obs)
-            next_obs, reward, done, _ = env.step(action)
+            next_obs, reward, done, info = env.step(action)
 
             replay.push(obs, action, reward, next_obs, done)
+            takeover_triggered = takeover_triggered or bool(info.get("vessel1_rl_active", 0)) or bool(info.get("vessel2_rl_active", 0))
             obs = next_obs
             ep_return += reward
             agent.global_step += 1
 
-            if len(replay) >= train_hp.min_replay:
+            if takeover_triggered and len(replay) >= train_hp.min_replay:
                 losses = agent.update(replay, train_hp.batch_size)
                 if losses is not None:
                     a_loss, c_loss = losses
@@ -318,10 +326,13 @@ def main() -> None:
                 "mean_critic_loss": float(mean_critic_loss),
             }
         )
-        print(
-            f"ep={ep:04d} return={ep_return:8.3f} steps={env.step_idx:4d} "
-            f"epsilon={eps_now:0.3f} actor_loss={mean_actor_loss:0.4f} critic_loss={mean_critic_loss:0.4f} replay={len(replay)}"
-        )
+        if not takeover_triggered:
+            print(f"ep={ep:04d} skipped_learning=no_takeover return={ep_return:8.3f} steps={env.step_idx:4d} replay={len(replay)}")
+        else:
+            print(
+                f"ep={ep:04d} return={ep_return:8.3f} steps={env.step_idx:4d} "
+                f"epsilon={eps_now:0.3f} actor_loss={mean_actor_loss:0.4f} critic_loss={mean_critic_loss:0.4f} replay={len(replay)}"
+            )
 
         if ep % train_hp.save_every == 0 or ep == train_hp.episodes:
             torch.save(

@@ -4,14 +4,51 @@ import argparse
 
 import numpy as np
 
-from environment import HAS_PYGAME, SingleVessel2FeatureEnv
+from simulations.environment_perimeter_start import HAS_PYGAME, SingleVessel2FeatureEnv
+from simulations.hyperparameters_perimeter_start import EnvParams, RewardParams
 
-from .runtime import (
-    SimulationRuntimeConfig,
-    build_playback_env_params,
-    build_sampling_env_params,
-    create_sim_env,
-)
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SimulationRuntimeConfig:
+    """Simulation-only runtime config, intentionally isolated from train.py CLI wiring."""
+
+    episode_seconds: float
+    seed: int
+    dcrit_factor: float
+    step_risk_logs: bool
+
+
+def build_sampling_env_params(cfg: SimulationRuntimeConfig) -> EnvParams:
+    return EnvParams(
+        episode_seconds=cfg.episode_seconds,
+        seed=cfg.seed,
+        vessel2_min_goal_arc_distance_from_start=0.0,
+        adaptive_vessel2_min_goal_arc_from_speed=True,
+        vessel2_min_goal_dcrit_factor=cfg.dcrit_factor,
+        require_reset_viable_takeover_path=False,
+        enable_no_takeover_early_done=False,
+        enable_step_risk_logging=False,
+    )
+
+
+def build_playback_env_params(cfg: SimulationRuntimeConfig) -> EnvParams:
+    return EnvParams(
+        episode_seconds=cfg.episode_seconds,
+        seed=cfg.seed,
+        vessel2_min_goal_arc_distance_from_start=0.0,
+        adaptive_vessel2_min_goal_arc_from_speed=True,
+        vessel2_min_goal_dcrit_factor=cfg.dcrit_factor,
+        require_reset_viable_takeover_path=False,
+        enable_no_takeover_early_done=False,
+        enable_step_risk_logging=cfg.step_risk_logs,
+    )
+
+
+def create_sim_env(envp: EnvParams, render: bool) -> SingleVessel2FeatureEnv:
+    return SingleVessel2FeatureEnv(envp, RewardParams(), render=render)
+
 
 if HAS_PYGAME:
     import pygame

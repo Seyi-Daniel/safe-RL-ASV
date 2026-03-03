@@ -1,33 +1,37 @@
-# safe-RL-ASV (main project)
+# safe-RL-ASV
 
-The **default/main project is now the root-level unified feature RL stack**.
+Project code is split into independent tracks:
 
-## Main entry points (root)
+- `trainings/` — fully standalone RL training stacks for both scenario families.
+- `simulations/` — fully standalone simulation stacks/views for both scenario families.
 
-- `train.py` — DDQN training loop
-- `run_episode.py` — evaluation/visualization runner
-- `environment.py` — simulation environment and rendering
-- `hyperparameters.py` — tunable config dataclasses
-- `policy.py` — DDQN network definition
+## Entry points
+
+### Trainings
+- `trainings/dcpa_sampled/train.py` — training pipeline for the center-start (DCPA sampled) scenario.
+- `trainings/perimeter_start/train.py` — training pipeline for the perimeter-start scenario.
+- `demo_model.py` — visualize/test a trained checkpoint from either standalone training stack.
+
+### Simulations
+- `simulations/test_simulation.py` — simulation sandbox runner for all available views.
+
+Current views (same package level, decoupled modules):
+- `dcpa-sampled-episode` (`simulations/sim_views/dcpa_sampled_episode.py`) — vessel-1 starts at center.
+- `perimeter-start-dcpa-sampled-episode` (`simulations/sim_views/perimeter_start_episode.py`) — vessel-1 starts on the big-circle circumference.
 
 ## Quick start
 
 ```bash
-python train.py --no-render
-python run_episode.py --render
+python trainings/dcpa_sampled/train.py --no-render
+python trainings/perimeter_start/train.py --no-render
+python demo_model.py --scenario dcpa_sampled --policy runs/dcpa_sampled/ddqn_policy.pt --render
+python demo_model.py --scenario perimeter_start --policy runs/perimeter_start/ddqn_policy.pt --render
+python simulations/test_simulation.py --view dcpa-sampled-episode --render
+python simulations/test_simulation.py --view perimeter-start-dcpa-sampled-episode --render
 ```
 
 ## Repository layout
 
-- Root files above = active/main code path.
-- `legacy/` = archived older subprojects kept for reference and compatibility:
-  - `legacy/RL_ASV`
-  - `legacy/feature-RL-ASV`
-  - `legacy/ASV_NEAT`
-- `unified-feature-rl/` now contains compatibility wrappers that forward to root files.
-
-## Notes
-
-- Existing commands using `python unified-feature-rl/train.py` and
-  `python unified-feature-rl/run_episode.py` still work via wrappers.
-- The active development target should now be the root-level files.
+- `trainings/dcpa_sampled/` and `trainings/perimeter_start/` are decoupled stacks (each has its own `environment.py`, `hyperparameters.py`, `policy.py`, and `train.py`).
+- `simulations/` contains decoupled simulation environments/configs and view modules under `simulations/sim_views/`.
+- `legacy/` keeps archived older subprojects for reference.
