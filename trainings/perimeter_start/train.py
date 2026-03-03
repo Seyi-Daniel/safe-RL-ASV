@@ -12,10 +12,9 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from trainings.environment_perimeter_start import SingleVessel2FeatureEnv
-from trainings.hyperparameters_perimeter_start import EnvParams, RewardParams
-from trainings.hyperparameters import TrainParams
-from trainings.policy import ACTION_DIM, ContinuousActor, ContinuousCritic
+from trainings.perimeter_start.environment import SingleVessel2FeatureEnv
+from trainings.perimeter_start.hyperparameters import EnvParams, RewardParams, TrainParams
+from trainings.perimeter_start.policy import ACTION_DIM, ContinuousActor, ContinuousCritic
 
 Transition = namedtuple("Transition", ("state", "action", "reward", "next_state", "done"))
 

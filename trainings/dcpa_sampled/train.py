@@ -12,10 +12,9 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from trainings.environment_dcpa_sampled import SingleVessel2FeatureEnv
-from trainings.hyperparameters_dcpa_sampled import EnvParams, RewardParams
-from trainings.hyperparameters import TrainParams
-from trainings.policy import ACTION_DIM, ContinuousActor, ContinuousCritic
+from trainings.dcpa_sampled.environment import SingleVessel2FeatureEnv
+from trainings.dcpa_sampled.hyperparameters import EnvParams, RewardParams, TrainParams
+from trainings.dcpa_sampled.policy import ACTION_DIM, ContinuousActor, ContinuousCritic
 
 Transition = namedtuple("Transition", ("state", "action", "reward", "next_state", "done"))
 

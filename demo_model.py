@@ -9,8 +9,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from trainings.policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
-
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Demo/visualize a trained continuous-control policy")
@@ -37,13 +35,15 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _build_env(scenario: str, args: argparse.Namespace):
+def _build_stack(scenario: str, args: argparse.Namespace):
     if scenario == "dcpa_sampled":
-        from trainings.environment_dcpa_sampled import SingleVessel2FeatureEnv
-        from trainings.hyperparameters_dcpa_sampled import EnvParams, RewardParams
+        from trainings.dcpa_sampled.environment import SingleVessel2FeatureEnv
+        from trainings.dcpa_sampled.hyperparameters import EnvParams, RewardParams
+        from trainings.dcpa_sampled.policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
     else:
-        from trainings.environment_perimeter_start import SingleVessel2FeatureEnv
-        from trainings.hyperparameters_perimeter_start import EnvParams, RewardParams
+        from trainings.perimeter_start.environment import SingleVessel2FeatureEnv
+        from trainings.perimeter_start.hyperparameters import EnvParams, RewardParams
+        from trainings.perimeter_start.policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
 
     envp = EnvParams(
         world_w=args.world_w,
@@ -53,7 +53,8 @@ def _build_env(scenario: str, args: argparse.Namespace):
         show_grid=args.show_grid,
         seed=args.seed,
     )
-    return SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)
+    env = SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)
+    return env, ContinuousActor, ACTION_DIM, DEFAULT_OBS_DIM
 
 
 def main() -> None:
@@ -63,7 +64,7 @@ def main() -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    env = _build_env(args.scenario, args)
+    env, ActorCls, ACTION_DIM, DEFAULT_OBS_DIM = _build_stack(args.scenario, args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ckpt = torch.load(args.policy, map_location=device)
@@ -73,7 +74,7 @@ def main() -> None:
     if action_dim != ACTION_DIM:
         raise ValueError(f"unsupported action count in checkpoint: {action_dim}")
 
-    policy = ContinuousActor(in_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(device)
+    policy = ActorCls(in_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(device)
     state = ckpt.get("actor_state_dict") or ckpt.get("online_state_dict")
     if state is None:
         raise ValueError("checkpoint missing actor/online state dict")
