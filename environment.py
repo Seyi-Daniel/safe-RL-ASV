@@ -1096,6 +1096,16 @@ class SingleTargetFeatureEnv:
         self.risk_of_collision = bool(encounter["risk_of_collision"])
         tcpa = self.last_tcpa
         dcpa = self.last_dcpa
+        tcpa_ok = 0.0 <= tcpa <= self.envp.tcpa_risk_threshold
+        dcpa_ok = dcpa <= self.envp.dcpa_risk_threshold
+        print(
+            "[RISK TRACE] "
+            f"step={self.step_idx} t={self.time:.1f}s "
+            f"tcpa={tcpa:.2f}s (<= {self.envp.tcpa_risk_threshold:.1f}? {tcpa_ok}) "
+            f"dcpa={dcpa:.2f}m (<= {self.envp.dcpa_risk_threshold:.1f}? {dcpa_ok}) "
+            f"risk={self.risk_of_collision} "
+            f"scenario={self.colregs_scenario} geometry={self.geometry_scenario}"
+        )
         give_way_vessel = "agent" if self.agent_role == "give_way" else "target" if self.target_role == "give_way" else "none"
         stand_on_vessel = "agent" if self.agent_role == "stand_on" else "target" if self.target_role == "stand_on" else "none"
         stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "target" else "straight" if stand_on_vessel == "agent" else "none"
