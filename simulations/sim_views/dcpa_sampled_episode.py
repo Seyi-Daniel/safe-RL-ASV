@@ -4,7 +4,7 @@ import argparse
 
 import numpy as np
 
-from simulations.environment import HAS_PYGAME, SingleVessel2FeatureEnv
+from simulations.environment_dcpa_sampled import HAS_PYGAME, SingleVessel2FeatureEnv
 from simulations.hyperparameters import EnvParams, RewardParams
 
 from dataclasses import dataclass

@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from simulations.environment import SingleVessel2FeatureEnv, Vessel
+from simulations.environment_dcpa_sampled import SingleVessel2FeatureEnv, Vessel
 from simulations.hyperparameters import EnvParams, RewardParams
 import numpy as np
 
