@@ -251,40 +251,60 @@ class SingleVessel2FeatureEnv:
         dcpa = math.hypot(cx, cy)
         return tcpa, dcpa
 
-    def _classify_pair_geometry(self, vessel1: Vessel, vessel2: Vessel) -> Dict[str, float | str]:
-        own_bearing = self._relative_bearing_deg(vessel1, vessel2)
-        tgt_bearing = self._relative_bearing_deg(vessel2, vessel1)
+    def classify_geometry(self, vessel1: Vessel, vessel2: Vessel) -> Tuple[str, float, float]:
+        """Classify encounter scenario from pure geometry.
+
+        Returns:
+            (scenario, rb_1, rb_2)
+            - scenario in {"head_on", "overtaking", "crossing"}
+            - rb_1: relative bearing of vessel2 seen from vessel1, [0, 360)
+            - rb_2: relative bearing of vessel1 seen from vessel2, [0, 360)
+        """
+        rb_1 = self._relative_bearing_deg(vessel1, vessel2)
+        rb_2 = self._relative_bearing_deg(vessel2, vessel1)
 
         head_on_half = self.envp.colregs_head_on_half_angle_deg
         head_on_min = (360.0 - head_on_half) % 360.0
         crossing_max = self.envp.colregs_crossing_starboard_max_deg
         overtaking_max = self.envp.colregs_overtaking_aft_max_deg
 
-        vessel1_overtaking = self._bearing_in_sector(
-            tgt_bearing, crossing_max, overtaking_max, inclusive=False
-        ) and self._is_closing(vessel1, vessel2)
-        vessel2_overtaking = self._bearing_in_sector(
-            own_bearing, crossing_max, overtaking_max, inclusive=False
-        ) and self._is_closing(vessel2, vessel1)
-        if vessel1_overtaking and not vessel2_overtaking:
+        head_on = self._bearing_in_sector(rb_1, head_on_min, head_on_half) and self._bearing_in_sector(
+            rb_2, head_on_min, head_on_half
+        )
+        if head_on:
+            return "head_on", rb_1, rb_2
+
+        vessel1_sees_vessel2_in_aft = self._bearing_in_sector(rb_1, crossing_max, overtaking_max)
+        vessel2_sees_vessel1_in_aft = self._bearing_in_sector(rb_2, crossing_max, overtaking_max)
+        if vessel1_sees_vessel2_in_aft or vessel2_sees_vessel1_in_aft:
+            return "overtaking", rb_1, rb_2
+
+        return "crossing", rb_1, rb_2
+
+    def _classify_pair_geometry(self, vessel1: Vessel, vessel2: Vessel) -> Dict[str, float | str]:
+        scenario, own_bearing, tgt_bearing = self.classify_geometry(vessel1, vessel2)
+
+        head_on_half = self.envp.colregs_head_on_half_angle_deg
+        head_on_min = (360.0 - head_on_half) % 360.0
+        crossing_max = self.envp.colregs_crossing_starboard_max_deg
+        overtaking_max = self.envp.colregs_overtaking_aft_max_deg
+
+        if scenario == "head_on":
             return {
-                "geometry": "overtaking_vessel1_geom",
-                "vessel1_bearing_deg": own_bearing,
-                "vessel2_bearing_deg": tgt_bearing,
-            }
-        if vessel2_overtaking and not vessel1_overtaking:
-            return {
-                "geometry": "overtaking_vessel2_geom",
+                "geometry": "head_on_geom",
                 "vessel1_bearing_deg": own_bearing,
                 "vessel2_bearing_deg": tgt_bearing,
             }
 
-        head_on = self._bearing_in_sector(own_bearing, head_on_min, head_on_half) and self._bearing_in_sector(
-            tgt_bearing, head_on_min, head_on_half
-        )
-        if head_on:
+        if scenario == "overtaking":
+            if self._bearing_in_sector(own_bearing, crossing_max, overtaking_max):
+                geometry = "overtaking_vessel2_geom"
+            elif self._bearing_in_sector(tgt_bearing, crossing_max, overtaking_max):
+                geometry = "overtaking_vessel1_geom"
+            else:
+                geometry = "overtaking_vessel1_geom"
             return {
-                "geometry": "head_on_geom",
+                "geometry": geometry,
                 "vessel1_bearing_deg": own_bearing,
                 "vessel2_bearing_deg": tgt_bearing,
             }
@@ -304,7 +324,7 @@ class SingleVessel2FeatureEnv:
             }
 
         return {
-            "geometry": "none",
+            "geometry": "crossing_vessel1_stand_on_geom",
             "vessel1_bearing_deg": own_bearing,
             "vessel2_bearing_deg": tgt_bearing,
         }
