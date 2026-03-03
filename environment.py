@@ -1099,20 +1099,23 @@ class SingleVessel2FeatureEnv:
         self.vessel2_standon_escalated = False
 
         encounter_active = bool(self.locked)
-        allow_vessel1_rl = encounter_active and self.vessel1_role == "give_way"
-        allow_vessel2_rl = encounter_active and self.vessel2_role == "give_way"
+        allow_vessel1_rl = encounter_active and self.vessel1_role == "give_way" and (not self.vessel1_reached)
+        allow_vessel2_rl = encounter_active and self.vessel2_role == "give_way" and (not self.vessel2_reached)
 
-        if self.rl_controlled_vessel == "none":
-            if allow_vessel1_rl and self.risk_of_collision and vessel1_dist >= self.envp.rl_takeover_distance and not self.vessel1_reached:
-                self.rl_controlled_vessel = "vessel1"
-            elif allow_vessel2_rl and self.risk_of_collision and vessel2_dist >= self.envp.rl_takeover_distance and not self.vessel2_reached:
-                self.rl_controlled_vessel = "vessel2"
-
-        self.vessel1_rl_latched = self.vessel1_rl_latched or (self.rl_controlled_vessel == "vessel1")
-        self.vessel2_rl_latched = self.vessel2_rl_latched or (self.rl_controlled_vessel == "vessel2")
-        self.vessel1_rl_active = (self.rl_controlled_vessel == "vessel1") and (not self.vessel1_reached)
-        self.vessel2_rl_active = (self.rl_controlled_vessel == "vessel2") and (not self.vessel2_reached)
-        self.any_rl_ever_triggered = self.any_rl_ever_triggered or (self.rl_controlled_vessel != "none")
+        # RL controls the give-way vessel(s) during locked encounters.
+        self.vessel1_rl_active = allow_vessel1_rl
+        self.vessel2_rl_active = allow_vessel2_rl
+        self.vessel1_rl_latched = self.vessel1_rl_latched or self.vessel1_rl_active
+        self.vessel2_rl_latched = self.vessel2_rl_latched or self.vessel2_rl_active
+        if self.vessel1_rl_active and self.vessel2_rl_active:
+            self.rl_controlled_vessel = "both"
+        elif self.vessel1_rl_active:
+            self.rl_controlled_vessel = "vessel1"
+        elif self.vessel2_rl_active:
+            self.rl_controlled_vessel = "vessel2"
+        else:
+            self.rl_controlled_vessel = "none"
+        self.any_rl_ever_triggered = self.any_rl_ever_triggered or self.vessel1_rl_active or self.vessel2_rl_active
         self.rl_ever_triggered = self.any_rl_ever_triggered
 
         early_cutoff_steps = max(1, int(self.envp.no_takeover_early_done_steps))
@@ -1171,9 +1174,8 @@ class SingleVessel2FeatureEnv:
         h = self.envp.dt / max(1, self.envp.substeps)
         was_vessel1_active = not self.vessel1_reached
         was_vessel2_active = not self.vessel2_reached
-        encounter_active = bool(self.locked)
         for _ in range(max(1, self.envp.substeps)):
-            if self.rl_controlled_vessel == "vessel1":
+            if self.vessel1_rl_active:
                 vessel1_rl_cmd, vessel1_rl_src = self._select_rl_action_for_vessel("vessel1", a)
                 if vessel1_rl_cmd is not None:
                     self.vessel1_control_source = vessel1_rl_src
@@ -1181,11 +1183,11 @@ class SingleVessel2FeatureEnv:
                 else:
                     self.vessel1_control_source = "straight"
                     self._advance_straight(self.vessel1, "vessel1_reached", h)
-                self.vessel2_control_source = "pure_pursuit"
-                self._advance_target(h)
-            elif self.rl_controlled_vessel == "vessel2":
+            else:
                 self.vessel1_control_source = "straight"
                 self._advance_straight(self.vessel1, "vessel1_reached", h)
+
+            if self.vessel2_rl_active:
                 vessel2_rl_cmd, vessel2_rl_src = self._select_rl_action_for_vessel("vessel2", a)
                 if vessel2_rl_cmd is not None:
                     self.vessel2_control_source = vessel2_rl_src
@@ -1194,8 +1196,6 @@ class SingleVessel2FeatureEnv:
                     self.vessel2_control_source = "pure_pursuit"
                     self._advance_target(h)
             else:
-                self.vessel1_control_source = "straight"
-                self._advance_straight(self.vessel1, "vessel1_reached", h)
                 self.vessel2_control_source = "pure_pursuit"
                 self._advance_target(h)
 
