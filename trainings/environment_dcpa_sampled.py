@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from training.hyperparameters import EnvParams, RewardParams
+from trainings.hyperparameters_dcpa_sampled import EnvParams, RewardParams
 
 try:
     import pygame

@@ -32,6 +32,6 @@ python simulations/test_simulation.py --view perimeter-start-dcpa-sampled-episod
 
 ## Repository layout
 
-- `trainings/` contains two scenario-specific training scripts and shared training network/config modules.
+- `trainings/` contains standalone scenario-specific copies of environments/configs plus RL training scripts and shared training network modules (no runtime dependency on `simulations/`).
 - `simulations/` contains simulation environments/configs and decoupled view modules under `simulations/sim_views/`.
 - `legacy/` keeps archived older subprojects for reference.

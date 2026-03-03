@@ -39,11 +39,11 @@ def parse_args() -> argparse.Namespace:
 
 def _build_env(scenario: str, args: argparse.Namespace):
     if scenario == "dcpa_sampled":
-        from simulations.environment_dcpa_sampled import SingleVessel2FeatureEnv
-        from simulations.hyperparameters import EnvParams, RewardParams
+        from trainings.environment_dcpa_sampled import SingleVessel2FeatureEnv
+        from trainings.hyperparameters_dcpa_sampled import EnvParams, RewardParams
     else:
-        from simulations.environment_perimeter_start import SingleVessel2FeatureEnv
-        from simulations.hyperparameters_perimeter_start import EnvParams, RewardParams
+        from trainings.environment_perimeter_start import SingleVessel2FeatureEnv
+        from trainings.hyperparameters_perimeter_start import EnvParams, RewardParams
 
     envp = EnvParams(
         world_w=args.world_w,

@@ -12,8 +12,8 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from simulations.environment_perimeter_start import SingleVessel2FeatureEnv
-from simulations.hyperparameters_perimeter_start import EnvParams, RewardParams
+from trainings.environment_perimeter_start import SingleVessel2FeatureEnv
+from trainings.hyperparameters_perimeter_start import EnvParams, RewardParams
 from trainings.hyperparameters import TrainParams
 from trainings.policy import ACTION_DIM, ContinuousActor, ContinuousCritic
 
