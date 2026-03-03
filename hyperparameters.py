@@ -67,7 +67,7 @@ class EnvParams:
     simplified_head_on_single_giveway: bool = True
 
     dcpa_risk_threshold: float = 20.0
-    tcpa_risk_threshold: float = 90.0
+    tcpa_risk_threshold: float = 20.0
     rl_takeover_distance: float = 35.0
     reset_viable_episode_max_tries: int = 80
     require_reset_viable_takeover_path: bool = True

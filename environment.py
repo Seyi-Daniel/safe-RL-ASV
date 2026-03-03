@@ -132,6 +132,7 @@ class SingleVessel2FeatureEnv:
         self.active_non_overtaking_vessel2_role = "none"
         self.active_non_overtaking_exit_steps = 0
         self.geometry_scenario = "none"
+        self.hud_scenario = "none"
         self.vessel1_standon_escalated = False
         self.vessel2_standon_escalated = False
         self.vessel1_standon_risk_steps = 0
@@ -433,6 +434,7 @@ class SingleVessel2FeatureEnv:
 
         return {
             "geometry": geometry,
+            "scenario_now": scenario_now,
             "scenario": scenario,
             "vessel1_role": vessel1_role,
             "vessel2_role": vessel2_role,
@@ -951,6 +953,7 @@ class SingleVessel2FeatureEnv:
         self.overtaking_clear_steps = 0
         self.encounter_latched = False
         self.geometry_scenario = "none"
+        self.hud_scenario = "none"
         self.vessel1_standon_escalated = False
         self.vessel2_standon_escalated = False
         self.vessel1_standon_risk_steps = 0
@@ -1063,6 +1066,7 @@ class SingleVessel2FeatureEnv:
 
         encounter = self._classify_colregs()
         self.colregs_scenario = str(encounter["scenario"])
+        self.hud_scenario = str(encounter.get("scenario_now", "none"))
         self.geometry_scenario = str(encounter["geometry"])
         self.vessel1_role = str(encounter["vessel1_role"])
         self.vessel2_role = str(encounter["vessel2_role"])
@@ -1491,8 +1495,9 @@ class SingleVessel2FeatureEnv:
 
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
 
+        hud_scenario = "heading" if self.hud_scenario == "head_on" else self.hud_scenario
         hud0 = self._font.render(
-            f"step={self.step_idx} t={self.time:.1f}s",
+            f"step={self.step_idx} t={self.time:.1f}s scenario={hud_scenario} risk={self.risk_of_collision}",
             True, (255, 255, 255),
         )
         hud1 = self._font.render(
