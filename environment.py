@@ -132,6 +132,7 @@ class SingleVessel2FeatureEnv:
         self.active_non_overtaking_vessel2_role = "none"
         self.active_non_overtaking_exit_steps = 0
         self.geometry_scenario = "none"
+        self.hud_scenario = "none"
         self.vessel1_standon_escalated = False
         self.vessel2_standon_escalated = False
         self.vessel1_standon_risk_steps = 0
@@ -222,6 +223,11 @@ class SingleVessel2FeatureEnv:
         y_rel = -sh * dx + ch * dy
         rel_port = (math.degrees(math.atan2(y_rel, x_rel)) + 360.0) % 360.0
         return (360.0 - rel_port) % 360.0
+
+    @staticmethod
+    def _bearing_to_signed_deg(bearing_360: float) -> float:
+        """Convert [0,360) relative bearing to signed bearing in [-180,180)."""
+        return ((bearing_360 + 180.0) % 360.0) - 180.0
 
     def _bearing_in_sector(self, bearing_deg: float, start_deg: float, end_deg: float, inclusive: bool = True) -> bool:
         b = bearing_deg % 360.0
@@ -336,14 +342,14 @@ class SingleVessel2FeatureEnv:
 
         if self._bearing_in_sector(own_bearing, head_on_half, crossing_max):
             return {
-                "geometry": "crossing_vessel1_give_way_geom",
+                "geometry": "crossing_vessel1_stand_on_geom",
                 "vessel1_bearing_deg": own_bearing,
                 "vessel2_bearing_deg": tgt_bearing,
             }
 
         if self._bearing_in_sector(own_bearing, 360.0 - crossing_max, head_on_min):
             return {
-                "geometry": "crossing_vessel1_stand_on_geom",
+                "geometry": "crossing_vessel1_give_way_geom",
                 "vessel1_bearing_deg": own_bearing,
                 "vessel2_bearing_deg": tgt_bearing,
             }
@@ -381,8 +387,11 @@ class SingleVessel2FeatureEnv:
             return "give_way", "give_way"
 
         # crossing: vessel that sees the other on its starboard side is give-way.
-        vessel1_starboard = 0.0 < rb_1 < crossing_max
-        vessel2_starboard = 0.0 < rb_2 < crossing_max
+        # Bearing convention here maps signed negatives to starboard/right and positives to port/left.
+        rb1_signed = self._bearing_to_signed_deg(rb_1)
+        rb2_signed = self._bearing_to_signed_deg(rb_2)
+        vessel1_starboard = (-crossing_max < rb1_signed) and (rb1_signed < 0.0)
+        vessel2_starboard = (-crossing_max < rb2_signed) and (rb2_signed < 0.0)
         if vessel1_starboard and not vessel2_starboard:
             return "give_way", "stand_on"
         if vessel2_starboard and not vessel1_starboard:
@@ -433,6 +442,7 @@ class SingleVessel2FeatureEnv:
 
         return {
             "geometry": geometry,
+            "scenario_now": scenario_now,
             "scenario": scenario,
             "vessel1_role": vessel1_role,
             "vessel2_role": vessel2_role,
@@ -951,6 +961,7 @@ class SingleVessel2FeatureEnv:
         self.overtaking_clear_steps = 0
         self.encounter_latched = False
         self.geometry_scenario = "none"
+        self.hud_scenario = "none"
         self.vessel1_standon_escalated = False
         self.vessel2_standon_escalated = False
         self.vessel1_standon_risk_steps = 0
@@ -1063,6 +1074,7 @@ class SingleVessel2FeatureEnv:
 
         encounter = self._classify_colregs()
         self.colregs_scenario = str(encounter["scenario"])
+        self.hud_scenario = str(encounter.get("scenario_now", "none"))
         self.geometry_scenario = str(encounter["geometry"])
         self.vessel1_role = str(encounter["vessel1_role"])
         self.vessel2_role = str(encounter["vessel2_role"])
@@ -1415,7 +1427,7 @@ class SingleVessel2FeatureEnv:
             f"Scenario={str(p.get('scenario', self.colregs_scenario)).upper()}",
             f"V1 role={p.get('vessel1_role', self.vessel1_role)}",
             f"V2 role={p.get('vessel2_role', self.vessel2_role)}",
-            f"DCPA={float(p.get('dcpa', self.last_dcpa)):.1f}m  TCPA={tcpa_txt}  V1→V2={float(p.get('vessel1_bearing', self.vessel1_relative_bearing_deg)):.1f}°  V2→V1={float(p.get('vessel2_bearing', self.vessel2_relative_bearing_deg)):.1f}°",
+            f"DCPA={float(p.get('dcpa', self.last_dcpa)):.1f}m  TCPA={tcpa_txt}  V1→V2={float(p.get('vessel1_bearing', self.vessel1_relative_bearing_deg)):.1f}°/{self._bearing_to_signed_deg(float(p.get('vessel1_bearing', self.vessel1_relative_bearing_deg))):+.1f}°  V2→V1={float(p.get('vessel2_bearing', self.vessel2_relative_bearing_deg)):.1f}°/{self._bearing_to_signed_deg(float(p.get('vessel2_bearing', self.vessel2_relative_bearing_deg))):+.1f}°",
             rl_summary,
             "Press SPACE or ENTER to dismiss and continue.",
         ]
@@ -1491,12 +1503,13 @@ class SingleVessel2FeatureEnv:
 
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
 
+        hud_scenario = "heading" if self.hud_scenario == "head_on" else self.hud_scenario
         hud0 = self._font.render(
-            f"step={self.step_idx} t={self.time:.1f}s",
+            f"step={self.step_idx} t={self.time:.1f}s scenario={hud_scenario} risk={self.risk_of_collision}",
             True, (255, 255, 255),
         )
         hud1 = self._font.render(
-            f"DCPA={self.last_dcpa:.1f}m TCPA={tcpa_txt} BRG V1→V2={self.vessel1_relative_bearing_deg:.1f}° V2→V1={self.vessel2_relative_bearing_deg:.1f}°",
+            f"DCPA={self.last_dcpa:.1f}m TCPA={tcpa_txt} BRG V1→V2={self.vessel1_relative_bearing_deg:.1f}°/{self._bearing_to_signed_deg(self.vessel1_relative_bearing_deg):+.1f}° V2→V1={self.vessel2_relative_bearing_deg:.1f}°/{self._bearing_to_signed_deg(self.vessel2_relative_bearing_deg):+.1f}°",
             True, (255, 240, 170),
         )
         hud2 = self._font.render(
