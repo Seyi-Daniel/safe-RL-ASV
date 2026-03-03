@@ -224,6 +224,11 @@ class SingleVessel2FeatureEnv:
         rel_port = (math.degrees(math.atan2(y_rel, x_rel)) + 360.0) % 360.0
         return (360.0 - rel_port) % 360.0
 
+    @staticmethod
+    def _bearing_to_signed_deg(bearing_360: float) -> float:
+        """Convert [0,360) relative bearing to signed bearing in [-180,180)."""
+        return ((bearing_360 + 180.0) % 360.0) - 180.0
+
     def _bearing_in_sector(self, bearing_deg: float, start_deg: float, end_deg: float, inclusive: bool = True) -> bool:
         b = bearing_deg % 360.0
         s = start_deg % 360.0
@@ -1419,7 +1424,7 @@ class SingleVessel2FeatureEnv:
             f"Scenario={str(p.get('scenario', self.colregs_scenario)).upper()}",
             f"V1 role={p.get('vessel1_role', self.vessel1_role)}",
             f"V2 role={p.get('vessel2_role', self.vessel2_role)}",
-            f"DCPA={float(p.get('dcpa', self.last_dcpa)):.1f}m  TCPA={tcpa_txt}  V1→V2={float(p.get('vessel1_bearing', self.vessel1_relative_bearing_deg)):.1f}°  V2→V1={float(p.get('vessel2_bearing', self.vessel2_relative_bearing_deg)):.1f}°",
+            f"DCPA={float(p.get('dcpa', self.last_dcpa)):.1f}m  TCPA={tcpa_txt}  V1→V2={float(p.get('vessel1_bearing', self.vessel1_relative_bearing_deg)):.1f}°/{self._bearing_to_signed_deg(float(p.get('vessel1_bearing', self.vessel1_relative_bearing_deg))):+.1f}°  V2→V1={float(p.get('vessel2_bearing', self.vessel2_relative_bearing_deg)):.1f}°/{self._bearing_to_signed_deg(float(p.get('vessel2_bearing', self.vessel2_relative_bearing_deg))):+.1f}°",
             rl_summary,
             "Press SPACE or ENTER to dismiss and continue.",
         ]
@@ -1501,7 +1506,7 @@ class SingleVessel2FeatureEnv:
             True, (255, 255, 255),
         )
         hud1 = self._font.render(
-            f"DCPA={self.last_dcpa:.1f}m TCPA={tcpa_txt} BRG V1→V2={self.vessel1_relative_bearing_deg:.1f}° V2→V1={self.vessel2_relative_bearing_deg:.1f}°",
+            f"DCPA={self.last_dcpa:.1f}m TCPA={tcpa_txt} BRG V1→V2={self.vessel1_relative_bearing_deg:.1f}°/{self._bearing_to_signed_deg(self.vessel1_relative_bearing_deg):+.1f}° V2→V1={self.vessel2_relative_bearing_deg:.1f}°/{self._bearing_to_signed_deg(self.vessel2_relative_bearing_deg):+.1f}°",
             True, (255, 240, 170),
         )
         hud2 = self._font.render(
