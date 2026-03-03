@@ -1077,14 +1077,15 @@ class SingleVessel2FeatureEnv:
         dcpa = self.last_dcpa
         tcpa_ok = 0.0 <= tcpa <= self.envp.tcpa_risk_threshold
         dcpa_ok = dcpa <= self.envp.dcpa_risk_threshold
-        print(
-            "[RISK TRACE] "
-            f"step={self.step_idx} t={self.time:.1f}s "
-            f"tcpa={tcpa:.2f}s (<= {self.envp.tcpa_risk_threshold:.1f}? {tcpa_ok}) "
-            f"dcpa={dcpa:.2f}m (<= {self.envp.dcpa_risk_threshold:.1f}? {dcpa_ok}) "
-            f"risk={self.risk_of_collision} "
-            f"scenario={self.colregs_scenario} geometry={self.geometry_scenario}"
-        )
+        if self.envp.enable_step_risk_logging:
+            print(
+                "[RISK TRACE] "
+                f"step={self.step_idx} t={self.time:.1f}s "
+                f"tcpa={tcpa:.2f}s (<= {self.envp.tcpa_risk_threshold:.1f}? {tcpa_ok}) "
+                f"dcpa={dcpa:.2f}m (<= {self.envp.dcpa_risk_threshold:.1f}? {dcpa_ok}) "
+                f"risk={self.risk_of_collision} "
+                f"scenario={self.colregs_scenario} geometry={self.geometry_scenario}"
+            )
         give_way_vessel = "vessel1" if self.vessel1_role == "give_way" else "vessel2" if self.vessel2_role == "give_way" else "none"
         stand_on_vessel = "vessel1" if self.vessel1_role == "stand_on" else "vessel2" if self.vessel2_role == "stand_on" else "none"
         stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "vessel2" else "straight" if stand_on_vessel == "vessel1" else "none"

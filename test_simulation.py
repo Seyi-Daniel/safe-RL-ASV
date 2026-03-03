@@ -43,6 +43,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tcpa-threshold", type=float, default=90.0, help="Accept sampled episodes only if TCPA is within [0, threshold] when DCPA condition is met")
     p.add_argument("--dcpa-sample-max-tries", type=int, default=0, help="Max resampling attempts per accepted episode (0 = unlimited)")
     p.add_argument("--debug-sampling", action="store_true", help="Enable detailed DCPA/TCPA sampling debug logs")
+    p.add_argument("--sampling-logs", dest="sampling_logs", action="store_true", help="Print per-attempt sampling summaries")
+    p.add_argument("--no-sampling-logs", dest="sampling_logs", action="store_false", help="Silence per-attempt sampling summaries")
+    p.set_defaults(sampling_logs=True)
+    p.add_argument("--step-risk-logs", dest="step_risk_logs", action="store_true", help="Enable [RISK TRACE] logging for every step")
+    p.add_argument("--no-step-risk-logs", dest="step_risk_logs", action="store_false", help="Disable [RISK TRACE] per-step logging")
+    p.set_defaults(step_risk_logs=False)
     p.add_argument("--debug-sampling-step-log-every", type=int, default=100, help="When debug is on, print per-attempt status every N steps")
     p.add_argument("--max-sampling-steps-per-attempt", type=int, default=0, help="Safety cap for candidate sampling steps (0 = automatic cap of 2x episode max steps)")
 
@@ -62,6 +68,7 @@ def _make_env_params(args: argparse.Namespace) -> EnvParams:
         vessel2_min_goal_arc_distance_from_start=args.vessel2_min_goal_arc_distance,
         adaptive_vessel2_min_goal_arc_from_speed=args.adaptive_dcrit_min_arc,
         vessel2_min_goal_dcrit_factor=args.dcrit_factor,
+        enable_step_risk_logging=args.step_risk_logs,
     )
 
 
@@ -177,6 +184,7 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
         vessel2_min_goal_dcrit_factor=args.dcrit_factor,
         require_reset_viable_takeover_path=False,
         enable_no_takeover_early_done=False,
+        enable_step_risk_logging=args.step_risk_logs,
     )
 
     env = SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)
@@ -198,7 +206,7 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     args.dcpa_threshold,
                     args.tcpa_threshold,
                     pump_events=args.render,
-                    render_sampling=False,
+                    render_sampling=args.render,
                     debug_sampling=args.debug_sampling,
                     debug_step_log_every=args.debug_sampling_step_log_every,
                     max_sampling_steps_per_attempt=args.max_sampling_steps_per_attempt,
@@ -209,11 +217,12 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     accepted_best_tcpa = best_tcpa
                     accepted_attempt = attempt
                     break
-                print(
-                    f"Episode {ep}: failed attempt={attempt} seed={candidate_seed} steps={sample_steps} reason={fail_reason} "
-                    f"(best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
-                    f"need dcpa <= {args.dcpa_threshold:.2f} and tcpa <= {args.tcpa_threshold:.2f})"
-                )
+                if args.sampling_logs:
+                    print(
+                        f"Episode {ep}: failed attempt={attempt} seed={candidate_seed} steps={sample_steps} reason={fail_reason} "
+                        f"(best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
+                        f"need dcpa <= {args.dcpa_threshold:.2f} and tcpa <= {args.tcpa_threshold:.2f})"
+                    )
                 attempt += 1
 
             if accepted_seed is None:
