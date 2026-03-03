@@ -342,14 +342,14 @@ class SingleVessel2FeatureEnv:
 
         if self._bearing_in_sector(own_bearing, head_on_half, crossing_max):
             return {
-                "geometry": "crossing_vessel1_give_way_geom",
+                "geometry": "crossing_vessel1_stand_on_geom",
                 "vessel1_bearing_deg": own_bearing,
                 "vessel2_bearing_deg": tgt_bearing,
             }
 
         if self._bearing_in_sector(own_bearing, 360.0 - crossing_max, head_on_min):
             return {
-                "geometry": "crossing_vessel1_stand_on_geom",
+                "geometry": "crossing_vessel1_give_way_geom",
                 "vessel1_bearing_deg": own_bearing,
                 "vessel2_bearing_deg": tgt_bearing,
             }
@@ -387,8 +387,11 @@ class SingleVessel2FeatureEnv:
             return "give_way", "give_way"
 
         # crossing: vessel that sees the other on its starboard side is give-way.
-        vessel1_starboard = 0.0 < rb_1 < crossing_max
-        vessel2_starboard = 0.0 < rb_2 < crossing_max
+        # Bearing convention here maps signed negatives to starboard/right and positives to port/left.
+        rb1_signed = self._bearing_to_signed_deg(rb_1)
+        rb2_signed = self._bearing_to_signed_deg(rb_2)
+        vessel1_starboard = (-crossing_max < rb1_signed) and (rb1_signed < 0.0)
+        vessel2_starboard = (-crossing_max < rb2_signed) and (rb2_signed < 0.0)
         if vessel1_starboard and not vessel2_starboard:
             return "give_way", "stand_on"
         if vessel2_starboard and not vessel1_starboard:

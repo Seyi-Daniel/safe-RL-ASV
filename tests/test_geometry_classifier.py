@@ -91,13 +91,13 @@ class TestAssignRoles(unittest.TestCase):
         self.assertEqual((r1, r2), ("stand_on", "give_way"))
 
     def test_crossing_vessel1_starboard_sees_vessel2(self):
-        # vessel1 sees vessel2 on starboard: give-way for vessel1
-        r1, r2 = self.env.assign_roles("crossing", rb_1=30.0, rb_2=300.0)
+        # vessel1 sees vessel2 on starboard (negative signed bearing): give-way for vessel1
+        r1, r2 = self.env.assign_roles("crossing", rb_1=330.0, rb_2=30.0)
         self.assertEqual((r1, r2), ("give_way", "stand_on"))
 
     def test_crossing_mirrored_vessel1_stand_on(self):
         # mirror case: vessel2 sees vessel1 on starboard => vessel2 give-way
-        r1, r2 = self.env.assign_roles("crossing", rb_1=300.0, rb_2=30.0)
+        r1, r2 = self.env.assign_roles("crossing", rb_1=30.0, rb_2=330.0)
         self.assertEqual((r1, r2), ("stand_on", "give_way"))
 
 
@@ -161,7 +161,7 @@ class TestRLGiveWayRouting(unittest.TestCase):
     def _set_locked_crossing_v1_giveway(self) -> None:
         # crossing with risk: vessel1 gives way to vessel2
         self.env.vessel1 = Vessel(x=0.0, y=0.0, h=0.0, speed=5.0, goal_x=500.0, goal_y=0.0)
-        self.env.vessel2 = Vessel(x=50.0, y=-50.0, h=math.pi / 2.0, speed=5.0, goal_x=50.0, goal_y=500.0)
+        self.env.vessel2 = Vessel(x=50.0, y=50.0, h=-math.pi / 2.0, speed=5.0, goal_x=50.0, goal_y=-500.0)
         self.env.vessel1_reached = False
         self.env.vessel2_reached = False
         self.env.step(np.array([0.0, 0.0], dtype=np.float32))  # lock
@@ -169,7 +169,7 @@ class TestRLGiveWayRouting(unittest.TestCase):
     def _set_locked_crossing_v2_giveway(self) -> None:
         # mirrored crossing: vessel2 gives way to vessel1
         self.env.vessel1 = Vessel(x=0.0, y=0.0, h=0.0, speed=5.0, goal_x=500.0, goal_y=0.0)
-        self.env.vessel2 = Vessel(x=50.0, y=50.0, h=-math.pi / 2.0, speed=5.0, goal_x=50.0, goal_y=-500.0)
+        self.env.vessel2 = Vessel(x=50.0, y=-50.0, h=math.pi / 2.0, speed=5.0, goal_x=50.0, goal_y=500.0)
         self.env.vessel1_reached = False
         self.env.vessel2_reached = False
         self.env.step(np.array([0.0, 0.0], dtype=np.float32))  # lock
