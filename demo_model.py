@@ -9,14 +9,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from training.environment import SingleVessel2FeatureEnv
-from training.hyperparameters import EnvParams, RewardParams
-from training.policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
+from trainings.policy import ACTION_DIM, DEFAULT_OBS_DIM, ContinuousActor
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Demo/visualize a trained continuous-control policy")
-    p.add_argument("--policy", type=str, required=True, help=".pt checkpoint produced by train.py")
+    p.add_argument("--policy", type=str, required=True, help=".pt checkpoint produced by trainings scripts")
+    p.add_argument("--scenario", choices=("dcpa_sampled", "perimeter_start"), default="dcpa_sampled",
+                   help="environment scenario matching the checkpoint training track")
     p.add_argument("--episodes", type=int, default=5)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--hidden-dim", type=int, default=256)
@@ -29,20 +29,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hide-grid", dest="show_grid", action="store_false")
     p.set_defaults(show_grid=True)
 
-    p.add_argument("--episode-seconds", type=float, default=EnvParams().episode_seconds)
-    p.add_argument("--world-w", type=float, default=EnvParams().world_w)
-    p.add_argument("--world-h", type=float, default=EnvParams().world_h)
-    p.add_argument("--pixels-per-meter", type=float, default=EnvParams().pixels_per_meter)
+    p.add_argument("--episode-seconds", type=float, default=120.0)
+    p.add_argument("--world-w", type=float, default=500.0)
+    p.add_argument("--world-h", type=float, default=500.0)
+    p.add_argument("--pixels-per-meter", type=float, default=2.0)
     p.add_argument("--save-log", type=str, default="", help="optional json file for episode summaries")
     return p.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+def _build_env(scenario: str, args: argparse.Namespace):
+    if scenario == "dcpa_sampled":
+        from simulations.environment_dcpa_sampled import SingleVessel2FeatureEnv
+        from simulations.hyperparameters import EnvParams, RewardParams
+    else:
+        from simulations.environment_perimeter_start import SingleVessel2FeatureEnv
+        from simulations.hyperparameters_perimeter_start import EnvParams, RewardParams
 
     envp = EnvParams(
         world_w=args.world_w,
@@ -52,12 +53,20 @@ def main() -> None:
         show_grid=args.show_grid,
         seed=args.seed,
     )
-    env = SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)
+    return SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)
 
+
+def main() -> None:
+    args = parse_args()
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    env = _build_env(args.scenario, args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ckpt = torch.load(args.policy, map_location=device)
-    # Fallback dimension matches SingleVessel2FeatureEnv.get_obs() default feature shape.
     obs_dim = int(ckpt.get("obs_dim", DEFAULT_OBS_DIM))
     hidden_dim = int(ckpt.get("hidden_dim", args.hidden_dim))
     action_dim = int(ckpt.get("action_dim", ACTION_DIM))
