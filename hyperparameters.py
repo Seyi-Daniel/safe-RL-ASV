@@ -21,6 +21,7 @@ class EnvParams:
     render_fps: int = 60
     show_grid: bool = True
     show_spawn_rings: bool = True
+    enable_step_risk_logging: bool = False
 
     # vessel dynamics (ASV_NEAT-style rudder-limited yaw + continuous throttle)
     max_speed: float = 7.0
@@ -44,16 +45,16 @@ class EnvParams:
     vessel_outline_radius: float = 4.0
 
     # shared big circle geometry (both vessel goals lie on this circumference)
-    target_outer_radius: float = 180.0
-    target_min_speed: float = 0.5
-    target_max_speed: float = 7.0
-    target_min_goal_arc_distance_from_start: float = 80.0  # Interpreted as straight-line (chord) distance
-    adaptive_target_min_goal_arc_from_speed: bool = True
-    target_min_goal_dcrit_factor: float = 1.1
+    vessel2_outer_radius: float = 180.0
+    vessel2_min_speed: float = 0.5
+    vessel2_max_speed: float = 7.0
+    vessel2_min_goal_arc_distance_from_start: float = 80.0  # Interpreted as straight-line (chord) distance
+    adaptive_vessel2_min_goal_arc_from_speed: bool = True
+    vessel2_min_goal_dcrit_factor: float = 1.1
     # Legacy alias from max-arc naming; keep for backward compatibility.
-    target_max_goal_arc_distance_from_start: float | None = None
+    vessel2_max_goal_arc_distance_from_start: float | None = None
     # Legacy alias (chord-distance naming); keep for backward compatibility.
-    target_max_goal_distance_from_start: float | None = None
+    vessel2_max_goal_distance_from_start: float | None = None
     # pure pursuit controller parameters for vessel 2 scripted path
     pp_lookahead_factor: float = 2.0      # lookahead distance = factor × turning_radius
     pp_heading_gain_deg: float = 25.0     # proportional gain divisor for heading error -> rudder cmd
@@ -81,8 +82,7 @@ class EnvParams:
     standon_escalation_tcpa: float = 20.0
     standon_escalation_dcpa: float = 12.0
     standon_escalation_persistence_steps: int = 3
-    encounter_enter_persistence_steps: int = 2
-    encounter_exit_persistence_steps: int = 3
+    lock_enter_persistence_steps: int = 2
     collision_distance: float = 8.0
     near_miss_distance: float = 15.0
     safe_pass_distance: float = 25.0

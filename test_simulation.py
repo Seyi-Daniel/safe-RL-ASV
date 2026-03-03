@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from environment import HAS_PYGAME, SingleTargetFeatureEnv, Vessel, clamp
+from environment import HAS_PYGAME, SingleVessel2FeatureEnv, Vessel, clamp
 from hyperparameters import EnvParams, RewardParams
 
 if HAS_PYGAME:
@@ -27,22 +27,28 @@ def parse_args() -> argparse.Namespace:
         "--target-min-goal-arc-distance",
         "--target-max-goal-arc-distance",
         "--target-max-goal-distance",
-        dest="target_min_goal_arc_distance",
+        dest="vessel2_min_goal_arc_distance",
         type=float,
-        default=EnvParams().target_min_goal_arc_distance_from_start,
+        default=EnvParams().vessel2_min_goal_arc_distance_from_start,
         help="Minimum required vessel-2 start->goal straight-line (chord) distance",
     )
 
     p.add_argument("--adaptive-dcrit-min-arc", action="store_true", help="Use speed-based dcrit to raise minimum target goal arc distance")
     p.add_argument("--no-adaptive-dcrit-min-arc", dest="adaptive_dcrit_min_arc", action="store_false", help="Disable speed-based dcrit minimum arc adjustment")
-    p.set_defaults(adaptive_dcrit_min_arc=EnvParams().adaptive_target_min_goal_arc_from_speed)
-    p.add_argument("--dcrit-factor", type=float, default=EnvParams().target_min_goal_dcrit_factor, help="Multiplier on dcrit when adaptive dcrit min-arc is enabled")
+    p.set_defaults(adaptive_dcrit_min_arc=EnvParams().adaptive_vessel2_min_goal_arc_from_speed)
+    p.add_argument("--dcrit-factor", type=float, default=EnvParams().vessel2_min_goal_dcrit_factor, help="Multiplier on dcrit when adaptive dcrit min-arc is enabled")
 
     # dcpa-sampled-episode view options
     p.add_argument("--dcpa-threshold", type=float, default=20.0, help="Accept sampled episodes only if DCPA reaches this threshold or lower")
     p.add_argument("--tcpa-threshold", type=float, default=90.0, help="Accept sampled episodes only if TCPA is within [0, threshold] when DCPA condition is met")
     p.add_argument("--dcpa-sample-max-tries", type=int, default=0, help="Max resampling attempts per accepted episode (0 = unlimited)")
     p.add_argument("--debug-sampling", action="store_true", help="Enable detailed DCPA/TCPA sampling debug logs")
+    p.add_argument("--sampling-logs", dest="sampling_logs", action="store_true", help="Print per-attempt sampling summaries")
+    p.add_argument("--no-sampling-logs", dest="sampling_logs", action="store_false", help="Silence per-attempt sampling summaries")
+    p.set_defaults(sampling_logs=True)
+    p.add_argument("--step-risk-logs", dest="step_risk_logs", action="store_true", help="Enable [RISK TRACE] logging for every step")
+    p.add_argument("--no-step-risk-logs", dest="step_risk_logs", action="store_false", help="Disable [RISK TRACE] per-step logging")
+    p.set_defaults(step_risk_logs=False)
     p.add_argument("--debug-sampling-step-log-every", type=int, default=100, help="When debug is on, print per-attempt status every N steps")
     p.add_argument("--max-sampling-steps-per-attempt", type=int, default=0, help="Safety cap for candidate sampling steps (0 = automatic cap of 2x episode max steps)")
 
@@ -59,23 +65,24 @@ def _make_env_params(args: argparse.Namespace) -> EnvParams:
     return EnvParams(
         episode_seconds=args.episode_seconds,
         seed=args.seed,
-        target_min_goal_arc_distance_from_start=args.target_min_goal_arc_distance,
-        adaptive_target_min_goal_arc_from_speed=args.adaptive_dcrit_min_arc,
-        target_min_goal_dcrit_factor=args.dcrit_factor,
+        vessel2_min_goal_arc_distance_from_start=args.vessel2_min_goal_arc_distance,
+        adaptive_vessel2_min_goal_arc_from_speed=args.adaptive_dcrit_min_arc,
+        vessel2_min_goal_dcrit_factor=args.dcrit_factor,
+        enable_step_risk_logging=args.step_risk_logs,
     )
 
 
 def run_episode_view(args: argparse.Namespace, envp: EnvParams) -> None:
-    env = SingleTargetFeatureEnv(envp, RewardParams(), render=args.render)
+    env = SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)
     try:
         for ep in range(1, args.episodes + 1):
             _ = env.reset(seed=args.seed + ep)
-            v2_start = env.target_start_pos
-            v2_goal = (env.target.goal_x, env.target.goal_y)
+            v2_start = env.vessel2_start_pos
+            v2_goal = (env.vessel2.goal_x, env.vessel2.goal_y)
             v2_goal_dist = float(np.hypot(v2_goal[0] - v2_start[0], v2_goal[1] - v2_start[1]))
             print(
                 f"Episode {ep}: vessel2 start={v2_start}, goal={v2_goal}, "
-                f"distance={v2_goal_dist:.2f} m (min={args.target_min_goal_arc_distance:.2f} m)"
+                f"distance={v2_goal_dist:.2f} m (min={args.vessel2_min_goal_arc_distance:.2f} m)"
             )
 
             done = False
@@ -89,14 +96,14 @@ def run_episode_view(args: argparse.Namespace, envp: EnvParams) -> None:
 
             print(
                 f"  end: reason={info.get('reason', 'unknown')} steps={env.step_idx} "
-                f"return={float(total):.3f} target_goal_distance={float(info.get('target_goal_distance', -1.0)):.3f}"
+                f"return={float(total):.3f} vessel2_goal_distance={float(info.get('vessel2_goal_distance', -1.0)):.3f}"
             )
     finally:
         env.close()
 
 
 def _episode_hits_dcpa_threshold(
-    env: SingleTargetFeatureEnv,
+    env: SingleVessel2FeatureEnv,
     seed: int,
     dcpa_threshold: float,
     tcpa_threshold: float,
@@ -123,7 +130,7 @@ def _episode_hits_dcpa_threshold(
         if pump_events and HAS_PYGAME:
             pygame.event.pump()
         # Requirement: threshold crossing must happen before either vessel reaches goal.
-        if env.agent_reached or env.target_reached:
+        if env.vessel1_reached or env.vessel2_reached:
             fail_reason = "reached_goal_before_threshold"
             break
         _, _, done, info = env.step(np.array([0.0, 0.0], dtype=np.float32))
@@ -141,7 +148,7 @@ def _episode_hits_dcpa_threshold(
             print(
                 f"[sample-debug] seed={seed} step={steps} dcpa={dcpa:.2f} tcpa={tcpa:.2f} "
                 f"best_dcpa={best_dcpa:.2f} best_tcpa={best_tcpa:.2f} "
-                f"agent_reached={int(env.agent_reached)} target_reached={int(env.target_reached)} done={int(done)}"
+                f"vessel1_reached={int(env.vessel1_reached)} vessel2_reached={int(env.vessel2_reached)} done={int(done)}"
             )
 
         if steps >= effective_step_cap:
@@ -167,25 +174,40 @@ def _episode_hits_dcpa_threshold(
 
 
 def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
-    # In this view, keep min-goal baseline at 0 but retain adaptive dcrit-from-speed filtering,
-    # while disabling reset/early-done gating so DCPA/TCPA criteria drive episode selection.
-    envp = EnvParams(
+    # Sampling/search phase: no rendering, no per-step risk traces.
+    sample_envp = EnvParams(
         episode_seconds=args.episode_seconds,
         seed=args.seed,
-        target_min_goal_arc_distance_from_start=0.0,
-        adaptive_target_min_goal_arc_from_speed=True,
-        target_min_goal_dcrit_factor=args.dcrit_factor,
+        vessel2_min_goal_arc_distance_from_start=0.0,
+        adaptive_vessel2_min_goal_arc_from_speed=True,
+        vessel2_min_goal_dcrit_factor=args.dcrit_factor,
         require_reset_viable_takeover_path=False,
         enable_no_takeover_early_done=False,
+        enable_step_risk_logging=False,
+    )
+    playback_envp = EnvParams(
+        episode_seconds=args.episode_seconds,
+        seed=args.seed,
+        vessel2_min_goal_arc_distance_from_start=0.0,
+        adaptive_vessel2_min_goal_arc_from_speed=True,
+        vessel2_min_goal_dcrit_factor=args.dcrit_factor,
+        require_reset_viable_takeover_path=False,
+        enable_no_takeover_early_done=False,
+        enable_step_risk_logging=args.step_risk_logs,
     )
 
-    env = SingleTargetFeatureEnv(envp, RewardParams(), render=args.render)
+    sample_env = SingleVessel2FeatureEnv(sample_envp, RewardParams(), render=False)
+    playback_env = None
     try:
+        if args.render:
+            playback_env = SingleVessel2FeatureEnv(playback_envp, RewardParams(), render=True)
+
         for ep in range(1, args.episodes + 1):
             accepted_seed = None
             accepted_best_dcpa = float("inf")
             accepted_best_tcpa = float("inf")
             accepted_attempt = -1
+            accepted_sample_steps = 0
             max_tries = int(args.dcpa_sample_max_tries)
             attempt = 0
             while True:
@@ -193,11 +215,11 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     break
                 candidate_seed = args.seed + ep * 100_000 + attempt
                 ok, best_dcpa, best_tcpa, sample_steps, _, fail_reason = _episode_hits_dcpa_threshold(
-                    env,
+                    sample_env,
                     candidate_seed,
                     args.dcpa_threshold,
                     args.tcpa_threshold,
-                    pump_events=args.render,
+                    pump_events=False,
                     render_sampling=False,
                     debug_sampling=args.debug_sampling,
                     debug_step_log_every=args.debug_sampling_step_log_every,
@@ -208,12 +230,14 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     accepted_best_dcpa = best_dcpa
                     accepted_best_tcpa = best_tcpa
                     accepted_attempt = attempt
+                    accepted_sample_steps = sample_steps
                     break
-                print(
-                    f"Episode {ep}: failed attempt={attempt} seed={candidate_seed} steps={sample_steps} reason={fail_reason} "
-                    f"(best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
-                    f"need dcpa <= {args.dcpa_threshold:.2f} and tcpa <= {args.tcpa_threshold:.2f})"
-                )
+                if args.sampling_logs:
+                    print(
+                        f"Episode {ep}: failed attempt={attempt} seed={candidate_seed} steps={sample_steps} reason={fail_reason} "
+                        f"(best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
+                        f"need dcpa <= {args.dcpa_threshold:.2f} and tcpa <= {args.tcpa_threshold:.2f})"
+                    )
                 attempt += 1
 
             if accepted_seed is None:
@@ -223,8 +247,10 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                 )
                 continue
 
-            # Re-run accepted seed for actual episode playback and strictly verify threshold again.
-            _ = env.reset(seed=accepted_seed)
+            # Playback phase: run only the accepted seed.
+            run_env = playback_env if playback_env is not None else sample_env
+            run_env.envp.enable_step_risk_logging = bool(args.step_risk_logs)
+            _ = run_env.reset(seed=accepted_seed)
             done = False
             total = 0.0
             run_best_dcpa = float("inf")
@@ -232,9 +258,9 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
             threshold_hit_before_goal = False
             info: dict[str, float | str | int] = {"reason": "unknown", "dcpa": float("inf"), "tcpa": float("inf")}
             while not done:
-                reached_before_step = env.agent_reached or env.target_reached
+                reached_before_step = run_env.vessel1_reached or run_env.vessel2_reached
                 action = np.array([0.0, 0.0], dtype=np.float32)
-                _, reward, done, info = env.step(action)
+                _, reward, done, info = run_env.step(action)
                 total += reward
                 dcpa = float(info.get("dcpa", float("inf")))
                 tcpa = float(info.get("tcpa", float("inf")))
@@ -243,8 +269,8 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     run_best_tcpa = min(run_best_tcpa, tcpa)
                 if (not reached_before_step) and (dcpa <= args.dcpa_threshold) and (0.0 < tcpa <= args.tcpa_threshold):
                     threshold_hit_before_goal = True
-                if args.render:
-                    env.render()
+                if args.render and playback_env is not None:
+                    run_env.render()
 
             if not threshold_hit_before_goal:
                 print(
@@ -255,17 +281,19 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                 continue
 
             print(
-                f"Episode {ep}: accepted_seed={accepted_seed} attempt={accepted_attempt} sample_steps={sample_steps} "
+                f"Episode {ep}: accepted_seed={accepted_seed} attempt={accepted_attempt} sample_steps={accepted_sample_steps} "
                 f"sample_best_dcpa={accepted_best_dcpa:.2f} sample_best_tcpa={accepted_best_tcpa:.2f} "
                 f"run_best_dcpa={run_best_dcpa:.2f} run_best_tcpa={run_best_tcpa:.2f} "
                 f"(thresholds: dcpa<={args.dcpa_threshold:.2f}, tcpa<={args.tcpa_threshold:.2f})"
             )
             print(
-                f"  end: reason={info.get('reason', 'unknown')} steps={env.step_idx} return={float(total):.3f} "
+                f"  end: reason={info.get('reason', 'unknown')} steps={run_env.step_idx} return={float(total):.3f} "
                 f"final_dcpa={float(info.get('dcpa', float('inf'))):.2f}"
             )
     finally:
-        env.close()
+        sample_env.close()
+        if playback_env is not None:
+            playback_env.close()
 
 
 def _draw_heading_line(surface, sx: int, sy: int, heading: float, length_px: float, color: tuple[int, int, int]) -> None:
@@ -274,7 +302,7 @@ def _draw_heading_line(surface, sx: int, sy: int, heading: float, length_px: flo
     pygame.draw.line(surface, color, (sx, sy), (ex, ey), 2)
 
 
-def _simulate_target_path(env: SingleTargetFeatureEnv, sx: float, sy: float, heading: float, speed: float, goal_x: float, goal_y: float) -> list[tuple[float, float]]:
+def _simulate_vessel2_path(env: SingleVessel2FeatureEnv, sx: float, sy: float, heading: float, speed: float, goal_x: float, goal_y: float) -> list[tuple[float, float]]:
     sim = Vessel(sx, sy, heading, speed, goal_x, goal_y, rudder=0.0, throttle=0.0)
     pts: list[tuple[float, float]] = [(sim.x, sim.y)]
     h = env.envp.dt / max(1, env.envp.substeps)
@@ -286,7 +314,7 @@ def _simulate_target_path(env: SingleTargetFeatureEnv, sx: float, sy: float, hea
             break
         rudder_cmd = env._pure_pursuit_rudder_cmd(sim, goal_x, goal_y)
         env._integrate_rudder_heading(sim, rudder_cmd, h)
-        sim.speed = clamp(sim.speed, env.envp.target_min_speed, env.envp.target_max_speed)
+        sim.speed = clamp(sim.speed, env.envp.vessel2_min_speed, env.envp.vessel2_max_speed)
         travel = min(sim.speed * h, d_goal)
         sim.x += travel * math.cos(sim.h)
         sim.y += travel * math.sin(sim.h)
@@ -302,7 +330,7 @@ def run_heading_range_view(args: argparse.Namespace, envp: EnvParams) -> None:
     if not HAS_PYGAME:
         raise RuntimeError("pygame is required for --view v2-heading-range")
 
-    env = SingleTargetFeatureEnv(envp, RewardParams(), render=False)
+    env = SingleVessel2FeatureEnv(envp, RewardParams(), render=False)
 
     pygame.init()
     w = int(envp.world_w * envp.pixels_per_meter)
@@ -323,32 +351,32 @@ def run_heading_range_view(args: argparse.Namespace, envp: EnvParams) -> None:
     line_len_px = args.heading_line_length * envp.pixels_per_meter
 
     start_ang = math.radians(float(args.v2_start_angle_deg))
-    start_x = cx + envp.target_outer_radius * math.cos(start_ang)
-    start_y = cy + envp.target_outer_radius * math.sin(start_ang)
+    start_x = cx + envp.vessel2_outer_radius * math.cos(start_ang)
+    start_y = cy + envp.vessel2_outer_radius * math.sin(start_ang)
 
     to_center = math.atan2(cy - start_y, cx - start_x)
     h_left = to_center - 0.5 * math.pi
     h_right = to_center + 0.5 * math.pi
 
-    min_goal_dist = max(0.0, float(envp.target_min_goal_arc_distance_from_start))
-    circle_r = max(1e-9, float(envp.target_outer_radius))
+    min_goal_dist = max(0.0, float(envp.vessel2_min_goal_arc_distance_from_start))
+    circle_r = max(1e-9, float(envp.vessel2_outer_radius))
     min_goal_dist = min(min_goal_dist, 2.0 * circle_r)
     chord_delta = 2.0 * math.asin(min_goal_dist / (2.0 * circle_r))
 
     goal_left_ang = start_ang - chord_delta
     goal_right_ang = start_ang + chord_delta
-    goal_left = (cx + envp.target_outer_radius * math.cos(goal_left_ang), cy + envp.target_outer_radius * math.sin(goal_left_ang))
-    goal_right = (cx + envp.target_outer_radius * math.cos(goal_right_ang), cy + envp.target_outer_radius * math.sin(goal_right_ang))
+    goal_left = (cx + envp.vessel2_outer_radius * math.cos(goal_left_ang), cy + envp.vessel2_outer_radius * math.sin(goal_left_ang))
+    goal_right = (cx + envp.vessel2_outer_radius * math.cos(goal_right_ang), cy + envp.vessel2_outer_radius * math.sin(goal_right_ang))
 
     path_speed = float(args.heading_path_speed)
     if path_speed <= 0.0:
-        path_speed = 0.5 * (envp.target_min_speed + envp.target_max_speed)
+        path_speed = 0.5 * (envp.vessel2_min_speed + envp.vessel2_max_speed)
 
     paths = {
-        "left_heading_to_left_goal": _simulate_target_path(env, start_x, start_y, h_left, path_speed, goal_left[0], goal_left[1]),
-        "left_heading_to_right_goal": _simulate_target_path(env, start_x, start_y, h_left, path_speed, goal_right[0], goal_right[1]),
-        "right_heading_to_left_goal": _simulate_target_path(env, start_x, start_y, h_right, path_speed, goal_left[0], goal_left[1]),
-        "right_heading_to_right_goal": _simulate_target_path(env, start_x, start_y, h_right, path_speed, goal_right[0], goal_right[1]),
+        "left_heading_to_left_goal": _simulate_vessel2_path(env, start_x, start_y, h_left, path_speed, goal_left[0], goal_left[1]),
+        "left_heading_to_right_goal": _simulate_vessel2_path(env, start_x, start_y, h_left, path_speed, goal_right[0], goal_right[1]),
+        "right_heading_to_left_goal": _simulate_vessel2_path(env, start_x, start_y, h_right, path_speed, goal_left[0], goal_left[1]),
+        "right_heading_to_right_goal": _simulate_vessel2_path(env, start_x, start_y, h_right, path_speed, goal_right[0], goal_right[1]),
     }
 
     def draw_polyline(pts: list[tuple[float, float]], color: tuple[int, int, int]) -> None:
@@ -368,7 +396,7 @@ def run_heading_range_view(args: argparse.Namespace, envp: EnvParams) -> None:
             for y in range(0, int(envp.world_h) + 1, step):
                 pygame.draw.line(screen, (40, 80, 110), (0, sy(y)), (sx(envp.world_w), sy(y)))
 
-        pygame.draw.circle(screen, (255, 225, 120), (sx(cx), sy(cy)), int(round(envp.target_outer_radius * envp.pixels_per_meter)), 1)
+        pygame.draw.circle(screen, (255, 225, 120), (sx(cx), sy(cy)), int(round(envp.vessel2_outer_radius * envp.pixels_per_meter)), 1)
 
         px, py = sx(start_x), sy(start_y)
         pygame.draw.circle(screen, (255, 160, 160), (px, py), 5)
