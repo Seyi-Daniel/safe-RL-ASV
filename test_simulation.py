@@ -107,6 +107,12 @@ def _episode_hits_dcpa_threshold(
     max_sampling_steps_per_attempt: int = 0,
 ) -> tuple[bool, float, float, int, dict[str, float | str | int], str]:
     _ = env.reset(seed=seed)
+    # Sampling is automated; disable modal overlay pause that otherwise freezes progression
+    # when risk lock-in first triggers without a dismissal keypress.
+    env.rl_overlay_shown = True
+    env.risk_overlay_active = False
+    env.paused = False
+
     effective_step_cap = int(max_sampling_steps_per_attempt) if int(max_sampling_steps_per_attempt) > 0 else max(1, 2 * int(env.max_steps))
     if debug_sampling:
         print(
@@ -198,7 +204,7 @@ def run_dcpa_sampled_episode_view(args: argparse.Namespace) -> None:
                     args.dcpa_threshold,
                     args.tcpa_threshold,
                     pump_events=args.render,
-                    render_sampling=False,
+                    render_sampling=args.render,
                     debug_sampling=args.debug_sampling,
                     debug_step_log_every=args.debug_sampling_step_log_every,
                     max_sampling_steps_per_attempt=args.max_sampling_steps_per_attempt,
