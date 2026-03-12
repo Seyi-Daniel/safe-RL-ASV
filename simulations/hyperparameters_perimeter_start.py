@@ -40,7 +40,6 @@ class EnvParams:
     # spawn & goals
     spawn_margin: float = 20.0
     goal_radius: float = 2.0
-    spawn_ring_radius: float = 35.0
     goal_ring_radius: float = 180.0
     vessel_outline_radius: float = 4.0
 
