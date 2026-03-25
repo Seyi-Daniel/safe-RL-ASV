@@ -860,35 +860,37 @@ class SingleVessel2FeatureEnv:
 
         self.vessel2_planned_path = pts
 
-    def _get_obs_for_perspective(self, own: Vessel, other: Vessel, own_is_agent: bool) -> np.ndarray:
+    def _build_obs(self, own_vessel: Vessel, other_vessel: Vessel, own_is_agent: bool) -> np.ndarray:
         own_speed_den = self.envp.max_speed if own_is_agent else self.envp.vessel2_max_speed
         other_speed_den = self.envp.vessel2_max_speed if own_is_agent else self.envp.max_speed
         return np.asarray(
             [
-                own.x / self.envp.world_w,
-                own.y / self.envp.world_h,
-                own.h / math.pi,
-                own.speed / own_speed_den,
-                own.goal_x / self.envp.world_w,
-                own.goal_y / self.envp.world_h,
-                other.x / self.envp.world_w,
-                other.y / self.envp.world_h,
-                other.h / math.pi,
-                other.speed / other_speed_den,
-                other.goal_x / self.envp.world_w,
-                other.goal_y / self.envp.world_h,
+                own_vessel.x / self.envp.world_w,
+                own_vessel.y / self.envp.world_h,
+                own_vessel.h / math.pi,
+                own_vessel.speed / own_speed_den,
+                own_vessel.goal_x / self.envp.world_w,
+                own_vessel.goal_y / self.envp.world_h,
+                other_vessel.x / self.envp.world_w,
+                other_vessel.y / self.envp.world_h,
+                other_vessel.h / math.pi,
+                other_vessel.speed / other_speed_den,
+                other_vessel.goal_x / self.envp.world_w,
+                other_vessel.goal_y / self.envp.world_h,
             ],
             dtype=np.float32,
         )
 
-    def _get_obs_vessel1_perspective(self) -> np.ndarray:
-        return self._get_obs_for_perspective(self.vessel1, self.vessel2, own_is_agent=True)
-
-    def _get_obs_vessel2_perspective(self) -> np.ndarray:
-        return self._get_obs_for_perspective(self.vessel2, self.vessel1, own_is_agent=False)
+    def get_obs_for_vessel(self, vessel_id: str) -> np.ndarray:
+        if vessel_id == "vessel1":
+            return self._build_obs(self.vessel1, self.vessel2, own_is_agent=True)
+        if vessel_id == "vessel2":
+            return self._build_obs(self.vessel2, self.vessel1, own_is_agent=False)
+        raise ValueError(f"Unknown vessel_id: {vessel_id!r}")
 
     def get_obs(self) -> np.ndarray:
-        return self._get_obs_vessel1_perspective()
+        # Temporary compatibility path while training/policy stay single-observation.
+        return self.get_obs_for_vessel("vessel1")
 
     def reset(self, seed: Optional[int] = None) -> np.ndarray:
         if seed is not None:
