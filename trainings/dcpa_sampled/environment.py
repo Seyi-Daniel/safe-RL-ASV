@@ -139,8 +139,12 @@ class SingleVessel2FeatureEnv:
         self.vessel2_standon_risk_steps = 0
         self.vessel1_control_source = "straight"
         self.vessel2_control_source = "pure_pursuit"
-        self.vessel1_rl_latched = False
-        self.vessel2_rl_latched = False
+        # Persistent per-vessel model-control latches.
+        # A latch may be set only when the vessel is currently designated give-way.
+        # Once set, control remains with the model until that vessel reaches its goal
+        # (or the episode ends and reset() clears state).
+        self.vessel1_model_control_latched = False
+        self.vessel2_model_control_latched = False
         self.any_rl_ever_triggered = False
         self.locked = False
         self.locked_scenario = "safe"
@@ -465,6 +469,9 @@ class SingleVessel2FeatureEnv:
             elif self.rl_controlled_vessel == "vessel2":
                 fallback_vessel2_role = "give_way"
                 fallback_vessel1_role = "stand_on" if fallback_vessel1_role == "none" else fallback_vessel1_role
+            elif self.rl_controlled_vessel == "both":
+                fallback_vessel1_role = "give_way"
+                fallback_vessel2_role = "give_way"
             return {
                 "geometry": "none",
                 "scenario": "safe",
@@ -773,7 +780,7 @@ class SingleVessel2FeatureEnv:
             setattr(self, reached_attr, True)
             v.speed = 0.0
 
-    def _fallback_colregs_action(self, vessel_name: str, scenario: str, role: str, standon_escalated: bool) -> Tuple[float, float, str]:
+    def _fallback_colregs_action(self, vessel_name: str, scenario: str, role: str) -> Tuple[float, float, str]:
         if scenario == "head_on":
             return self.envp.fallback_starboard_rudder_cmd, self.envp.fallback_headon_throttle_cmd, "starboard_avoid"
 
@@ -781,8 +788,6 @@ class SingleVessel2FeatureEnv:
             return self.envp.fallback_starboard_rudder_cmd, self.envp.fallback_crossing_throttle_cmd, "starboard_avoid"
 
         if scenario == "crossing" and role == "stand_on":
-            if standon_escalated:
-                return self.envp.fallback_starboard_rudder_cmd, self.envp.fallback_crossing_throttle_cmd, "standon_escalation"
             return 0.0, 0.0, "hold_course_speed"
 
         if scenario == "overtaking" and role == "give_way":
@@ -968,8 +973,8 @@ class SingleVessel2FeatureEnv:
         self.vessel2_standon_risk_steps = 0
         self.vessel1_control_source = "straight"
         self.vessel2_control_source = "pure_pursuit"
-        self.vessel1_rl_latched = False
-        self.vessel2_rl_latched = False
+        self.vessel1_model_control_latched = False
+        self.vessel2_model_control_latched = False
         self.any_rl_ever_triggered = False
         self.locked = False
         self.locked_scenario = "safe"
@@ -1055,8 +1060,11 @@ class SingleVessel2FeatureEnv:
                 "stand_on_nominal_mode": stand_on_nominal_mode,
                 "vessel1_rl_active": int(self.vessel1_rl_active),
                 "vessel2_rl_active": int(self.vessel2_rl_active),
-                "vessel1_rl_latched": int(self.vessel1_rl_latched),
-                "vessel2_rl_latched": int(self.vessel2_rl_latched),
+                "vessel1_model_control_latched": int(self.vessel1_model_control_latched),
+                "vessel2_model_control_latched": int(self.vessel2_model_control_latched),
+                # Backward-compatible aliases.
+                "vessel1_rl_latched": int(self.vessel1_model_control_latched),
+                "vessel2_rl_latched": int(self.vessel2_model_control_latched),
                 "vessel1_distance_from_start": float(self._distance_from_start(self.vessel1, self.vessel1_start_pos)),
                 "vessel2_distance_from_start": float(self._distance_from_start(self.vessel2, self.vessel2_start_pos)),
                 "vessel1_relative_bearing_deg": float(self.vessel1_relative_bearing_deg),
@@ -1112,14 +1120,35 @@ class SingleVessel2FeatureEnv:
         self.vessel2_standon_escalated = False
 
         encounter_active = bool(self.locked)
-        allow_vessel1_rl = encounter_active and self.vessel1_role == "give_way" and (not self.vessel1_reached)
-        allow_vessel2_rl = encounter_active and self.vessel2_role == "give_way" and (not self.vessel2_reached)
 
-        # RL controls the give-way vessel(s) during locked encounters.
-        self.vessel1_rl_active = allow_vessel1_rl
-        self.vessel2_rl_active = allow_vessel2_rl
-        self.vessel1_rl_latched = self.vessel1_rl_latched or self.vessel1_rl_active
-        self.vessel2_rl_latched = self.vessel2_rl_latched or self.vessel2_rl_active
+        # Model-control takeover can start only on currently give-way vessels.
+        vessel1_takeover_trigger = (
+            encounter_active and self.vessel1_role == "give_way" and (not self.vessel1_reached)
+        )
+        vessel2_takeover_trigger = (
+            encounter_active and self.vessel2_role == "give_way" and (not self.vessel2_reached)
+        )
+        if vessel1_takeover_trigger:
+            self.vessel1_model_control_latched = True
+        if vessel2_takeover_trigger:
+            self.vessel2_model_control_latched = True
+
+        # Release only when the vessel reaches goal; do not release when current risk disappears.
+        if self.vessel1_reached:
+            self.vessel1_model_control_latched = False
+        if self.vessel2_reached:
+            self.vessel2_model_control_latched = False
+
+        # A latched vessel is treated as model-controlled give-way for the remainder
+        # of its active episode life; stand-on vessels are never assigned model control.
+        if self.vessel1_model_control_latched and (not self.vessel1_reached):
+            self.vessel1_role = "give_way"
+        if self.vessel2_model_control_latched and (not self.vessel2_reached):
+            self.vessel2_role = "give_way"
+
+        # Active control is derived from the persistent latches.
+        self.vessel1_rl_active = self.vessel1_model_control_latched and (not self.vessel1_reached)
+        self.vessel2_rl_active = self.vessel2_model_control_latched and (not self.vessel2_reached)
         if self.vessel1_rl_active and self.vessel2_rl_active:
             self.rl_controlled_vessel = "both"
         elif self.vessel1_rl_active:
@@ -1130,6 +1159,10 @@ class SingleVessel2FeatureEnv:
             self.rl_controlled_vessel = "none"
         self.any_rl_ever_triggered = self.any_rl_ever_triggered or self.vessel1_rl_active or self.vessel2_rl_active
         self.rl_ever_triggered = self.any_rl_ever_triggered
+
+        give_way_vessel = "vessel1" if self.vessel1_role == "give_way" else "vessel2" if self.vessel2_role == "give_way" else "none"
+        stand_on_vessel = "vessel1" if self.vessel1_role == "stand_on" else "vessel2" if self.vessel2_role == "stand_on" else "none"
+        stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "vessel2" else "straight" if stand_on_vessel == "vessel1" else "none"
 
         early_cutoff_steps = max(1, int(self.envp.no_takeover_early_done_steps))
         if bool(self.envp.enable_no_takeover_early_done) and (not self.reset_has_takeover_path) and (not self.any_rl_ever_triggered) and (self.step_idx + 1) >= early_cutoff_steps:
@@ -1169,8 +1202,11 @@ class SingleVessel2FeatureEnv:
                 "vessel2_role": self.vessel2_role,
                 "vessel1_rl_active": int(self.vessel1_rl_active),
                 "vessel2_rl_active": int(self.vessel2_rl_active),
-                "vessel1_rl_latched": int(self.vessel1_rl_latched),
-                "vessel2_rl_latched": int(self.vessel2_rl_latched),
+                "vessel1_model_control_latched": int(self.vessel1_model_control_latched),
+                "vessel2_model_control_latched": int(self.vessel2_model_control_latched),
+                # Backward-compatible aliases.
+                "vessel1_rl_latched": int(self.vessel1_model_control_latched),
+                "vessel2_rl_latched": int(self.vessel2_model_control_latched),
                 "vessel1_distance_from_start": float(vessel1_dist),
                 "vessel2_distance_from_start": float(vessel2_dist),
                 "vessel1_relative_bearing_deg": float(self.vessel1_relative_bearing_deg),
@@ -1278,13 +1314,13 @@ class SingleVessel2FeatureEnv:
                         reward += self.rewp.late_action_penalty
                     self.vessel2_giveway_action_awarded = True
 
-            if self.vessel1_role == "stand_on" and not self.vessel1_standon_escalated and not self.vessel1_standon_hold_awarded:
+            if self.vessel1_role == "stand_on" and not self.vessel1_standon_hold_awarded:
                 if self.vessel1_control_source == "hold_course_speed":
                     reward += self.rewp.stand_on_hold_bonus
                     self.vessel1_standon_hold_awarded = True
                 elif abs(self.vessel1.rudder) > 0.1:
                     reward += self.rewp.stand_on_unnecessary_action_penalty
-            if self.vessel2_role == "stand_on" and not self.vessel2_standon_escalated and not self.vessel2_standon_hold_awarded:
+            if self.vessel2_role == "stand_on" and not self.vessel2_standon_hold_awarded:
                 if self.vessel2_control_source == "hold_course_speed":
                     reward += self.rewp.stand_on_hold_bonus
                     self.vessel2_standon_hold_awarded = True
@@ -1341,8 +1377,11 @@ class SingleVessel2FeatureEnv:
             "stand_on_nominal_mode": stand_on_nominal_mode,
             "vessel1_rl_active": int(self.vessel1_rl_active),
             "vessel2_rl_active": int(self.vessel2_rl_active),
-            "vessel1_rl_latched": int(self.vessel1_rl_latched),
-            "vessel2_rl_latched": int(self.vessel2_rl_latched),
+            "vessel1_model_control_latched": int(self.vessel1_model_control_latched),
+            "vessel2_model_control_latched": int(self.vessel2_model_control_latched),
+            # Backward-compatible aliases.
+            "vessel1_rl_latched": int(self.vessel1_model_control_latched),
+            "vessel2_rl_latched": int(self.vessel2_model_control_latched),
             "vessel1_distance_from_start": float(vessel1_dist),
             "vessel2_distance_from_start": float(vessel2_dist),
             "vessel1_relative_bearing_deg": float(self.vessel1_relative_bearing_deg),
@@ -1383,8 +1422,11 @@ class SingleVessel2FeatureEnv:
                 "vessel2_bearing": float(self.vessel2_relative_bearing_deg),
                 "vessel1_rl_active": int(self.vessel1_rl_active),
                 "vessel2_rl_active": int(self.vessel2_rl_active),
-                "vessel1_rl_latched": int(self.vessel1_rl_latched),
-                "vessel2_rl_latched": int(self.vessel2_rl_latched),
+                "vessel1_model_control_latched": int(self.vessel1_model_control_latched),
+                "vessel2_model_control_latched": int(self.vessel2_model_control_latched),
+                # Backward-compatible aliases.
+                "vessel1_rl_latched": int(self.vessel1_model_control_latched),
+                "vessel2_rl_latched": int(self.vessel2_model_control_latched),
                 "vessel1_control_source": self.vessel1_control_source,
                 "vessel2_control_source": self.vessel2_control_source,
                 "vessel1_standon_escalated": int(self.vessel1_standon_escalated),
