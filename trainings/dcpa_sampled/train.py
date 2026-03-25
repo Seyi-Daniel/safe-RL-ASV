@@ -190,6 +190,24 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _collect_rl_actions_for_step(
+    env: SingleVessel2FeatureEnv,
+    agent: DDPGAgent,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Collect per-vessel observations/actions from a single pre-step world state."""
+    obs_by_vessel: dict[str, np.ndarray] = {}
+    action_by_vessel: dict[str, np.ndarray] = {}
+    if env.vessel1_rl_active:
+        obs_v1 = env.get_obs_for_vessel("vessel1")
+        obs_by_vessel["vessel1"] = obs_v1
+        action_by_vessel["vessel1"] = agent.act(obs_v1)
+    if env.vessel2_rl_active:
+        obs_v2 = env.get_obs_for_vessel("vessel2")
+        obs_by_vessel["vessel2"] = obs_v2
+        action_by_vessel["vessel2"] = agent.act(obs_v2)
+    return obs_by_vessel, action_by_vessel
+
+
 def main() -> None:
     args = parse_args()
 
@@ -280,7 +298,7 @@ def main() -> None:
             )
             continue
 
-        obs = env.reset(seed=accepted_seed)
+        _ = env.reset(seed=accepted_seed)
         done = False
         ep_return = 0.0
         ep_actor_loss = 0.0
@@ -293,13 +311,16 @@ def main() -> None:
                 env.render()
                 continue
 
-            action = agent.act(obs)
-            next_obs, reward, done, info = env.step(action)
+            obs_by_vessel, action_by_vessel = _collect_rl_actions_for_step(env, agent)
+            step_action = action_by_vessel if action_by_vessel else np.array([0.0, 0.0], dtype=np.float32)
+            _, reward, done, info = env.step(step_action)
 
-            replay.push(obs, action, reward, next_obs, done)
+            for vessel_id, vessel_obs in obs_by_vessel.items():
+                vessel_next_obs = env.get_obs_for_vessel(vessel_id)
+                replay.push(vessel_obs, action_by_vessel[vessel_id], reward, vessel_next_obs, done)
             takeover_triggered = takeover_triggered or bool(info.get("vessel1_rl_active", 0)) or bool(info.get("vessel2_rl_active", 0))
-            obs = next_obs
             ep_return += reward
+            # Epsilon schedule is defined over environment steps, not replay entries.
             agent.global_step += 1
 
             if takeover_triggered and len(replay) >= train_hp.min_replay:

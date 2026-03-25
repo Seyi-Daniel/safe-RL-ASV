@@ -1011,23 +1011,55 @@ class SingleVessel2FeatureEnv:
         return self.get_obs()
 
     def _select_rl_action_for_vessel(
-        self, vessel_name: str, external_action: np.ndarray
+        self, vessel_name: str, external_action: Optional[np.ndarray]
     ) -> Tuple[Optional[Tuple[float, float]], str]:
         if vessel_name == "vessel1" and not self.vessel1_rl_active:
             return None, ""
         if vessel_name == "vessel2" and not self.vessel2_rl_active:
+            return None, ""
+        if external_action is None:
             return None, ""
         a = np.asarray(external_action, dtype=np.float32).reshape(-1)
         if a.size < 2:
             return None, ""
         return (clamp(float(a[0]), -1.0, 1.0), clamp(float(a[1]), -1.0, 1.0)), "rl_external"
 
-    def step(self, action: Union[np.ndarray, Tuple[float, float], list]) -> Tuple[np.ndarray, float, bool, Dict[str, float | str | int]]:
+    @staticmethod
+    def _normalize_action_vector(action: Union[np.ndarray, Tuple[float, float], list]) -> Optional[np.ndarray]:
+        if action is None:
+            return None
         a = np.asarray(action, dtype=np.float32).reshape(-1)
         if a.size < 2:
             raise ValueError("Action must contain [rudder_cmd, throttle_cmd].")
-        rudder_cmd = clamp(float(a[0]), -1.0, 1.0)
-        throttle_cmd = clamp(float(a[1]), -1.0, 1.0)
+        return np.asarray([clamp(float(a[0]), -1.0, 1.0), clamp(float(a[1]), -1.0, 1.0)], dtype=np.float32)
+
+    def _resolve_step_actions(
+        self,
+        action: Union[np.ndarray, Tuple[float, float], list, Dict[str, Union[np.ndarray, Tuple[float, float], list]]],
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], float, float]:
+        if isinstance(action, dict):
+            vessel1_action = self._normalize_action_vector(action.get("vessel1"))
+            vessel2_action = self._normalize_action_vector(action.get("vessel2"))
+            # Backward-compatible scalar fields for info payloads.
+            info_action = vessel1_action if vessel1_action is not None else vessel2_action
+        else:
+            shared_action = self._normalize_action_vector(action)
+            vessel1_action = shared_action
+            vessel2_action = shared_action
+            info_action = shared_action
+
+        if info_action is None:
+            rudder_cmd, throttle_cmd = 0.0, 0.0
+        else:
+            rudder_cmd = float(info_action[0])
+            throttle_cmd = float(info_action[1])
+        return vessel1_action, vessel2_action, rudder_cmd, throttle_cmd
+
+    def step(
+        self,
+        action: Union[np.ndarray, Tuple[float, float], list, Dict[str, Union[np.ndarray, Tuple[float, float], list]]],
+    ) -> Tuple[np.ndarray, float, bool, Dict[str, float | str | int]]:
+        vessel1_external_action, vessel2_external_action, rudder_cmd, throttle_cmd = self._resolve_step_actions(action)
         give_way_vessel = "vessel1" if self.vessel1_role == "give_way" else "vessel2" if self.vessel2_role == "give_way" else "none"
         stand_on_vessel = "vessel1" if self.vessel1_role == "stand_on" else "vessel2" if self.vessel2_role == "stand_on" else "none"
         stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "vessel2" else "straight" if stand_on_vessel == "vessel1" else "none"
@@ -1205,7 +1237,7 @@ class SingleVessel2FeatureEnv:
         was_vessel2_active = not self.vessel2_reached
         for _ in range(max(1, self.envp.substeps)):
             if self.vessel1_rl_active:
-                vessel1_rl_cmd, vessel1_rl_src = self._select_rl_action_for_vessel("vessel1", a)
+                vessel1_rl_cmd, vessel1_rl_src = self._select_rl_action_for_vessel("vessel1", vessel1_external_action)
                 if vessel1_rl_cmd is not None:
                     self.vessel1_control_source = vessel1_rl_src
                     self._advance_controlled(self.vessel1, "vessel1_reached", vessel1_rl_cmd[0], vessel1_rl_cmd[1], h)
@@ -1217,7 +1249,7 @@ class SingleVessel2FeatureEnv:
                 self._advance_straight(self.vessel1, "vessel1_reached", h)
 
             if self.vessel2_rl_active:
-                vessel2_rl_cmd, vessel2_rl_src = self._select_rl_action_for_vessel("vessel2", a)
+                vessel2_rl_cmd, vessel2_rl_src = self._select_rl_action_for_vessel("vessel2", vessel2_external_action)
                 if vessel2_rl_cmd is not None:
                     self.vessel2_control_source = vessel2_rl_src
                     self._advance_controlled(self.vessel2, "vessel2_reached", vessel2_rl_cmd[0], vessel2_rl_cmd[1], h)
