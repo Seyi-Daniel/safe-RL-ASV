@@ -320,7 +320,8 @@ def main() -> None:
                 replay.push(vessel_obs, action_by_vessel[vessel_id], reward, vessel_next_obs, done)
             takeover_triggered = takeover_triggered or bool(info.get("vessel1_rl_active", 0)) or bool(info.get("vessel2_rl_active", 0))
             ep_return += reward
-            agent.global_step += max(1, len(obs_by_vessel))
+            # Epsilon schedule is defined over environment steps, not replay entries.
+            agent.global_step += 1
 
             if takeover_triggered and len(replay) >= train_hp.min_replay:
                 losses = agent.update(replay, train_hp.batch_size)
