@@ -133,10 +133,7 @@ class SingleVessel2FeatureEnv:
         self.active_non_overtaking_exit_steps = 0
         self.geometry_scenario = "none"
         self.hud_scenario = "none"
-        self.vessel1_standon_escalated = False
-        self.vessel2_standon_escalated = False
-        self.vessel1_standon_risk_steps = 0
-        self.vessel2_standon_risk_steps = 0
+        # Deprecated: stand-on escalation-to-control has been removed.
         self.vessel1_control_source = "straight"
         self.vessel2_control_source = "pure_pursuit"
         # Persistent per-vessel model-control latches.
@@ -967,10 +964,7 @@ class SingleVessel2FeatureEnv:
         self.encounter_latched = False
         self.geometry_scenario = "none"
         self.hud_scenario = "none"
-        self.vessel1_standon_escalated = False
-        self.vessel2_standon_escalated = False
-        self.vessel1_standon_risk_steps = 0
-        self.vessel2_standon_risk_steps = 0
+        # Deprecated: stand-on escalation-to-control has been removed.
         self.vessel1_control_source = "straight"
         self.vessel2_control_source = "pure_pursuit"
         self.vessel1_model_control_latched = False
@@ -1071,8 +1065,6 @@ class SingleVessel2FeatureEnv:
                 "vessel2_relative_bearing_deg": float(self.vessel2_relative_bearing_deg),
                 "vessel1_control_source": self.vessel1_control_source,
                 "vessel2_control_source": self.vessel2_control_source,
-                "vessel1_standon_escalated": int(self.vessel1_standon_escalated),
-                "vessel2_standon_escalated": int(self.vessel2_standon_escalated),
                 "inter_vessel_distance": float(self._inter_vessel_distance()),
                 "collision": 0,
                 "near_miss": int(self._inter_vessel_distance() <= self.envp.near_miss_distance),
@@ -1113,12 +1105,6 @@ class SingleVessel2FeatureEnv:
         vessel1_dist = self._distance_from_start(self.vessel1, self.vessel1_start_pos)
         vessel2_dist = self._distance_from_start(self.vessel2, self.vessel2_start_pos)
 
-        # Stand-on escalation disabled for this contract: stand-on remains nominal path-following.
-        self.vessel1_standon_risk_steps = 0
-        self.vessel2_standon_risk_steps = 0
-        self.vessel1_standon_escalated = False
-        self.vessel2_standon_escalated = False
-
         encounter_active = bool(self.locked)
 
         # Model-control takeover can start only on currently give-way vessels.
@@ -1139,14 +1125,8 @@ class SingleVessel2FeatureEnv:
         if self.vessel2_reached:
             self.vessel2_model_control_latched = False
 
-        # A latched vessel is treated as model-controlled give-way for the remainder
-        # of its active episode life; stand-on vessels are never assigned model control.
-        if self.vessel1_model_control_latched and (not self.vessel1_reached):
-            self.vessel1_role = "give_way"
-        if self.vessel2_model_control_latched and (not self.vessel2_reached):
-            self.vessel2_role = "give_way"
-
-        # Active control is derived from the persistent latches.
+        # Active control is derived from persistent per-vessel latches.
+        # Roles remain pure COLREGS outputs from geometry/risk classification.
         self.vessel1_rl_active = self.vessel1_model_control_latched and (not self.vessel1_reached)
         self.vessel2_rl_active = self.vessel2_model_control_latched and (not self.vessel2_reached)
         if self.vessel1_rl_active and self.vessel2_rl_active:
@@ -1213,8 +1193,6 @@ class SingleVessel2FeatureEnv:
                 "vessel2_relative_bearing_deg": float(self.vessel2_relative_bearing_deg),
                 "vessel1_control_source": self.vessel1_control_source,
                 "vessel2_control_source": self.vessel2_control_source,
-                "vessel1_standon_escalated": int(self.vessel1_standon_escalated),
-                "vessel2_standon_escalated": int(self.vessel2_standon_escalated),
             }
             self.prev_vessel1_rl_active = self.vessel1_rl_active
             self.prev_vessel2_rl_active = self.vessel2_rl_active
@@ -1392,8 +1370,6 @@ class SingleVessel2FeatureEnv:
             "safe_pass_awarded": int(self.safe_pass_awarded),
             "vessel1_control_source": self.vessel1_control_source,
             "vessel2_control_source": self.vessel2_control_source,
-            "vessel1_standon_escalated": int(self.vessel1_standon_escalated),
-            "vessel2_standon_escalated": int(self.vessel2_standon_escalated),
         }
 
         # Show the RL takeover overlay exactly once per episode, on the first step RL activates.
@@ -1429,8 +1405,6 @@ class SingleVessel2FeatureEnv:
                 "vessel2_rl_latched": int(self.vessel2_model_control_latched),
                 "vessel1_control_source": self.vessel1_control_source,
                 "vessel2_control_source": self.vessel2_control_source,
-                "vessel1_standon_escalated": int(self.vessel1_standon_escalated),
-                "vessel2_standon_escalated": int(self.vessel2_standon_escalated),
                 "vessel1_distance": float(vessel1_dist),
                 "vessel2_distance": float(vessel2_dist),
                 "takeover_distance": float(self.envp.rl_takeover_distance),
