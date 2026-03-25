@@ -63,6 +63,8 @@ class SingleVessel2FeatureEnv:
         self.max_steps = max(1, int(round(self.envp.episode_seconds / self.envp.dt)))
         self.prev_goal_d_vessel1 = 0.0
         self.prev_goal_d_vessel2 = 0.0
+        self.prev_goal_heading_err_vessel1 = 0.0
+        self.prev_goal_heading_err_vessel2 = 0.0
         self.vessel1_reached = False
         self.vessel2_reached = False
 
@@ -207,6 +209,45 @@ class SingleVessel2FeatureEnv:
 
     def _goal_distance(self, v: Vessel) -> float:
         return math.hypot(v.goal_x - v.x, v.goal_y - v.y)
+
+    def _goal_heading_error(self, v: Vessel) -> float:
+        """Absolute wrapped heading error to own goal in [0, pi]."""
+        goal_bearing = math.atan2(v.goal_y - v.y, v.goal_x - v.x)
+        return abs(wrap_pi(goal_bearing - v.h))
+
+    def _compute_progress_reward_for_vessel(
+        self,
+        prev_dist: float,
+        curr_dist: float,
+        prev_heading_err: float,
+        curr_heading_err: float,
+    ) -> float:
+        # Tolerances to avoid floating-point jitter around neutral transitions.
+        dist_eps = 1e-4
+        heading_eps = 1e-4
+        # Keep heading shaping smaller than distance-base term.
+        heading_shaping = 0.20 * self.rewp.progress_weight
+
+        dist_delta = prev_dist - curr_dist
+        heading_delta = prev_heading_err - curr_heading_err
+
+        base_term = self.rewp.progress_weight * dist_delta
+
+        if heading_delta >= -heading_eps:
+            heading_term = heading_shaping
+        else:
+            heading_term = -heading_shaping
+
+        if dist_delta > dist_eps:
+            return base_term + heading_term
+        if dist_delta < -dist_eps:
+            return base_term + heading_term
+
+        if heading_delta > heading_eps:
+            return heading_term
+        if heading_delta < -heading_eps:
+            return heading_term
+        return 0.0
 
     def _distance_from_start(self, v: Vessel, start_xy: Tuple[float, float]) -> float:
         sx, sy = start_xy
@@ -939,6 +980,8 @@ class SingleVessel2FeatureEnv:
 
         self.prev_goal_d_vessel1 = self._goal_distance(self.vessel1)
         self.prev_goal_d_vessel2 = self._goal_distance(self.vessel2)
+        self.prev_goal_heading_err_vessel1 = self._goal_heading_error(self.vessel1)
+        self.prev_goal_heading_err_vessel2 = self._goal_heading_error(self.vessel2)
         self.vessel1_steps_taken = 0
         self.vessel2_steps_taken = 0
         self.colregs_scenario = "safe"
@@ -1184,11 +1227,25 @@ class SingleVessel2FeatureEnv:
             self.time += self.envp.dt
             d_vessel1 = self._goal_distance(self.vessel1)
             d_vessel2 = self._goal_distance(self.vessel2)
+            h_err_vessel1 = self._goal_heading_error(self.vessel1)
+            h_err_vessel2 = self._goal_heading_error(self.vessel2)
             reward = self.rewp.living_penalty
-            reward += self.rewp.progress_weight * (self.prev_goal_d_vessel1 - d_vessel1)
-            reward += self.rewp.progress_weight * (self.prev_goal_d_vessel2 - d_vessel2)
+            reward += self._compute_progress_reward_for_vessel(
+                self.prev_goal_d_vessel1,
+                d_vessel1,
+                self.prev_goal_heading_err_vessel1,
+                h_err_vessel1,
+            )
+            reward += self._compute_progress_reward_for_vessel(
+                self.prev_goal_d_vessel2,
+                d_vessel2,
+                self.prev_goal_heading_err_vessel2,
+                h_err_vessel2,
+            )
             self.prev_goal_d_vessel1 = d_vessel1
             self.prev_goal_d_vessel2 = d_vessel2
+            self.prev_goal_heading_err_vessel1 = h_err_vessel1
+            self.prev_goal_heading_err_vessel2 = h_err_vessel2
             info: Dict[str, float | str | int] = {
                 "reason": "no_takeover_trigger",
                 "vessel1_goal_distance": d_vessel1,
@@ -1276,8 +1333,6 @@ class SingleVessel2FeatureEnv:
         reason = ""
         if collision:
             done, reason = True, "collision"
-        elif self._outside(self.vessel1) or self._outside(self.vessel2):
-            done, reason = True, "out_of_bounds"
         elif self.step_idx >= self.max_steps:
             done, reason = True, "timeout"
         elif self.vessel1_reached and self.vessel2_reached:
@@ -1286,14 +1341,24 @@ class SingleVessel2FeatureEnv:
         reward = self.rewp.living_penalty
         d_vessel1 = self._goal_distance(self.vessel1)
         d_vessel2 = self._goal_distance(self.vessel2)
-        reward += self.rewp.progress_weight * (self.prev_goal_d_vessel1 - d_vessel1)
-        reward += self.rewp.progress_weight * (self.prev_goal_d_vessel2 - d_vessel2)
+        h_err_vessel1 = self._goal_heading_error(self.vessel1)
+        h_err_vessel2 = self._goal_heading_error(self.vessel2)
+        reward += self._compute_progress_reward_for_vessel(
+            self.prev_goal_d_vessel1,
+            d_vessel1,
+            self.prev_goal_heading_err_vessel1,
+            h_err_vessel1,
+        )
+        reward += self._compute_progress_reward_for_vessel(
+            self.prev_goal_d_vessel2,
+            d_vessel2,
+            self.prev_goal_heading_err_vessel2,
+            h_err_vessel2,
+        )
 
         if self.vessel1_reached and self.vessel2_reached and reason == "both_reached":
             reward += self.rewp.goal_bonus
 
-        if reason == "out_of_bounds":
-            reward += self.rewp.out_of_bounds_penalty
         if reason == "collision":
             reward += self.rewp.collision_penalty
 
@@ -1357,6 +1422,8 @@ class SingleVessel2FeatureEnv:
 
         self.prev_goal_d_vessel1 = d_vessel1
         self.prev_goal_d_vessel2 = d_vessel2
+        self.prev_goal_heading_err_vessel1 = h_err_vessel1
+        self.prev_goal_heading_err_vessel2 = h_err_vessel2
 
         info: Dict[str, float | str | int] = {
             "reason": reason,
