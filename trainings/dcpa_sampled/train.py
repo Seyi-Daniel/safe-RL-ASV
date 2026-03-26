@@ -317,7 +317,9 @@ def main() -> None:
 
             for vessel_id, vessel_obs in obs_by_vessel.items():
                 vessel_next_obs = env.get_obs_for_vessel(vessel_id)
-                replay.push(vessel_obs, action_by_vessel[vessel_id], reward, vessel_next_obs, done)
+                vessel_reward_key = "reward_v1" if vessel_id == "vessel1" else "reward_v2"
+                vessel_reward = float(info[vessel_reward_key])
+                replay.push(vessel_obs, action_by_vessel[vessel_id], vessel_reward, vessel_next_obs, done)
             takeover_triggered = takeover_triggered or bool(info.get("vessel1_rl_active", 0)) or bool(info.get("vessel2_rl_active", 0))
             ep_return += reward
             # Epsilon schedule is defined over environment steps, not replay entries.
