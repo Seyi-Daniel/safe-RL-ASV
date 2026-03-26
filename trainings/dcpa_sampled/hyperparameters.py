@@ -106,6 +106,13 @@ class RewardParams:
     stand_on_unnecessary_action_penalty: float = -0.2
     crossing_ahead_penalty: float = -0.5
     oscillation_penalty_weight: float = 0.02
+    # Scenario-shaping thresholds (post-takeover interpretation)
+    starboard_min_rudder: float = 0.1
+    port_max_rudder: float = -0.1
+    early_action_tcpa_threshold: float = 25.0
+    late_action_tcpa_threshold: float = 10.0
+    safe_dcpa_threshold: float = 20.0
+    danger_dcpa_threshold: float = 10.0
 
 
 @dataclass
