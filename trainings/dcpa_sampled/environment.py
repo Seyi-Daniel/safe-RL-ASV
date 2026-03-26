@@ -254,6 +254,117 @@ class SingleVessel2FeatureEnv:
     def _inter_vessel_distance(self) -> float:
         return math.hypot(self.vessel2.x - self.vessel1.x, self.vessel2.y - self.vessel1.y)
 
+    def _get_vessel_map(self) -> Dict[str, Vessel]:
+        return {
+            "vessel1": self.vessel1,
+            "vessel2": self.vessel2,
+        }
+
+    def _get_relative_bearing(self, observer: Vessel, target: Vessel) -> float:
+        """Relative bearing in degrees [0, 360): 0=head-ahead, +CCW(port), starboard near 360."""
+        dx = target.x - observer.x
+        dy = target.y - observer.y
+        global_bearing = math.atan2(dy, dx)
+        rel_bearing_rad = wrap_pi(global_bearing - observer.h)
+        return (math.degrees(rel_bearing_rad) + 360.0) % 360.0
+
+    def _get_sector_index(self, relative_bearing_deg: float) -> int:
+        """Map relative bearing to one of 9 radar sectors.
+
+        Sector boundaries (deg): [350,10), [10,40), [40,75), [75,112.5), [112.5,180),
+        [180,247.5), [247.5,285), [285,320), [320,350).
+        """
+        b = relative_bearing_deg % 360.0
+        if b >= 350.0 or b < 10.0:
+            return 0
+        if b < 40.0:
+            return 1
+        if b < 75.0:
+            return 2
+        if b < 112.5:
+            return 3
+        if b < 180.0:
+            return 4
+        if b < 247.5:
+            return 5
+        if b < 285.0:
+            return 6
+        if b < 320.0:
+            return 7
+        return 8
+
+    def _build_sector_features(self, own_vessel: Vessel, target_vessel: Vessel, distance: float, relative_bearing_deg: float) -> List[float]:
+        # distance_norm = clip(distance / sensor_range, 0, 1)
+        distance_norm = clamp(distance / max(1e-6, self.envp.sensor_range), 0.0, 1.0)
+
+        # bearing_rad = radians(relative_bearing_deg), then sin/cos encoding
+        bearing_rad = math.radians(relative_bearing_deg)
+        bearing_sin = math.sin(bearing_rad)
+        bearing_cos = math.cos(bearing_rad)
+
+        # relative_heading = wrap_angle(target_heading - own_heading), then sin/cos encoding
+        relative_heading = wrap_pi(target_vessel.h - own_vessel.h)
+        relative_heading_sin = math.sin(relative_heading)
+        relative_heading_cos = math.cos(relative_heading)
+
+        # target_speed_norm = target_speed / max_speed
+        target_speed_norm = target_vessel.speed / max(1e-6, self.envp.max_speed)
+
+        # closing_speed = relative_velocity_along_line_of_sight (positive means closing here)
+        los_x = (target_vessel.x - own_vessel.x) / max(1e-6, distance)
+        los_y = (target_vessel.y - own_vessel.y) / max(1e-6, distance)
+        rvx = math.cos(target_vessel.h) * target_vessel.speed - math.cos(own_vessel.h) * own_vessel.speed
+        rvy = math.sin(target_vessel.h) * target_vessel.speed - math.sin(own_vessel.h) * own_vessel.speed
+        range_rate = rvx * los_x + rvy * los_y
+        closing_speed = -range_rate
+        # closing_speed_norm = tanh(closing_speed / scale)
+        closing_speed_norm = math.tanh(closing_speed / max(1e-6, self.envp.max_speed))
+
+        # Reuse existing TCPA/DCPA computation for pair.
+        tcpa, dcpa = self._tcpa_dcpa(own_vessel, target_vessel)
+        # tcpa_norm = clip(tcpa / tcpa_risk_threshold, 0, 1)
+        # dcpa_norm = clip(dcpa / dcpa_risk_threshold, 0, 1)
+        tcpa_norm = 1.0 if not math.isfinite(tcpa) else clamp(tcpa / max(1e-6, self.envp.tcpa_risk_threshold), 0.0, 1.0)
+        dcpa_norm = 1.0 if not math.isfinite(dcpa) else clamp(dcpa / max(1e-6, self.envp.dcpa_risk_threshold), 0.0, 1.0)
+
+        return [
+            1.0,  # occupied_flag
+            distance_norm,
+            bearing_sin,
+            bearing_cos,
+            relative_heading_sin,
+            relative_heading_cos,
+            target_speed_norm,
+            closing_speed_norm,
+            tcpa_norm,
+            dcpa_norm,
+        ]
+
+    def _build_radar_observation(self, own_vessel: Vessel) -> List[float]:
+        # Keep nearest in-range contact per sector.
+        nearest_by_sector: Dict[int, Tuple[float, Vessel, float]] = {}
+        for candidate in self._get_vessel_map().values():
+            if candidate is None or candidate is own_vessel:
+                continue
+            distance = math.hypot(candidate.x - own_vessel.x, candidate.y - own_vessel.y)
+            if distance > self.envp.sensor_range:
+                continue
+            bearing = self._get_relative_bearing(own_vessel, candidate)
+            sector_idx = self._get_sector_index(bearing)
+            prev = nearest_by_sector.get(sector_idx)
+            if prev is None or distance < prev[0]:
+                nearest_by_sector[sector_idx] = (distance, candidate, bearing)
+
+        features: List[float] = []
+        for sector_idx in range(9):
+            if sector_idx not in nearest_by_sector:
+                # Empty sector rule: occupied_flag=0, all other entries=0.
+                features.extend([0.0] * 10)
+                continue
+            distance, target_vessel, bearing = nearest_by_sector[sector_idx]
+            features.extend(self._build_sector_features(own_vessel, target_vessel, distance, bearing))
+        return features
+
     def _relative_bearing_deg(self, observer: Vessel, vessel2: Vessel) -> float:
         dx = vessel2.x - observer.x
         dy = vessel2.y - observer.y
@@ -958,32 +1069,37 @@ class SingleVessel2FeatureEnv:
 
         self.vessel2_planned_path = pts
 
-    def _build_obs(self, own_vessel: Vessel, other_vessel: Vessel, own_is_agent: bool) -> np.ndarray:
-        own_speed_den = self.envp.max_speed if own_is_agent else self.envp.vessel2_max_speed
-        other_speed_den = self.envp.vessel2_max_speed if own_is_agent else self.envp.max_speed
-        return np.asarray(
-            [
-                own_vessel.x / self.envp.world_w,
-                own_vessel.y / self.envp.world_h,
-                own_vessel.h / math.pi,
-                own_vessel.speed / own_speed_den,
-                own_vessel.goal_x / self.envp.world_w,
-                own_vessel.goal_y / self.envp.world_h,
-                other_vessel.x / self.envp.world_w,
-                other_vessel.y / self.envp.world_h,
-                other_vessel.h / math.pi,
-                other_vessel.speed / other_speed_den,
-                other_vessel.goal_x / self.envp.world_w,
-                other_vessel.goal_y / self.envp.world_h,
-            ],
-            dtype=np.float32,
-        )
+    def _build_obs(self, own_vessel: Vessel) -> np.ndarray:
+        sector_features = self._build_radar_observation(own_vessel)
+
+        # own_speed_norm = own_speed / max_speed
+        own_speed_norm = own_vessel.speed / max(1e-6, self.envp.max_speed)
+
+        goal_dx = own_vessel.goal_x - own_vessel.x
+        goal_dy = own_vessel.goal_y - own_vessel.y
+        goal_distance = math.hypot(goal_dx, goal_dy)
+        # goal_distance_norm = clip(goal_distance / sensor_range, 0, 1)
+        goal_distance_norm = clamp(goal_distance / max(1e-6, self.envp.sensor_range), 0.0, 1.0)
+
+        goal_bearing = wrap_pi(math.atan2(goal_dy, goal_dx) - own_vessel.h)
+        goal_bearing_sin = math.sin(goal_bearing)
+        goal_bearing_cos = math.cos(goal_bearing)
+
+        own_features = [
+            own_speed_norm,
+            goal_distance_norm,
+            goal_bearing_sin,
+            goal_bearing_cos,
+            clamp(own_vessel.rudder, -1.0, 1.0),   # own_rudder_norm
+            clamp(own_vessel.throttle, -1.0, 1.0),  # own_throttle_norm
+        ]
+        return np.asarray(sector_features + own_features, dtype=np.float32)
 
     def get_obs_for_vessel(self, vessel_id: str) -> np.ndarray:
-        if vessel_id == "vessel1":
-            return self._build_obs(self.vessel1, self.vessel2, own_is_agent=True)
-        if vessel_id == "vessel2":
-            return self._build_obs(self.vessel2, self.vessel1, own_is_agent=False)
+        vessel_map = self._get_vessel_map()
+        own_vessel = vessel_map.get(vessel_id)
+        if own_vessel is not None:
+            return self._build_obs(own_vessel)
         raise ValueError(f"Unknown vessel_id: {vessel_id!r}")
 
     def get_obs(self) -> np.ndarray:

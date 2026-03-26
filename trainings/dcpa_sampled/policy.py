@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 ACTION_DIM = 2  # [rudder_cmd, throttle_cmd]
-DEFAULT_OBS_DIM = 12  # [agent(6), target(6)] features emitted by SingleTargetFeatureEnv.get_obs()
+DEFAULT_OBS_DIM = 96  # [9 sectors x 10 features] + [own vessel 6 features]
 
 
 class ContinuousActor(nn.Module):
