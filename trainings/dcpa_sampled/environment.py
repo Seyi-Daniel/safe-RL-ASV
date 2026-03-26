@@ -1106,6 +1106,38 @@ class SingleVessel2FeatureEnv:
 
         return Vessel(sx2, sy2, sh2, sp2, gx2, gy2)
 
+    def _sample_extra_vessel_path(self) -> Vessel:
+        """
+        Additive extra-vessel traffic sampling path.
+        Defaults intentionally mirror vessel2's perimeter/path-following style.
+        """
+        spawn_mode = str(self.envp.extra_vessel_spawn_mode).lower()
+        if spawn_mode != "perimeter":
+            raise ValueError(
+                f"Unsupported extra_vessel_spawn_mode={self.envp.extra_vessel_spawn_mode!r}; "
+                "supported modes: 'perimeter'"
+            )
+
+        # Keep default behavior vessel2-like; only speed envelope is independently configurable.
+        vessel = self._sample_vessel2_path()
+        speed_lo = float(self.envp.extra_vessel_min_speed)
+        speed_hi = float(self.envp.extra_vessel_max_speed)
+        if speed_lo > speed_hi:
+            speed_lo, speed_hi = speed_hi, speed_lo
+
+        if (speed_lo != float(self.envp.vessel2_min_speed)) or (speed_hi != float(self.envp.vessel2_max_speed)):
+            vessel.speed = self.rng.uniform(speed_lo, speed_hi)
+        return vessel
+
+    def _spawn_extra_vessels(self) -> Dict[str, Vessel]:
+        """Spawn vessels 3..N via the additive extra-vessel extension path."""
+        extra_vessels: Dict[str, Vessel] = {}
+        if int(self.envp.num_vessels) <= 2:
+            return extra_vessels
+        for idx in range(3, int(self.envp.num_vessels) + 1):
+            extra_vessels[f"vessel{idx}"] = self._sample_extra_vessel_path()
+        return extra_vessels
+
     def _advance_target(self, dt: float) -> None:
         if self.vessel2 is None or self.vessel2_reached:
             return
@@ -1340,10 +1372,9 @@ class SingleVessel2FeatureEnv:
 
         self.vessel1 = sampled_vessel1
         self.vessel2 = sampled_vessel2
-        self.extra_vessels = {}
-        if int(self.envp.num_vessels) > 2:
-            for idx in range(3, int(self.envp.num_vessels) + 1):
-                self.extra_vessels[f"vessel{idx}"] = self._sample_vessel2_path()
+        # Foundational pair (vessel1/vessel2) stays on dedicated setup above.
+        # Extra traffic (vessel3+) is an explicit additive extension path.
+        self.extra_vessels = self._spawn_extra_vessels()
 
         sx2, sy2 = self.vessel2.x, self.vessel2.y
         sh2 = self.vessel2.h

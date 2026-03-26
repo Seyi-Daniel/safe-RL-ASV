@@ -60,6 +60,11 @@ class EnvParams:
     pp_lookahead_factor: float = 2.0      # lookahead distance = factor × turning_radius
     pp_heading_gain_deg: float = 25.0     # proportional gain divisor for heading error -> rudder cmd
 
+    # additive extra-vessel traffic configuration (kept vessel2-like by default)
+    extra_vessel_spawn_mode: str = "perimeter"
+    extra_vessel_min_speed: float = 0.5
+    extra_vessel_max_speed: float = 7.0
+
     # COLREGS risk/takeover gating
     colregs_head_on_half_angle_deg: float = 10.0  # Engineering approximation for simulation stability.
     colregs_crossing_starboard_max_deg: float = 112.5
