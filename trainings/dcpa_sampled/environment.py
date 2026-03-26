@@ -244,11 +244,41 @@ class SingleVessel2FeatureEnv:
     def _inter_vessel_distance(self) -> float:
         return math.hypot(self.vessel2.x - self.vessel1.x, self.vessel2.y - self.vessel1.y)
 
-    def _get_vessel_map(self) -> Dict[str, Vessel]:
+    def get_vessel_ids(self) -> List[str]:
+        """Return stable IDs for the current two-vessel world."""
+        return ["vessel1", "vessel2"]
+
+    def get_vessel_map(self) -> Dict[str, Optional[Vessel]]:
+        """Return the current vessel objects keyed by stable vessel ID."""
         return {
             "vessel1": self.vessel1,
             "vessel2": self.vessel2,
         }
+
+    def _get_vessel_map(self) -> Dict[str, Optional[Vessel]]:
+        # Backward-compatible internal alias; not a new source of truth.
+        return self.get_vessel_map()
+
+    def get_vessel_by_id(self, vessel_id: str) -> Optional[Vessel]:
+        vessel_map = self.get_vessel_map()
+        if vessel_id not in vessel_map:
+            raise KeyError(f"Unknown vessel_id: {vessel_id}")
+        return vessel_map[vessel_id]
+
+    def get_other_vessel_ids(self, vessel_id: str) -> List[str]:
+        if vessel_id not in self.get_vessel_ids():
+            raise KeyError(f"Unknown vessel_id: {vessel_id}")
+        return [other_id for other_id in self.get_vessel_ids() if other_id != vessel_id]
+
+    def get_other_vessels(self, vessel_id: str) -> List[Optional[Vessel]]:
+        return [self.get_vessel_by_id(other_id) for other_id in self.get_other_vessel_ids(vessel_id)]
+
+    def is_vessel_rl_active(self, vessel_id: str) -> bool:
+        if vessel_id == "vessel1":
+            return self.vessel1_rl_active
+        if vessel_id == "vessel2":
+            return self.vessel2_rl_active
+        raise KeyError(f"Unknown vessel_id: {vessel_id}")
 
     def _get_relative_bearing(self, observer: Vessel, target: Vessel) -> float:
         """Relative bearing in degrees [0, 360): 0=head-ahead, +CCW(port), starboard near 360."""
