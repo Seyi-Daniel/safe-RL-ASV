@@ -105,6 +105,7 @@ class SingleVessel2FeatureEnv:
         self.show_planned_paths = True
         self.vessel1_planned_path: List[Tuple[float, float]] = []
         self.vessel2_planned_path: List[Tuple[float, float]] = []
+        self.extra_vessel_planned_paths: Dict[str, List[Tuple[float, float]]] = {}
 
         self.render_enabled = render and HAS_PYGAME
         self.paused = False
@@ -1154,7 +1155,9 @@ class SingleVessel2FeatureEnv:
             return
         self.vessel1_planned_path = [(self.start_x, self.start_y), (self.vessel1.goal_x, self.vessel1.goal_y)]
 
-    def _build_vessel2_planned_path(self, sx: float, sy: float, sh: float, speed: float, goal_x: float, goal_y: float) -> None:
+    def _generate_scripted_vessel_planned_path(
+        self, sx: float, sy: float, sh: float, speed: float, goal_x: float, goal_y: float
+    ) -> List[Tuple[float, float]]:
         sim = Vessel(sx, sy, sh, speed, goal_x, goal_y, rudder=0.0, throttle=0.0)
         pts: List[Tuple[float, float]] = [(sim.x, sim.y)]
         dt = self.envp.dt / max(1, self.envp.substeps)
@@ -1176,7 +1179,17 @@ class SingleVessel2FeatureEnv:
             if travel + 1e-9 >= d_goal:
                 break
 
-        self.vessel2_planned_path = pts
+        return pts
+
+    def _build_vessel2_planned_path(self, sx: float, sy: float, sh: float, speed: float, goal_x: float, goal_y: float) -> None:
+        self.vessel2_planned_path = self._generate_scripted_vessel_planned_path(sx, sy, sh, speed, goal_x, goal_y)
+
+    def _build_extra_vessel_planned_paths(self) -> None:
+        self.extra_vessel_planned_paths = {}
+        for vessel_id, vessel in self.extra_vessels.items():
+            self.extra_vessel_planned_paths[vessel_id] = self._generate_scripted_vessel_planned_path(
+                vessel.x, vessel.y, vessel.h, vessel.speed, vessel.goal_x, vessel.goal_y
+            )
 
     def _build_obs(self, own_vessel: Vessel, own_vessel_id: str) -> np.ndarray:
         # Observation layout: radar(9 sectors × 10 features = 90) + own-vessel features(6) = 96.
@@ -1345,6 +1358,7 @@ class SingleVessel2FeatureEnv:
 
         self._build_vessel1_planned_path()
         self._build_vessel2_planned_path(sx2, sy2, sh2, sp2, gx2, gy2)
+        self._build_extra_vessel_planned_paths()
         self.last_inter_vessel_distance = self._inter_vessel_distance()
 
         return self.get_obs()
@@ -1961,6 +1975,8 @@ class SingleVessel2FeatureEnv:
         if self.show_planned_paths:
             self._draw_planned_path(self.vessel1_planned_path, (150, 210, 255))
             self._draw_planned_path(self.vessel2_planned_path, (255, 170, 170))
+            for vessel_id in sorted(self.extra_vessel_planned_paths, key=lambda x: int(x.replace("vessel", ""))):
+                self._draw_planned_path(self.extra_vessel_planned_paths[vessel_id], (255, 200, 150))
 
         self._draw_vessel(self.vessel1, (95, 170, 255), "V1")
         self._draw_vessel(self.vessel2, (255, 120, 120), "V2")
