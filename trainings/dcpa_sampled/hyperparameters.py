@@ -15,6 +15,7 @@ class EnvParams:
     substeps: int = 2
     episode_seconds: float = 120.0
     seed: int | None = 7
+    num_vessels: int = 2
 
     # rendering
     pixels_per_meter: float = 2.0

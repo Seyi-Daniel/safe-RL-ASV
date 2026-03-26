@@ -56,6 +56,17 @@ class SingleVessel2FeatureEnv:
 
         self.vessel1: Optional[Vessel] = None
         self.vessel2: Optional[Vessel] = None
+        self.extra_vessels: Dict[str, Vessel] = {}
+        self.extra_vessel_reached: Dict[str, bool] = {}
+        self.extra_prev_goal_d: Dict[str, float] = {}
+        self.extra_prev_goal_heading_err: Dict[str, float] = {}
+        self.extra_steps_taken: Dict[str, int] = {}
+        self.extra_vessel_start_pos: Dict[str, Tuple[float, float]] = {}
+        self.extra_vessel_start_heading: Dict[str, float] = {}
+        self.extra_vessel_start_speed: Dict[str, float] = {}
+        self.extra_vessel_rl_active: Dict[str, bool] = {}
+        self.extra_model_control_latched: Dict[str, bool] = {}
+        self.extra_control_source: Dict[str, str] = {}
         self.start_x = 0.5 * self.envp.world_w
         self.start_y = 0.5 * self.envp.world_h
         self.time = 0.0
@@ -244,16 +255,57 @@ class SingleVessel2FeatureEnv:
     def _inter_vessel_distance(self) -> float:
         return math.hypot(self.vessel2.x - self.vessel1.x, self.vessel2.y - self.vessel1.y)
 
+    def _min_pair_distance(self) -> float:
+        vessels = [(vessel_id, vessel) for vessel_id, vessel in self.get_vessel_map().items() if vessel is not None]
+        if len(vessels) < 2:
+            return float("inf")
+        min_dist = float("inf")
+        for i in range(len(vessels)):
+            for j in range(i + 1, len(vessels)):
+                _, va = vessels[i]
+                _, vb = vessels[j]
+                min_dist = min(min_dist, math.hypot(vb.x - va.x, vb.y - va.y))
+        return min_dist
+
+    def _update_extra_vessel_control_latches(self) -> None:
+        vessel_map = {k: v for k, v in self.get_vessel_map().items() if v is not None}
+        give_way_in_risk: Dict[str, bool] = {vessel_id: False for vessel_id in vessel_map}
+        any_risk = False
+        for i, (id_a, va) in enumerate(vessel_map.items()):
+            for id_b, vb in list(vessel_map.items())[i + 1:]:
+                risk, _, _ = self.assess_risk(va, vb)
+                if not risk:
+                    continue
+                any_risk = True
+                scenario, rb_a, rb_b = self.classify_geometry(va, vb)
+                role_a, role_b = self.assign_roles(scenario, rb_a, rb_b)
+                if role_a == "give_way":
+                    give_way_in_risk[id_a] = True
+                if role_b == "give_way":
+                    give_way_in_risk[id_b] = True
+
+        for vessel_id in self.extra_vessels:
+            if give_way_in_risk.get(vessel_id, False) and (not self.extra_vessel_reached[vessel_id]):
+                self.extra_model_control_latched[vessel_id] = True
+            if self.extra_vessel_reached[vessel_id]:
+                self.extra_model_control_latched[vessel_id] = False
+
+        self.risk_of_collision = bool(self.risk_of_collision or any_risk)
+
     def get_vessel_ids(self) -> List[str]:
-        """Return stable IDs for the current two-vessel world."""
-        return ["vessel1", "vessel2"]
+        """Return stable IDs for the current world."""
+        ids = ["vessel1", "vessel2"]
+        ids.extend(sorted(self.extra_vessels.keys(), key=lambda x: int(x.replace("vessel", ""))))
+        return ids
 
     def get_vessel_map(self) -> Dict[str, Optional[Vessel]]:
         """Return the current vessel objects keyed by stable vessel ID."""
-        return {
+        vessel_map: Dict[str, Optional[Vessel]] = {
             "vessel1": self.vessel1,
             "vessel2": self.vessel2,
         }
+        vessel_map.update(self.extra_vessels)
+        return vessel_map
 
     def _get_vessel_map(self) -> Dict[str, Optional[Vessel]]:
         # Backward-compatible internal alias; not a new source of truth.
@@ -278,6 +330,8 @@ class SingleVessel2FeatureEnv:
             return self.vessel1_rl_active
         if vessel_id == "vessel2":
             return self.vessel2_rl_active
+        if vessel_id in self.extra_vessel_rl_active:
+            return self.extra_vessel_rl_active[vessel_id]
         raise KeyError(f"Unknown vessel_id: {vessel_id}")
 
     def get_model_control_latched(self, vessel_id: str) -> bool:
@@ -286,6 +340,8 @@ class SingleVessel2FeatureEnv:
             return self.vessel1_model_control_latched
         if vessel_id == "vessel2":
             return self.vessel2_model_control_latched
+        if vessel_id in self.extra_model_control_latched:
+            return self.extra_model_control_latched[vessel_id]
         raise KeyError(f"Unknown vessel_id: {vessel_id}")
 
     def get_vessel_role(self, vessel_id: str) -> str:
@@ -294,7 +350,8 @@ class SingleVessel2FeatureEnv:
             return self.vessel1_role
         if vessel_id == "vessel2":
             return self.vessel2_role
-        raise KeyError(f"Unknown vessel_id: {vessel_id}")
+        # Extra-vessel roles are computed pairwise in N-vessel mode and only used for control gating.
+        return "none"
 
     def is_vessel_reached(self, vessel_id: str) -> bool:
         """Return whether the given vessel has reached its goal."""
@@ -302,18 +359,24 @@ class SingleVessel2FeatureEnv:
             return self.vessel1_reached
         if vessel_id == "vessel2":
             return self.vessel2_reached
+        if vessel_id in self.extra_vessel_reached:
+            return self.extra_vessel_reached[vessel_id]
         raise KeyError(f"Unknown vessel_id: {vessel_id}")
 
     def get_rl_controlled_vessel_ids(self) -> List[str]:
         """Return currently RL-controlled vessel IDs in deterministic order."""
         return [vessel_id for vessel_id in self.get_vessel_ids() if self.is_vessel_rl_active(vessel_id)]
 
-    def get_reward_by_vessel(self, reward_v1: float, reward_v2: float) -> Dict[str, float]:
-        """Package current two-vessel rewards into a stable vessel-id mapping."""
-        return {
+    def get_reward_by_vessel(self, reward_v1: float, reward_v2: float, extras: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+        """Package current rewards into a stable vessel-id mapping."""
+        rewards = {
             "vessel1": float(reward_v1),
             "vessel2": float(reward_v2),
         }
+        if extras:
+            for vessel_id, reward in extras.items():
+                rewards[vessel_id] = float(reward)
+        return rewards
 
     def _get_relative_bearing(self, observer: Vessel, target: Vessel) -> float:
         """Relative bearing in degrees [0, 360): 0=head-ahead, +CCW(port), starboard near 360."""
@@ -997,13 +1060,26 @@ class SingleVessel2FeatureEnv:
         yaw_rate = (v.rudder / max(1e-6, self.envp.rudder_max_angle_rad)) * self.envp.rudder_max_yaw_rate_rad_s
         v.h = wrap_pi(v.h + yaw_rate * dt)
 
+    def _get_reached_flag(self, reached_attr: str) -> bool:
+        if reached_attr.startswith("extra_vessel_reached:"):
+            vessel_id = reached_attr.split(":", 1)[1]
+            return bool(self.extra_vessel_reached.get(vessel_id, False))
+        return bool(getattr(self, reached_attr))
+
+    def _set_reached_flag(self, reached_attr: str, value: bool) -> None:
+        if reached_attr.startswith("extra_vessel_reached:"):
+            vessel_id = reached_attr.split(":", 1)[1]
+            self.extra_vessel_reached[vessel_id] = bool(value)
+            return
+        setattr(self, reached_attr, value)
+
     def _advance_straight(self, v: Vessel, reached_attr: str, dt: float) -> None:
-        if getattr(self, reached_attr):
+        if self._get_reached_flag(reached_attr):
             return
 
         d = self._goal_distance(v)
         if d <= self.envp.goal_radius:
-            setattr(self, reached_attr, True)
+            self._set_reached_flag(reached_attr, True)
             v.speed = 0.0
             return
 
@@ -1012,16 +1088,16 @@ class SingleVessel2FeatureEnv:
         v.y += math.sin(v.h) * travel
 
         if self._goal_distance(v) <= self.envp.goal_radius:
-            setattr(self, reached_attr, True)
+            self._set_reached_flag(reached_attr, True)
             v.speed = 0.0
 
     def _advance_controlled(self, v: Vessel, reached_attr: str, rudder_cmd: float, throttle_cmd: float, dt: float) -> None:
-        if getattr(self, reached_attr):
+        if self._get_reached_flag(reached_attr):
             return
 
         d = self._goal_distance(v)
         if d <= self.envp.goal_radius:
-            setattr(self, reached_attr, True)
+            self._set_reached_flag(reached_attr, True)
             v.speed = 0.0
             return
 
@@ -1045,8 +1121,32 @@ class SingleVessel2FeatureEnv:
         v.y += math.sin(v.h) * travel
 
         if self._goal_distance(v) <= self.envp.goal_radius:
-            setattr(self, reached_attr, True)
+            self._set_reached_flag(reached_attr, True)
             v.speed = 0.0
+
+    def _advance_extra_target(self, vessel_id: str, dt: float) -> None:
+        vessel = self.extra_vessels[vessel_id]
+        reached_attr = f"extra_vessel_reached:{vessel_id}"
+        if self._get_reached_flag(reached_attr):
+            return
+        d_goal = self._goal_distance(vessel)
+        if d_goal <= self.envp.goal_radius:
+            self._set_reached_flag(reached_attr, True)
+            vessel.speed = 0.0
+            return
+
+        rudder_cmd = self._pure_pursuit_rudder_cmd(vessel, vessel.goal_x, vessel.goal_y)
+        self._integrate_rudder_heading(vessel, rudder_cmd, dt)
+        vessel.speed = clamp(vessel.speed, self.envp.vessel2_min_speed, self.envp.vessel2_max_speed)
+
+        d_goal = self._goal_distance(vessel)
+        travel = min(vessel.speed * dt, d_goal)
+        vessel.x += travel * math.cos(vessel.h)
+        vessel.y += travel * math.sin(vessel.h)
+
+        if self._goal_distance(vessel) <= self.envp.goal_radius:
+            self._set_reached_flag(reached_attr, True)
+            vessel.speed = 0.0
 
     def _build_vessel1_planned_path(self) -> None:
         if self.vessel1 is None:
@@ -1144,6 +1244,10 @@ class SingleVessel2FeatureEnv:
 
         self.vessel1 = sampled_vessel1
         self.vessel2 = sampled_vessel2
+        self.extra_vessels = {}
+        if int(self.envp.num_vessels) > 2:
+            for idx in range(3, int(self.envp.num_vessels) + 1):
+                self.extra_vessels[f"vessel{idx}"] = self._sample_vessel2_path()
 
         sx2, sy2 = self.vessel2.x, self.vessel2.y
         sh2 = self.vessel2.h
@@ -1198,6 +1302,16 @@ class SingleVessel2FeatureEnv:
         self.vessel2_control_source = "pure_pursuit"
         self.vessel1_model_control_latched = False
         self.vessel2_model_control_latched = False
+        self.extra_vessel_reached = {vessel_id: False for vessel_id in self.extra_vessels}
+        self.extra_prev_goal_d = {vessel_id: self._goal_distance(v) for vessel_id, v in self.extra_vessels.items()}
+        self.extra_prev_goal_heading_err = {vessel_id: self._goal_heading_error(v) for vessel_id, v in self.extra_vessels.items()}
+        self.extra_steps_taken = {vessel_id: 0 for vessel_id in self.extra_vessels}
+        self.extra_vessel_start_pos = {vessel_id: (v.x, v.y) for vessel_id, v in self.extra_vessels.items()}
+        self.extra_vessel_start_heading = {vessel_id: v.h for vessel_id, v in self.extra_vessels.items()}
+        self.extra_vessel_start_speed = {vessel_id: v.speed for vessel_id, v in self.extra_vessels.items()}
+        self.extra_vessel_rl_active = {vessel_id: False for vessel_id in self.extra_vessels}
+        self.extra_model_control_latched = {vessel_id: False for vessel_id in self.extra_vessels}
+        self.extra_control_source = {vessel_id: "pure_pursuit" for vessel_id in self.extra_vessels}
         self.any_rl_ever_triggered = False
         self.locked = False
         self.locked_scenario = "safe"
@@ -1238,9 +1352,7 @@ class SingleVessel2FeatureEnv:
     def _select_rl_action_for_vessel(
         self, vessel_name: str, external_action: Optional[np.ndarray]
     ) -> Tuple[Optional[Tuple[float, float]], str]:
-        if vessel_name == "vessel1" and not self.vessel1_rl_active:
-            return None, ""
-        if vessel_name == "vessel2" and not self.vessel2_rl_active:
+        if not self.is_vessel_rl_active(vessel_name):
             return None, ""
         if external_action is None:
             return None, ""
@@ -1261,18 +1373,23 @@ class SingleVessel2FeatureEnv:
     def _resolve_step_actions(
         self,
         action: Union[np.ndarray, Tuple[float, float], list, Dict[str, Union[np.ndarray, Tuple[float, float], list]]],
-    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], float, float]:
+    ) -> Tuple[Dict[str, Optional[np.ndarray]], float, float]:
+        vessel_actions: Dict[str, Optional[np.ndarray]] = {vessel_id: None for vessel_id in self.get_vessel_ids()}
         if isinstance(action, dict):
-            vessel1_action = self._normalize_action_vector(action.get("vessel1"))
-            vessel2_action = self._normalize_action_vector(action.get("vessel2"))
+            for vessel_id in vessel_actions:
+                vessel_actions[vessel_id] = self._normalize_action_vector(action.get(vessel_id))
             # Backward-compatible scalar fields for info payloads.
-            info_action = vessel1_action if vessel1_action is not None else vessel2_action
+            info_action = None
+            for vessel_id in self.get_vessel_ids():
+                if vessel_actions[vessel_id] is not None:
+                    info_action = vessel_actions[vessel_id]
+                    break
         else:
             shared_action = self._normalize_action_vector(action)
             # Backward-compatible path: a single action vector is applied to both vessels.
             # Current training passes a dict and controls only RL-active give-way vessels.
-            vessel1_action = shared_action
-            vessel2_action = shared_action
+            for vessel_id in vessel_actions:
+                vessel_actions[vessel_id] = shared_action
             info_action = shared_action
 
         if info_action is None:
@@ -1280,19 +1397,19 @@ class SingleVessel2FeatureEnv:
         else:
             rudder_cmd = float(info_action[0])
             throttle_cmd = float(info_action[1])
-        return vessel1_action, vessel2_action, rudder_cmd, throttle_cmd
+        return vessel_actions, rudder_cmd, throttle_cmd
 
     def step(
         self,
         action: Union[np.ndarray, Tuple[float, float], list, Dict[str, Union[np.ndarray, Tuple[float, float], list]]],
     ) -> Tuple[np.ndarray, float, bool, Dict[str, float | str | int]]:
-        vessel1_external_action, vessel2_external_action, rudder_cmd, throttle_cmd = self._resolve_step_actions(action)
+        action_by_vessel, rudder_cmd, throttle_cmd = self._resolve_step_actions(action)
         give_way_vessel = "vessel1" if self.vessel1_role == "give_way" else "vessel2" if self.vessel2_role == "give_way" else "none"
         stand_on_vessel = "vessel1" if self.vessel1_role == "stand_on" else "vessel2" if self.vessel2_role == "stand_on" else "none"
         stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "vessel2" else "straight" if stand_on_vessel == "vessel1" else "none"
 
         if self.paused:
-            reward_by_vessel = self.get_reward_by_vessel(0.0, 0.0)
+            reward_by_vessel = self.get_reward_by_vessel(0.0, 0.0, extras={vessel_id: 0.0 for vessel_id in self.extra_vessels})
             info: Dict[str, float | str | int] = {
                 "reason": "paused",
                 "vessel1_goal_distance": self._goal_distance(self.vessel1),
@@ -1383,17 +1500,24 @@ class SingleVessel2FeatureEnv:
             self.vessel1_model_control_latched = True
         if vessel2_takeover_trigger:
             self.vessel2_model_control_latched = True
+        if int(self.envp.num_vessels) > 2:
+            self._update_extra_vessel_control_latches()
 
         # Release only when the vessel reaches goal; do not release when current risk disappears.
         if self.vessel1_reached:
             self.vessel1_model_control_latched = False
         if self.vessel2_reached:
             self.vessel2_model_control_latched = False
+        for vessel_id in self.extra_vessels:
+            if self.extra_vessel_reached[vessel_id]:
+                self.extra_model_control_latched[vessel_id] = False
 
         # Active control is derived from persistent per-vessel latches.
         # Roles remain pure COLREGS outputs from geometry/risk classification.
         self.vessel1_rl_active = self.vessel1_model_control_latched and (not self.vessel1_reached)
         self.vessel2_rl_active = self.vessel2_model_control_latched and (not self.vessel2_reached)
+        for vessel_id in self.extra_vessels:
+            self.extra_vessel_rl_active[vessel_id] = self.extra_model_control_latched[vessel_id] and (not self.extra_vessel_reached[vessel_id])
         if self.vessel1_rl_active and self.vessel2_rl_active:
             self.rl_controlled_vessel = "both"
         elif self.vessel1_rl_active:
@@ -1402,7 +1526,7 @@ class SingleVessel2FeatureEnv:
             self.rl_controlled_vessel = "vessel2"
         else:
             self.rl_controlled_vessel = "none"
-        self.any_rl_ever_triggered = self.any_rl_ever_triggered or self.vessel1_rl_active or self.vessel2_rl_active
+        self.any_rl_ever_triggered = self.any_rl_ever_triggered or any(self.is_vessel_rl_active(vessel_id) for vessel_id in self.get_vessel_ids())
         self.rl_ever_triggered = self.any_rl_ever_triggered
 
         give_way_vessel = "vessel1" if self.vessel1_role == "give_way" else "vessel2" if self.vessel2_role == "give_way" else "none"
@@ -1432,7 +1556,7 @@ class SingleVessel2FeatureEnv:
             shared_reward = self.rewp.living_penalty
             reward_v1 = vessel1_local_reward + shared_reward
             reward_v2 = vessel2_local_reward + shared_reward
-            reward_by_vessel = self.get_reward_by_vessel(reward_v1, reward_v2)
+            reward_by_vessel = self.get_reward_by_vessel(reward_v1, reward_v2, extras={vessel_id: shared_reward for vessel_id in self.extra_vessels})
             # Backward-compatible scalar return for legacy callers/logging.
             # Training updates consume per-vessel rewards from info["reward_v1"/"reward_v2"].
             reward = reward_v1 + reward_v2 - shared_reward
@@ -1491,7 +1615,7 @@ class SingleVessel2FeatureEnv:
         was_vessel2_active = not self.vessel2_reached
         for _ in range(max(1, self.envp.substeps)):
             if self.vessel1_rl_active:
-                vessel1_rl_cmd, vessel1_rl_src = self._select_rl_action_for_vessel("vessel1", vessel1_external_action)
+                vessel1_rl_cmd, vessel1_rl_src = self._select_rl_action_for_vessel("vessel1", action_by_vessel.get("vessel1"))
                 if vessel1_rl_cmd is not None:
                     self.vessel1_control_source = vessel1_rl_src
                     self._advance_controlled(self.vessel1, "vessel1_reached", vessel1_rl_cmd[0], vessel1_rl_cmd[1], h)
@@ -1503,7 +1627,7 @@ class SingleVessel2FeatureEnv:
                 self._advance_straight(self.vessel1, "vessel1_reached", h)
 
             if self.vessel2_rl_active:
-                vessel2_rl_cmd, vessel2_rl_src = self._select_rl_action_for_vessel("vessel2", vessel2_external_action)
+                vessel2_rl_cmd, vessel2_rl_src = self._select_rl_action_for_vessel("vessel2", action_by_vessel.get("vessel2"))
                 if vessel2_rl_cmd is not None:
                     self.vessel2_control_source = vessel2_rl_src
                     self._advance_controlled(self.vessel2, "vessel2_reached", vessel2_rl_cmd[0], vessel2_rl_cmd[1], h)
@@ -1514,14 +1638,32 @@ class SingleVessel2FeatureEnv:
                 self.vessel2_control_source = "pure_pursuit"
                 self._advance_target(h)
 
+            for vessel_id, vessel in self.extra_vessels.items():
+                reached_attr = f"extra_vessel_reached:{vessel_id}"
+                if self.extra_vessel_rl_active[vessel_id]:
+                    extra_rl_cmd, extra_rl_src = self._select_rl_action_for_vessel(vessel_id, action_by_vessel.get(vessel_id))
+                    if extra_rl_cmd is not None:
+                        self.extra_control_source[vessel_id] = extra_rl_src
+                        self._advance_controlled(vessel, reached_attr, extra_rl_cmd[0], extra_rl_cmd[1], h)
+                    else:
+                        self.extra_control_source[vessel_id] = "pure_pursuit"
+                        self._advance_extra_target(vessel_id, h)
+                else:
+                    self.extra_control_source[vessel_id] = "pure_pursuit"
+                    self._advance_extra_target(vessel_id, h)
+
         if was_vessel1_active:
             self.vessel1_steps_taken += 1
         if was_vessel2_active:
             self.vessel2_steps_taken += 1
+        for vessel_id in self.extra_vessels:
+            if not self.extra_vessel_reached[vessel_id]:
+                self.extra_steps_taken[vessel_id] += 1
 
         inter_vessel_distance = self._inter_vessel_distance()
-        collision = inter_vessel_distance <= self.envp.collision_distance
-        near_miss = (not collision) and (inter_vessel_distance <= self.envp.near_miss_distance)
+        min_pair_distance = self._min_pair_distance()
+        collision = min_pair_distance <= self.envp.collision_distance
+        near_miss = (not collision) and (min_pair_distance <= self.envp.near_miss_distance)
 
         self.time += self.envp.dt
         self.step_idx += 1
@@ -1532,7 +1674,7 @@ class SingleVessel2FeatureEnv:
             done, reason = True, "collision"
         elif self.step_idx >= self.max_steps:
             done, reason = True, "timeout"
-        elif self.vessel1_reached and self.vessel2_reached:
+        elif all(self.is_vessel_reached(vessel_id) for vessel_id in self.get_vessel_ids()):
             done, reason = True, "both_reached"
 
         vessel1_local_reward = 0.0
@@ -1566,13 +1708,13 @@ class SingleVessel2FeatureEnv:
         if near_miss:
             shared_reward += self.rewp.near_miss_penalty
 
-        if inter_vessel_distance < self.envp.safe_pass_distance:
-            shared_reward -= self.rewp.unsafe_proximity_penalty_weight * (self.envp.safe_pass_distance - inter_vessel_distance)
+        if min_pair_distance < self.envp.safe_pass_distance:
+            shared_reward -= self.rewp.unsafe_proximity_penalty_weight * (self.envp.safe_pass_distance - min_pair_distance)
 
         if self.risk_of_collision:
             self.encounter_was_risky = True
 
-        if self.encounter_was_risky and (not self.risk_of_collision) and (inter_vessel_distance > self.envp.safe_pass_distance) and (not self.safe_pass_awarded):
+        if self.encounter_was_risky and (not self.risk_of_collision) and (min_pair_distance > self.envp.safe_pass_distance) and (not self.safe_pass_awarded):
             shared_reward += self.rewp.safe_pass_bonus
             self.safe_pass_awarded = True
 
@@ -1599,10 +1741,23 @@ class SingleVessel2FeatureEnv:
             vessel2_local_reward -= self.rewp.oscillation_penalty_weight
         self.prev_vessel1_rudder_sign = vessel1_rudder_sign
         self.prev_vessel2_rudder_sign = vessel2_rudder_sign
-        self.last_inter_vessel_distance = inter_vessel_distance
+        self.last_inter_vessel_distance = min_pair_distance
         reward_v1 = vessel1_local_reward + shared_reward
         reward_v2 = vessel2_local_reward + shared_reward
-        reward_by_vessel = self.get_reward_by_vessel(reward_v1, reward_v2)
+        extra_rewards: Dict[str, float] = {}
+        for vessel_id, vessel in self.extra_vessels.items():
+            vessel_reward = self._compute_progress_reward_for_vessel(
+                self.extra_prev_goal_d[vessel_id],
+                self._goal_distance(vessel),
+                self.extra_prev_goal_heading_err[vessel_id],
+                self._goal_heading_error(vessel),
+            )
+            if self.extra_vessel_reached[vessel_id]:
+                vessel_reward += self.rewp.goal_bonus
+            extra_rewards[vessel_id] = vessel_reward + shared_reward
+            self.extra_prev_goal_d[vessel_id] = self._goal_distance(vessel)
+            self.extra_prev_goal_heading_err[vessel_id] = self._goal_heading_error(vessel)
+        reward_by_vessel = self.get_reward_by_vessel(reward_v1, reward_v2, extras=extra_rewards)
         # Backward-compatible scalar return for legacy callers/logging.
         # Training updates consume per-vessel rewards from info["reward_v1"/"reward_v2"].
         reward = reward_v1 + reward_v2 - shared_reward
@@ -1652,7 +1807,7 @@ class SingleVessel2FeatureEnv:
             "vessel2_distance_from_start": float(vessel2_dist),
             "vessel1_relative_bearing_deg": float(self.vessel1_relative_bearing_deg),
             "vessel2_relative_bearing_deg": float(self.vessel2_relative_bearing_deg),
-            "inter_vessel_distance": float(inter_vessel_distance),
+            "inter_vessel_distance": float(min_pair_distance),
             "collision": int(collision),
             "near_miss": int(near_miss),
             "safe_pass_awarded": int(self.safe_pass_awarded),
@@ -1791,6 +1946,8 @@ class SingleVessel2FeatureEnv:
 
         self._draw_goal(self.vessel1.goal_x, self.vessel1.goal_y, (250, 215, 60))
         self._draw_goal(self.vessel2.goal_x, self.vessel2.goal_y, (255, 140, 90))
+        for vessel_id, vessel in self.extra_vessels.items():
+            self._draw_goal(vessel.goal_x, vessel.goal_y, (255, 185, 120))
 
         if self.envp.show_spawn_rings:
             pygame.draw.circle(
@@ -1807,6 +1964,9 @@ class SingleVessel2FeatureEnv:
 
         self._draw_vessel(self.vessel1, (95, 170, 255), "V1")
         self._draw_vessel(self.vessel2, (255, 120, 120), "V2")
+        for vessel_id, vessel in self.extra_vessels.items():
+            label = f"V{vessel_id.replace('vessel', '')}"
+            self._draw_vessel(vessel, (255, 150, 120), label)
 
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
 
