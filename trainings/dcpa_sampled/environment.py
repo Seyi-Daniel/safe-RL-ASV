@@ -1146,6 +1146,8 @@ class SingleVessel2FeatureEnv:
                 "collision": 0,
                 "near_miss": int(self._inter_vessel_distance() <= self.envp.near_miss_distance),
                 "safe_pass_awarded": int(self.safe_pass_awarded),
+                "reward_v1": 0.0,
+                "reward_v2": 0.0,
             }
             return self.get_obs(), 0.0, False, info
 
@@ -1229,19 +1231,23 @@ class SingleVessel2FeatureEnv:
             d_vessel2 = self._goal_distance(self.vessel2)
             h_err_vessel1 = self._goal_heading_error(self.vessel1)
             h_err_vessel2 = self._goal_heading_error(self.vessel2)
-            reward = self.rewp.living_penalty
-            reward += self._compute_progress_reward_for_vessel(
+            vessel1_local_reward = self._compute_progress_reward_for_vessel(
                 self.prev_goal_d_vessel1,
                 d_vessel1,
                 self.prev_goal_heading_err_vessel1,
                 h_err_vessel1,
             )
-            reward += self._compute_progress_reward_for_vessel(
+            vessel2_local_reward = self._compute_progress_reward_for_vessel(
                 self.prev_goal_d_vessel2,
                 d_vessel2,
                 self.prev_goal_heading_err_vessel2,
                 h_err_vessel2,
             )
+            shared_reward = self.rewp.living_penalty
+            reward_v1 = vessel1_local_reward + shared_reward
+            reward_v2 = vessel2_local_reward + shared_reward
+            # Backward-compatible scalar: reconstruct historical shared objective.
+            reward = reward_v1 + reward_v2 - shared_reward
             self.prev_goal_d_vessel1 = d_vessel1
             self.prev_goal_d_vessel2 = d_vessel2
             self.prev_goal_heading_err_vessel1 = h_err_vessel1
@@ -1284,6 +1290,8 @@ class SingleVessel2FeatureEnv:
                 "vessel2_relative_bearing_deg": float(self.vessel2_relative_bearing_deg),
                 "vessel1_control_source": self.vessel1_control_source,
                 "vessel2_control_source": self.vessel2_control_source,
+                "reward_v1": float(reward_v1),
+                "reward_v2": float(reward_v2),
             }
             self.prev_vessel1_rl_active = self.vessel1_rl_active
             self.prev_vessel2_rl_active = self.vessel2_rl_active
@@ -1338,87 +1346,95 @@ class SingleVessel2FeatureEnv:
         elif self.vessel1_reached and self.vessel2_reached:
             done, reason = True, "both_reached"
 
-        reward = self.rewp.living_penalty
+        vessel1_local_reward = 0.0
+        vessel2_local_reward = 0.0
+        shared_reward = self.rewp.living_penalty
         d_vessel1 = self._goal_distance(self.vessel1)
         d_vessel2 = self._goal_distance(self.vessel2)
         h_err_vessel1 = self._goal_heading_error(self.vessel1)
         h_err_vessel2 = self._goal_heading_error(self.vessel2)
-        reward += self._compute_progress_reward_for_vessel(
+        vessel1_local_reward += self._compute_progress_reward_for_vessel(
             self.prev_goal_d_vessel1,
             d_vessel1,
             self.prev_goal_heading_err_vessel1,
             h_err_vessel1,
         )
-        reward += self._compute_progress_reward_for_vessel(
+        vessel2_local_reward += self._compute_progress_reward_for_vessel(
             self.prev_goal_d_vessel2,
             d_vessel2,
             self.prev_goal_heading_err_vessel2,
             h_err_vessel2,
         )
 
-        if self.vessel1_reached and self.vessel2_reached and reason == "both_reached":
-            reward += self.rewp.goal_bonus
+        if self.vessel1_reached:
+            vessel1_local_reward += self.rewp.goal_bonus
+        if self.vessel2_reached:
+            vessel2_local_reward += self.rewp.goal_bonus
 
         if reason == "collision":
-            reward += self.rewp.collision_penalty
+            shared_reward += self.rewp.collision_penalty
 
         if near_miss:
-            reward += self.rewp.near_miss_penalty
+            shared_reward += self.rewp.near_miss_penalty
 
         if inter_vessel_distance < self.envp.safe_pass_distance:
-            reward -= self.rewp.unsafe_proximity_penalty_weight * (self.envp.safe_pass_distance - inter_vessel_distance)
+            shared_reward -= self.rewp.unsafe_proximity_penalty_weight * (self.envp.safe_pass_distance - inter_vessel_distance)
 
         if self.risk_of_collision:
             self.encounter_was_risky = True
 
         if self.encounter_was_risky and (not self.risk_of_collision) and (inter_vessel_distance > self.envp.safe_pass_distance) and (not self.safe_pass_awarded):
-            reward += self.rewp.safe_pass_bonus
+            shared_reward += self.rewp.safe_pass_bonus
             self.safe_pass_awarded = True
 
         if self.colregs_scenario in {"crossing", "head_on", "overtaking"} and self.risk_of_collision:
             if self.vessel1_role == "give_way" and not self.vessel1_giveway_action_awarded:
                 if self.vessel1_control_source in {"starboard_avoid", "rl_external", "rl_internal"} and abs(self.vessel1.rudder) > 0.1:
                     if tcpa > self.envp.standon_escalation_tcpa:
-                        reward += self.rewp.give_way_early_action_bonus
+                        vessel1_local_reward += self.rewp.give_way_early_action_bonus
                     else:
-                        reward += self.rewp.late_action_penalty
+                        vessel1_local_reward += self.rewp.late_action_penalty
                     self.vessel1_giveway_action_awarded = True
             if self.vessel2_role == "give_way" and not self.vessel2_giveway_action_awarded:
                 if self.vessel2_control_source in {"starboard_avoid", "rl_external", "rl_internal"} and abs(self.vessel2.rudder) > 0.1:
                     if tcpa > self.envp.standon_escalation_tcpa:
-                        reward += self.rewp.give_way_early_action_bonus
+                        vessel2_local_reward += self.rewp.give_way_early_action_bonus
                     else:
-                        reward += self.rewp.late_action_penalty
+                        vessel2_local_reward += self.rewp.late_action_penalty
                     self.vessel2_giveway_action_awarded = True
 
             if self.vessel1_role == "stand_on" and not self.vessel1_standon_hold_awarded:
                 if self.vessel1_control_source == "hold_course_speed":
-                    reward += self.rewp.stand_on_hold_bonus
+                    vessel1_local_reward += self.rewp.stand_on_hold_bonus
                     self.vessel1_standon_hold_awarded = True
                 elif abs(self.vessel1.rudder) > 0.1:
-                    reward += self.rewp.stand_on_unnecessary_action_penalty
+                    vessel1_local_reward += self.rewp.stand_on_unnecessary_action_penalty
             if self.vessel2_role == "stand_on" and not self.vessel2_standon_hold_awarded:
                 if self.vessel2_control_source == "hold_course_speed":
-                    reward += self.rewp.stand_on_hold_bonus
+                    vessel2_local_reward += self.rewp.stand_on_hold_bonus
                     self.vessel2_standon_hold_awarded = True
                 elif abs(self.vessel2.rudder) > 0.1:
-                    reward += self.rewp.stand_on_unnecessary_action_penalty
+                    vessel2_local_reward += self.rewp.stand_on_unnecessary_action_penalty
 
             if self.colregs_scenario == "crossing":
                 if self.vessel1_role == "give_way" and tcpa <= self.envp.standon_escalation_tcpa and abs(self.vessel1_relative_bearing_deg) < self.envp.colregs_crossing_starboard_max_deg:
-                    reward += self.rewp.crossing_ahead_penalty
+                    vessel1_local_reward += self.rewp.crossing_ahead_penalty
                 if self.vessel2_role == "give_way" and tcpa <= self.envp.standon_escalation_tcpa and abs(self.vessel2_relative_bearing_deg) < self.envp.colregs_crossing_starboard_max_deg:
-                    reward += self.rewp.crossing_ahead_penalty
+                    vessel2_local_reward += self.rewp.crossing_ahead_penalty
 
         vessel1_rudder_sign = 1 if self.vessel1.rudder > 1e-3 else -1 if self.vessel1.rudder < -1e-3 else 0
         vessel2_rudder_sign = 1 if self.vessel2.rudder > 1e-3 else -1 if self.vessel2.rudder < -1e-3 else 0
         if self.prev_vessel1_rudder_sign != 0 and vessel1_rudder_sign != 0 and vessel1_rudder_sign != self.prev_vessel1_rudder_sign:
-            reward -= self.rewp.oscillation_penalty_weight
+            vessel1_local_reward -= self.rewp.oscillation_penalty_weight
         if self.prev_vessel2_rudder_sign != 0 and vessel2_rudder_sign != 0 and vessel2_rudder_sign != self.prev_vessel2_rudder_sign:
-            reward -= self.rewp.oscillation_penalty_weight
+            vessel2_local_reward -= self.rewp.oscillation_penalty_weight
         self.prev_vessel1_rudder_sign = vessel1_rudder_sign
         self.prev_vessel2_rudder_sign = vessel2_rudder_sign
         self.last_inter_vessel_distance = inter_vessel_distance
+        reward_v1 = vessel1_local_reward + shared_reward
+        reward_v2 = vessel2_local_reward + shared_reward
+        # Backward-compatible scalar: reconstruct historical shared objective.
+        reward = reward_v1 + reward_v2 - shared_reward
 
         self.prev_goal_d_vessel1 = d_vessel1
         self.prev_goal_d_vessel2 = d_vessel2
@@ -1471,6 +1487,8 @@ class SingleVessel2FeatureEnv:
             "safe_pass_awarded": int(self.safe_pass_awarded),
             "vessel1_control_source": self.vessel1_control_source,
             "vessel2_control_source": self.vessel2_control_source,
+            "reward_v1": float(reward_v1),
+            "reward_v2": float(reward_v2),
         }
 
         # Show the RL takeover overlay exactly once per episode, on the first step RL activates.
