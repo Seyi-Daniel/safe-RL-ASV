@@ -134,7 +134,7 @@ class TrainParams:
     eps_end: float = 0.05
     eps_decay_steps: int = 300_000
 
-    # network backbone: obs_dim(=12 from env by default) -> hidden -> hidden -> 2 continuous actions
+    # network backbone: obs_dim(=96 in current radar observation design) -> hidden -> hidden -> 2 continuous actions
     hidden_dim: int = 256
 
     # reproducibility / checkpoints
