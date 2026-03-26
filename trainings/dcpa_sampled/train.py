@@ -175,6 +175,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hidden-dim", type=int, default=TrainParams().hidden_dim)
     p.add_argument("--seed", type=int, default=TrainParams().seed)
     p.add_argument("--episode-seconds", type=float, default=500.0)
+    p.add_argument("--num-vessels", type=int, default=EnvParams().num_vessels)
     p.add_argument("--dcpa-threshold", type=float, default=10.0)
     p.add_argument("--tcpa-threshold", type=float, default=10.0)
     p.add_argument("--dcpa-sample-max-tries", type=int, default=0, help="max sampling tries per training episode (0=unlimited)")
@@ -234,6 +235,7 @@ def main() -> None:
 
     envp = EnvParams(
         seed=args.seed,
+        num_vessels=max(2, int(args.num_vessels)),
         episode_seconds=args.episode_seconds,
         dcpa_risk_threshold=args.dcpa_threshold,
         tcpa_risk_threshold=args.tcpa_threshold,
@@ -320,12 +322,15 @@ def main() -> None:
                 if isinstance(reward_by_vessel, dict) and (vessel_id in reward_by_vessel):
                     vessel_reward = float(reward_by_vessel[vessel_id])
                 else:
-                    vessel_reward_key = "reward_v1" if vessel_id == "vessel1" else "reward_v2"
-                    # Backward-compatible fallback path.
-                    vessel_reward = float(info[vessel_reward_key])
+                    if vessel_id == "vessel1":
+                        vessel_reward = float(info["reward_v1"])
+                    elif vessel_id == "vessel2":
+                        vessel_reward = float(info["reward_v2"])
+                    else:
+                        vessel_reward = float(reward)
                 # Replay is built from per-vessel rewards, not the scalar compatibility reward.
                 replay.push(vessel_obs, action_by_vessel[vessel_id], vessel_reward, vessel_next_obs, done)
-            takeover_triggered = takeover_triggered or bool(info.get("vessel1_rl_active", 0)) or bool(info.get("vessel2_rl_active", 0))
+            takeover_triggered = takeover_triggered or bool(env.get_rl_controlled_vessel_ids())
             ep_return += reward
             # Epsilon schedule is defined over environment steps, not replay entries.
             agent.global_step += 1
