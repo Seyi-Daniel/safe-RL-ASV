@@ -200,14 +200,10 @@ def _collect_rl_actions_for_step(
     """
     obs_by_vessel: dict[str, np.ndarray] = {}
     action_by_vessel: dict[str, np.ndarray] = {}
-    if env.vessel1_rl_active:
-        obs_v1 = env.get_obs_for_vessel("vessel1")
-        obs_by_vessel["vessel1"] = obs_v1
-        action_by_vessel["vessel1"] = agent.act(obs_v1)
-    if env.vessel2_rl_active:
-        obs_v2 = env.get_obs_for_vessel("vessel2")
-        obs_by_vessel["vessel2"] = obs_v2
-        action_by_vessel["vessel2"] = agent.act(obs_v2)
+    for vessel_id in env.get_rl_controlled_vessel_ids():
+        obs = env.get_obs_for_vessel(vessel_id)
+        obs_by_vessel[vessel_id] = obs
+        action_by_vessel[vessel_id] = agent.act(obs)
     return obs_by_vessel, action_by_vessel
 
 
@@ -320,9 +316,14 @@ def main() -> None:
 
             for vessel_id, vessel_obs in obs_by_vessel.items():
                 vessel_next_obs = env.get_obs_for_vessel(vessel_id)
-                vessel_reward_key = "reward_v1" if vessel_id == "vessel1" else "reward_v2"
+                reward_by_vessel = info.get("reward_by_vessel")
+                if isinstance(reward_by_vessel, dict) and (vessel_id in reward_by_vessel):
+                    vessel_reward = float(reward_by_vessel[vessel_id])
+                else:
+                    vessel_reward_key = "reward_v1" if vessel_id == "vessel1" else "reward_v2"
+                    # Backward-compatible fallback path.
+                    vessel_reward = float(info[vessel_reward_key])
                 # Replay is built from per-vessel rewards, not the scalar compatibility reward.
-                vessel_reward = float(info[vessel_reward_key])
                 replay.push(vessel_obs, action_by_vessel[vessel_id], vessel_reward, vessel_next_obs, done)
             takeover_triggered = takeover_triggered or bool(info.get("vessel1_rl_active", 0)) or bool(info.get("vessel2_rl_active", 0))
             ep_return += reward

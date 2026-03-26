@@ -280,6 +280,41 @@ class SingleVessel2FeatureEnv:
             return self.vessel2_rl_active
         raise KeyError(f"Unknown vessel_id: {vessel_id}")
 
+    def get_model_control_latched(self, vessel_id: str) -> bool:
+        """Return current model-control latch state for the given vessel ID."""
+        if vessel_id == "vessel1":
+            return self.vessel1_model_control_latched
+        if vessel_id == "vessel2":
+            return self.vessel2_model_control_latched
+        raise KeyError(f"Unknown vessel_id: {vessel_id}")
+
+    def get_vessel_role(self, vessel_id: str) -> str:
+        """Return current COLREGS role for the given vessel ID."""
+        if vessel_id == "vessel1":
+            return self.vessel1_role
+        if vessel_id == "vessel2":
+            return self.vessel2_role
+        raise KeyError(f"Unknown vessel_id: {vessel_id}")
+
+    def is_vessel_reached(self, vessel_id: str) -> bool:
+        """Return whether the given vessel has reached its goal."""
+        if vessel_id == "vessel1":
+            return self.vessel1_reached
+        if vessel_id == "vessel2":
+            return self.vessel2_reached
+        raise KeyError(f"Unknown vessel_id: {vessel_id}")
+
+    def get_rl_controlled_vessel_ids(self) -> List[str]:
+        """Return currently RL-controlled vessel IDs in deterministic order."""
+        return [vessel_id for vessel_id in self.get_vessel_ids() if self.is_vessel_rl_active(vessel_id)]
+
+    def get_reward_by_vessel(self, reward_v1: float, reward_v2: float) -> Dict[str, float]:
+        """Package current two-vessel rewards into a stable vessel-id mapping."""
+        return {
+            "vessel1": float(reward_v1),
+            "vessel2": float(reward_v2),
+        }
+
     def _get_relative_bearing(self, observer: Vessel, target: Vessel) -> float:
         """Relative bearing in degrees [0, 360): 0=head-ahead, +CCW(port), starboard near 360."""
         dx = target.x - observer.x
@@ -1257,6 +1292,7 @@ class SingleVessel2FeatureEnv:
         stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "vessel2" else "straight" if stand_on_vessel == "vessel1" else "none"
 
         if self.paused:
+            reward_by_vessel = self.get_reward_by_vessel(0.0, 0.0)
             info: Dict[str, float | str | int] = {
                 "reason": "paused",
                 "vessel1_goal_distance": self._goal_distance(self.vessel1),
@@ -1295,8 +1331,9 @@ class SingleVessel2FeatureEnv:
                 "collision": 0,
                 "near_miss": int(self._inter_vessel_distance() <= self.envp.near_miss_distance),
                 "safe_pass_awarded": int(self.safe_pass_awarded),
-                "reward_v1": 0.0,
-                "reward_v2": 0.0,
+                "reward_v1": reward_by_vessel["vessel1"],
+                "reward_v2": reward_by_vessel["vessel2"],
+                "reward_by_vessel": reward_by_vessel,
             }
             return self.get_obs(), 0.0, False, info
 
@@ -1395,6 +1432,7 @@ class SingleVessel2FeatureEnv:
             shared_reward = self.rewp.living_penalty
             reward_v1 = vessel1_local_reward + shared_reward
             reward_v2 = vessel2_local_reward + shared_reward
+            reward_by_vessel = self.get_reward_by_vessel(reward_v1, reward_v2)
             # Backward-compatible scalar return for legacy callers/logging.
             # Training updates consume per-vessel rewards from info["reward_v1"/"reward_v2"].
             reward = reward_v1 + reward_v2 - shared_reward
@@ -1440,8 +1478,9 @@ class SingleVessel2FeatureEnv:
                 "vessel2_relative_bearing_deg": float(self.vessel2_relative_bearing_deg),
                 "vessel1_control_source": self.vessel1_control_source,
                 "vessel2_control_source": self.vessel2_control_source,
-                "reward_v1": float(reward_v1),
-                "reward_v2": float(reward_v2),
+                "reward_v1": reward_by_vessel["vessel1"],
+                "reward_v2": reward_by_vessel["vessel2"],
+                "reward_by_vessel": reward_by_vessel,
             }
             self.prev_vessel1_rl_active = self.vessel1_rl_active
             self.prev_vessel2_rl_active = self.vessel2_rl_active
@@ -1563,6 +1602,7 @@ class SingleVessel2FeatureEnv:
         self.last_inter_vessel_distance = inter_vessel_distance
         reward_v1 = vessel1_local_reward + shared_reward
         reward_v2 = vessel2_local_reward + shared_reward
+        reward_by_vessel = self.get_reward_by_vessel(reward_v1, reward_v2)
         # Backward-compatible scalar return for legacy callers/logging.
         # Training updates consume per-vessel rewards from info["reward_v1"/"reward_v2"].
         reward = reward_v1 + reward_v2 - shared_reward
@@ -1618,8 +1658,9 @@ class SingleVessel2FeatureEnv:
             "safe_pass_awarded": int(self.safe_pass_awarded),
             "vessel1_control_source": self.vessel1_control_source,
             "vessel2_control_source": self.vessel2_control_source,
-            "reward_v1": float(reward_v1),
-            "reward_v2": float(reward_v2),
+            "reward_v1": reward_by_vessel["vessel1"],
+            "reward_v2": reward_by_vessel["vessel2"],
+            "reward_by_vessel": reward_by_vessel,
         }
 
         # Show the RL takeover overlay exactly once per episode, on the first step RL activates.
