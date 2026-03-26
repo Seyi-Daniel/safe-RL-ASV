@@ -162,8 +162,6 @@ class SingleVessel2FeatureEnv:
         self.safe_pass_awarded = False
         self.vessel1_giveway_action_awarded = False
         self.vessel2_giveway_action_awarded = False
-        self.vessel1_standon_hold_awarded = False
-        self.vessel2_standon_hold_awarded = False
         self.prev_vessel1_rudder_sign = 0
         self.prev_vessel2_rudder_sign = 0
         self.candidate_scenario = "safe"
@@ -1090,8 +1088,6 @@ class SingleVessel2FeatureEnv:
         self.safe_pass_awarded = False
         self.vessel1_giveway_action_awarded = False
         self.vessel2_giveway_action_awarded = False
-        self.vessel1_standon_hold_awarded = False
-        self.vessel2_standon_hold_awarded = False
         self.prev_vessel1_rudder_sign = 0
         self.prev_vessel2_rudder_sign = 0
         self.candidate_scenario = "safe"
@@ -1103,7 +1099,7 @@ class SingleVessel2FeatureEnv:
         self.active_non_overtaking_vessel2_role = "none"
         self.active_non_overtaking_exit_steps = 0
 
-        # Episode termination is fixed-time or both-reached (whichever occurs first).
+        # Episode termination is collision, fixed-time timeout, or both vessels reaching goals.
         self.max_steps = max(1, int(round(self.envp.episode_seconds / self.envp.dt)))
 
         self._build_vessel1_planned_path()
@@ -1305,7 +1301,8 @@ class SingleVessel2FeatureEnv:
             shared_reward = self.rewp.living_penalty
             reward_v1 = vessel1_local_reward + shared_reward
             reward_v2 = vessel2_local_reward + shared_reward
-            # Backward-compatible scalar: reconstruct historical shared objective.
+            # Backward-compatible scalar return for legacy callers/logging.
+            # Training updates consume per-vessel rewards from info["reward_v1"/"reward_v2"].
             reward = reward_v1 + reward_v2 - shared_reward
             self.prev_goal_d_vessel1 = d_vessel1
             self.prev_goal_d_vessel2 = d_vessel2
@@ -1472,7 +1469,8 @@ class SingleVessel2FeatureEnv:
         self.last_inter_vessel_distance = inter_vessel_distance
         reward_v1 = vessel1_local_reward + shared_reward
         reward_v2 = vessel2_local_reward + shared_reward
-        # Backward-compatible scalar: reconstruct historical shared objective.
+        # Backward-compatible scalar return for legacy callers/logging.
+        # Training updates consume per-vessel rewards from info["reward_v1"/"reward_v2"].
         reward = reward_v1 + reward_v2 - shared_reward
 
         self.prev_goal_d_vessel1 = d_vessel1

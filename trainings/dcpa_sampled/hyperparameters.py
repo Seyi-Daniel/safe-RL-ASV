@@ -94,18 +94,20 @@ class RewardParams:
     progress_weight: float = 0.03
     goal_bonus: float = 8.0
 
-    # terminal safety
-    out_of_bounds_penalty: float = -8.0
+    # shared/global safety terms
     collision_penalty: float = -20.0
     near_miss_penalty: float = -2.5
     unsafe_proximity_penalty_weight: float = 0.05
     safe_pass_bonus: float = 0.5
     give_way_early_action_bonus: float = 0.2
     late_action_penalty: float = -0.4
-    stand_on_hold_bonus: float = 0.1
-    stand_on_unnecessary_action_penalty: float = -0.2
     crossing_ahead_penalty: float = -0.5
     oscillation_penalty_weight: float = 0.02
+    # Deprecated / inactive fields kept for compatibility with older configs.
+    # Out-of-bounds penalty and stand-on learning rewards are not used in active reward computation.
+    out_of_bounds_penalty: float = -8.0
+    stand_on_hold_bonus: float = 0.1
+    stand_on_unnecessary_action_penalty: float = -0.2
     # Scenario-shaping thresholds (post-takeover interpretation)
     starboard_min_rudder: float = 0.1
     port_max_rudder: float = -0.1
