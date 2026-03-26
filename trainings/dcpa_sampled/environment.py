@@ -368,6 +368,89 @@ class SingleVessel2FeatureEnv:
         """Return currently RL-controlled vessel IDs in deterministic order."""
         return [vessel_id for vessel_id in self.get_vessel_ids() if self.is_vessel_rl_active(vessel_id)]
 
+    def _build_pairwise_interactions(self) -> List[Dict[str, float | str | int]]:
+        vessel_map = {vessel_id: vessel for vessel_id, vessel in self.get_vessel_map().items() if vessel is not None}
+        vessel_ids = list(vessel_map.keys())
+        interactions: List[Dict[str, float | str | int]] = []
+        for i, id_a in enumerate(vessel_ids):
+            va = vessel_map[id_a]
+            for id_b in vessel_ids[i + 1:]:
+                vb = vessel_map[id_b]
+                risk, tcpa, dcpa = self.assess_risk(va, vb)
+                scenario, rb_a, rb_b = self.classify_geometry(va, vb)
+                role_a, role_b = self.assign_roles(scenario, rb_a, rb_b)
+                interactions.append(
+                    {
+                        "a": id_a,
+                        "b": id_b,
+                        "risk": int(risk),
+                        "scenario": scenario,
+                        "role_a": role_a,
+                        "role_b": role_b,
+                        "tcpa": float(tcpa),
+                        "dcpa": float(dcpa),
+                    }
+                )
+        return interactions
+
+    def _build_vessel_status(self, pairwise_interactions: List[Dict[str, float | str | int]]) -> Dict[str, Dict[str, float | str | int]]:
+        role_by_vessel: Dict[str, str] = {vessel_id: "none" for vessel_id in self.get_vessel_ids()}
+        role_candidates: Dict[str, set[str]] = {vessel_id: set() for vessel_id in self.get_vessel_ids()}
+
+        # Keep vessel1/vessel2 role reporting aligned with existing environment role fields.
+        role_by_vessel["vessel1"] = self.vessel1_role
+        role_by_vessel["vessel2"] = self.vessel2_role
+
+        for entry in pairwise_interactions:
+            if int(entry["risk"]) != 1:
+                continue
+            a = str(entry["a"])
+            b = str(entry["b"])
+            role_candidates[a].add(str(entry["role_a"]))
+            role_candidates[b].add(str(entry["role_b"]))
+
+        for vessel_id in self.extra_vessels:
+            roles = role_candidates[vessel_id]
+            if "give_way" in roles:
+                role_by_vessel[vessel_id] = "give_way"
+            elif "stand_on" in roles:
+                role_by_vessel[vessel_id] = "stand_on"
+            else:
+                role_by_vessel[vessel_id] = "none"
+
+        status: Dict[str, Dict[str, float | str | int]] = {}
+        for vessel_id in self.get_vessel_ids():
+            status[vessel_id] = {
+                "role": role_by_vessel[vessel_id],
+                "rl_active": int(self.is_vessel_rl_active(vessel_id)),
+                "model_control_latched": int(self.get_model_control_latched(vessel_id)),
+                "reached": int(self.is_vessel_reached(vessel_id)),
+            }
+        return status
+
+    def _append_multi_vessel_debug_info(self, info: Dict[str, object]) -> None:
+        pairwise_interactions = self._build_pairwise_interactions()
+        vessel_status = self._build_vessel_status(pairwise_interactions)
+        info["pairwise_interactions"] = pairwise_interactions
+        info["vessel_status"] = vessel_status
+
+    def _maybe_print_multi_vessel_debug(self, info: Dict[str, object]) -> None:
+        if not self.envp.debug_multi_vessel_status:
+            return
+        pairwise_interactions = info.get("pairwise_interactions", [])
+        vessel_status = info.get("vessel_status", {})
+        risky_pairs = sum(1 for row in pairwise_interactions if int(row.get("risk", 0)) == 1)
+        controlled = [vessel_id for vessel_id, row in vessel_status.items() if int(row.get("rl_active", 0)) == 1]
+        role_latch = ", ".join(
+            f"{vessel_id}:{row.get('role', 'none')}/L{int(row.get('model_control_latched', 0))}"
+            for vessel_id, row in vessel_status.items()
+        )
+        print(
+            "[MULTI_VESSEL_DEBUG] "
+            f"step={self.step_idx} controlled={controlled} risky_pairs={risky_pairs} "
+            f"roles_latches=[{role_latch}]"
+        )
+
     def get_reward_by_vessel(self, reward_v1: float, reward_v2: float, extras: Optional[Dict[str, float]] = None) -> Dict[str, float]:
         """Package current rewards into a stable vessel-id mapping."""
         rewards = {
@@ -1416,7 +1499,7 @@ class SingleVessel2FeatureEnv:
     def step(
         self,
         action: Union[np.ndarray, Tuple[float, float], list, Dict[str, Union[np.ndarray, Tuple[float, float], list]]],
-    ) -> Tuple[np.ndarray, float, bool, Dict[str, float | str | int]]:
+    ) -> Tuple[np.ndarray, float, bool, Dict[str, object]]:
         action_by_vessel, rudder_cmd, throttle_cmd = self._resolve_step_actions(action)
         give_way_vessel = "vessel1" if self.vessel1_role == "give_way" else "vessel2" if self.vessel2_role == "give_way" else "none"
         stand_on_vessel = "vessel1" if self.vessel1_role == "stand_on" else "vessel2" if self.vessel2_role == "stand_on" else "none"
@@ -1424,7 +1507,7 @@ class SingleVessel2FeatureEnv:
 
         if self.paused:
             reward_by_vessel = self.get_reward_by_vessel(0.0, 0.0, extras={vessel_id: 0.0 for vessel_id in self.extra_vessels})
-            info: Dict[str, float | str | int] = {
+            info: Dict[str, object] = {
                 "reason": "paused",
                 "vessel1_goal_distance": self._goal_distance(self.vessel1),
                 "vessel2_goal_distance": self._goal_distance(self.vessel2),
@@ -1466,6 +1549,8 @@ class SingleVessel2FeatureEnv:
                 "reward_v2": reward_by_vessel["vessel2"],
                 "reward_by_vessel": reward_by_vessel,
             }
+            self._append_multi_vessel_debug_info(info)
+            self._maybe_print_multi_vessel_debug(info)
             return self.get_obs(), 0.0, False, info
 
         encounter = self._classify_colregs()
@@ -1578,7 +1663,7 @@ class SingleVessel2FeatureEnv:
             self.prev_goal_d_vessel2 = d_vessel2
             self.prev_goal_heading_err_vessel1 = h_err_vessel1
             self.prev_goal_heading_err_vessel2 = h_err_vessel2
-            info: Dict[str, float | str | int] = {
+            info: Dict[str, object] = {
                 "reason": "no_takeover_trigger",
                 "vessel1_goal_distance": d_vessel1,
                 "vessel2_goal_distance": d_vessel2,
@@ -1620,6 +1705,8 @@ class SingleVessel2FeatureEnv:
                 "reward_v2": reward_by_vessel["vessel2"],
                 "reward_by_vessel": reward_by_vessel,
             }
+            self._append_multi_vessel_debug_info(info)
+            self._maybe_print_multi_vessel_debug(info)
             self.prev_vessel1_rl_active = self.vessel1_rl_active
             self.prev_vessel2_rl_active = self.vessel2_rl_active
             return self.get_obs(), float(reward), True, info
@@ -1781,7 +1868,7 @@ class SingleVessel2FeatureEnv:
         self.prev_goal_heading_err_vessel1 = h_err_vessel1
         self.prev_goal_heading_err_vessel2 = h_err_vessel2
 
-        info: Dict[str, float | str | int] = {
+        info: Dict[str, object] = {
             "reason": reason,
             "vessel1_goal_distance": d_vessel1,
             "vessel2_goal_distance": d_vessel2,
@@ -1831,6 +1918,8 @@ class SingleVessel2FeatureEnv:
             "reward_v2": reward_by_vessel["vessel2"],
             "reward_by_vessel": reward_by_vessel,
         }
+        self._append_multi_vessel_debug_info(info)
+        self._maybe_print_multi_vessel_debug(info)
 
         # Show the RL takeover overlay exactly once per episode, on the first step RL activates.
         if (

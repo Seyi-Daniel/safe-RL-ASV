@@ -23,6 +23,7 @@ class EnvParams:
     show_grid: bool = True
     show_spawn_rings: bool = True
     enable_step_risk_logging: bool = False
+    debug_multi_vessel_status: bool = False
 
     # vessel dynamics (ASV_NEAT-style rudder-limited yaw + continuous throttle)
     max_speed: float = 7.0
