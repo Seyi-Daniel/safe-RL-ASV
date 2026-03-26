@@ -324,6 +324,65 @@ class SingleVessel2FeatureEnv:
         risk_of_collision = (0.0 <= tcpa <= self.envp.tcpa_risk_threshold) and (dcpa <= self.envp.dcpa_risk_threshold)
         return risk_of_collision, tcpa, dcpa
 
+    def _apply_head_on_shaping(self, rudder: float, tcpa: float) -> float:
+        reward = 0.0
+        if rudder > self.rewp.starboard_min_rudder:
+            reward += 0.3
+            if tcpa > self.rewp.early_action_tcpa_threshold:
+                reward += 0.2
+            elif tcpa < self.rewp.late_action_tcpa_threshold:
+                reward -= 0.2
+        elif rudder < self.rewp.port_max_rudder:
+            reward -= 0.5
+        else:
+            if tcpa < self.rewp.late_action_tcpa_threshold:
+                reward -= 0.3
+        return reward
+
+    def _apply_crossing_shaping(self, rudder: float, tcpa: float, dcpa: float) -> float:
+        reward = 0.0
+        if rudder > self.rewp.starboard_min_rudder:
+            reward += 0.25
+            if tcpa > self.rewp.early_action_tcpa_threshold:
+                reward += 0.15
+            elif tcpa < self.rewp.late_action_tcpa_threshold:
+                reward -= 0.15
+        elif rudder < self.rewp.port_max_rudder:
+            reward -= 0.4
+
+        if dcpa < self.rewp.danger_dcpa_threshold and tcpa > 0.0:
+            reward -= 0.4
+        return reward
+
+    def _apply_overtaking_shaping(self, tcpa: float, dcpa: float) -> float:
+        reward = 0.0
+        if dcpa > self.rewp.safe_dcpa_threshold:
+            reward += 0.2
+        if dcpa < self.rewp.danger_dcpa_threshold:
+            reward -= 0.3
+        if dcpa < self.rewp.safe_dcpa_threshold and tcpa < self.rewp.late_action_tcpa_threshold:
+            reward -= 0.2
+        return reward
+
+    def _scenario_local_shaping(
+        self,
+        *,
+        scenario: str,
+        rl_active: bool,
+        rudder: float,
+        tcpa: float,
+        dcpa: float,
+    ) -> float:
+        if not rl_active:
+            return 0.0
+        if scenario == "head_on":
+            return self._apply_head_on_shaping(rudder, tcpa)
+        if scenario == "crossing":
+            return self._apply_crossing_shaping(rudder, tcpa, dcpa)
+        if scenario == "overtaking":
+            return self._apply_overtaking_shaping(tcpa, dcpa)
+        return 0.0
+
     def classify_geometry(self, vessel1: Vessel, vessel2: Vessel) -> Tuple[str, float, float]:
         """Classify encounter scenario from pure geometry.
 
@@ -1387,40 +1446,20 @@ class SingleVessel2FeatureEnv:
             shared_reward += self.rewp.safe_pass_bonus
             self.safe_pass_awarded = True
 
-        if self.colregs_scenario in {"crossing", "head_on", "overtaking"} and self.risk_of_collision:
-            if self.vessel1_role == "give_way" and not self.vessel1_giveway_action_awarded:
-                if self.vessel1_control_source in {"starboard_avoid", "rl_external", "rl_internal"} and abs(self.vessel1.rudder) > 0.1:
-                    if tcpa > self.envp.standon_escalation_tcpa:
-                        vessel1_local_reward += self.rewp.give_way_early_action_bonus
-                    else:
-                        vessel1_local_reward += self.rewp.late_action_penalty
-                    self.vessel1_giveway_action_awarded = True
-            if self.vessel2_role == "give_way" and not self.vessel2_giveway_action_awarded:
-                if self.vessel2_control_source in {"starboard_avoid", "rl_external", "rl_internal"} and abs(self.vessel2.rudder) > 0.1:
-                    if tcpa > self.envp.standon_escalation_tcpa:
-                        vessel2_local_reward += self.rewp.give_way_early_action_bonus
-                    else:
-                        vessel2_local_reward += self.rewp.late_action_penalty
-                    self.vessel2_giveway_action_awarded = True
-
-            if self.vessel1_role == "stand_on" and not self.vessel1_standon_hold_awarded:
-                if self.vessel1_control_source == "hold_course_speed":
-                    vessel1_local_reward += self.rewp.stand_on_hold_bonus
-                    self.vessel1_standon_hold_awarded = True
-                elif abs(self.vessel1.rudder) > 0.1:
-                    vessel1_local_reward += self.rewp.stand_on_unnecessary_action_penalty
-            if self.vessel2_role == "stand_on" and not self.vessel2_standon_hold_awarded:
-                if self.vessel2_control_source == "hold_course_speed":
-                    vessel2_local_reward += self.rewp.stand_on_hold_bonus
-                    self.vessel2_standon_hold_awarded = True
-                elif abs(self.vessel2.rudder) > 0.1:
-                    vessel2_local_reward += self.rewp.stand_on_unnecessary_action_penalty
-
-            if self.colregs_scenario == "crossing":
-                if self.vessel1_role == "give_way" and tcpa <= self.envp.standon_escalation_tcpa and abs(self.vessel1_relative_bearing_deg) < self.envp.colregs_crossing_starboard_max_deg:
-                    vessel1_local_reward += self.rewp.crossing_ahead_penalty
-                if self.vessel2_role == "give_way" and tcpa <= self.envp.standon_escalation_tcpa and abs(self.vessel2_relative_bearing_deg) < self.envp.colregs_crossing_starboard_max_deg:
-                    vessel2_local_reward += self.rewp.crossing_ahead_penalty
+        vessel1_local_reward += self._scenario_local_shaping(
+            scenario=self.colregs_scenario,
+            rl_active=self.vessel1_rl_active,
+            rudder=self.vessel1.rudder,
+            tcpa=tcpa,
+            dcpa=dcpa,
+        )
+        vessel2_local_reward += self._scenario_local_shaping(
+            scenario=self.colregs_scenario,
+            rl_active=self.vessel2_rl_active,
+            rudder=self.vessel2.rudder,
+            tcpa=tcpa,
+            dcpa=dcpa,
+        )
 
         vessel1_rudder_sign = 1 if self.vessel1.rudder > 1e-3 else -1 if self.vessel1.rudder < -1e-3 else 0
         vessel2_rudder_sign = 1 if self.vessel2.rudder > 1e-3 else -1 if self.vessel2.rudder < -1e-3 else 0
