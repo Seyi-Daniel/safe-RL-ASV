@@ -86,6 +86,7 @@ class EnvParams:
     near_miss_distance: float = 15.0
     safe_pass_distance: float = 25.0
     sensor_range: float = 100.0
+    num_vessels: int = 2
 
 
 @dataclass
