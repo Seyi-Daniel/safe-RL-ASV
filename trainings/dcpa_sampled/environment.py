@@ -42,7 +42,7 @@ class Vessel:
 
 
 class SingleVessel2FeatureEnv:
-    """Two-vessel setup: vessel-1 straight center->circle goal, vessel-2 follows pure pursuit path."""
+    """Two-vessel environment with vessel-centric radar observations (96-dim per vessel)."""
 
     def __init__(
         self,
@@ -104,11 +104,6 @@ class SingleVessel2FeatureEnv:
         self.prev_vessel1_rl_active = False
         self.prev_vessel2_rl_active = False
         self.overtaking_latched = False
-        self.locked = False
-        self.locked_scenario = "safe"
-        self.locked_role_v1 = "none"
-        self.locked_role_v2 = "none"
-        self.lock_candidate_steps = 0
         self.latched_scenario = "safe"
         self.latched_vessel1_role = "none"
         self.latched_vessel2_role = "none"
@@ -120,11 +115,6 @@ class SingleVessel2FeatureEnv:
         self.designated_vessel1_role = "none"
         self.designated_vessel2_role = "none"
         self.rl_controlled_vessel = "none"
-        self.locked = False
-        self.locked_scenario = "safe"
-        self.locked_role_v1 = "none"
-        self.locked_role_v2 = "none"
-        self.lock_candidate_steps = 0
         self.candidate_scenario = "safe"
         self.candidate_vessel1_role = "none"
         self.candidate_vessel2_role = "none"
@@ -193,7 +183,7 @@ class SingleVessel2FeatureEnv:
             self._screen = None
 
     def set_secondary_policy(self, fn) -> None:
-        # Dual-control is disabled: policy controls only one give-way vessel via external action.
+        # Compatibility no-op: only externally supplied per-vessel actions are used.
         self.secondary_policy_fn = None
 
     def sx(self, x: float) -> int:
@@ -341,7 +331,8 @@ class SingleVessel2FeatureEnv:
         ]
 
     def _build_radar_observation(self, own_vessel: Vessel) -> List[float]:
-        # Keep nearest in-range contact per sector.
+        # Vessel-centric radar: 9 sectors, 10 features each.
+        # Keep only the closest in-range contact per sector; empty sectors are zero-filled.
         nearest_by_sector: Dict[int, Tuple[float, Vessel, float]] = {}
         for candidate in self._get_vessel_map().values():
             if candidate is None or candidate is own_vessel:
@@ -391,17 +382,6 @@ class SingleVessel2FeatureEnv:
         if inclusive:
             return b >= s or b <= e
         return b > s or b < e
-
-    def _is_closing(self, from_v: Vessel, to_v: Vessel, eps: float = 1e-6) -> bool:
-        rx = to_v.x - from_v.x
-        ry = to_v.y - from_v.y
-        r = math.hypot(rx, ry)
-        if r <= eps:
-            return False
-        rvx = math.cos(to_v.h) * to_v.speed - math.cos(from_v.h) * from_v.speed
-        rvy = math.sin(to_v.h) * to_v.speed - math.sin(from_v.h) * from_v.speed
-        range_rate = (rx * rvx + ry * rvy) / r
-        return range_rate < -eps
 
     def _tcpa_dcpa(self, a: Vessel, b: Vessel) -> Tuple[float, float]:
         avx = math.cos(a.h) * a.speed
@@ -852,10 +832,6 @@ class SingleVessel2FeatureEnv:
         r = self.envp.vessel2_outer_radius
         return self.start_x + r * math.cos(ang), self.start_y + r * math.sin(ang)
 
-    def _arc_gap(self, a0: float, a1: float) -> float:
-        d = abs(wrap_pi(a1 - a0))
-        return min(d, abs(2.0 * math.pi - d))
-
     def _inward_facing_heading(self, pos_x: float, pos_y: float) -> float:
         """Sample a heading that points into the circle interior."""
         cx, cy = self.start_x, self.start_y
@@ -968,44 +944,6 @@ class SingleVessel2FeatureEnv:
             setattr(self, reached_attr, True)
             v.speed = 0.0
 
-    def _advance_hold_course_speed(self, v: Vessel, reached_attr: str, dt: float) -> None:
-        if getattr(self, reached_attr):
-            return
-
-        d = self._goal_distance(v)
-        if d <= self.envp.goal_radius:
-            setattr(self, reached_attr, True)
-            v.speed = 0.0
-            return
-
-        travel = min(v.speed * dt, d)
-        v.x += math.cos(v.h) * travel
-        v.y += math.sin(v.h) * travel
-
-        if self._goal_distance(v) <= self.envp.goal_radius:
-            setattr(self, reached_attr, True)
-            v.speed = 0.0
-
-    def _fallback_colregs_action(self, vessel_name: str, scenario: str, role: str) -> Tuple[float, float, str]:
-        if scenario == "head_on":
-            return self.envp.fallback_starboard_rudder_cmd, self.envp.fallback_headon_throttle_cmd, "starboard_avoid"
-
-        if scenario == "crossing" and role == "give_way":
-            return self.envp.fallback_starboard_rudder_cmd, self.envp.fallback_crossing_throttle_cmd, "starboard_avoid"
-
-        if scenario == "crossing" and role == "stand_on":
-            return 0.0, 0.0, "hold_course_speed"
-
-        if scenario == "overtaking" and role == "give_way":
-            return self.envp.fallback_starboard_rudder_cmd, self.envp.fallback_crossing_throttle_cmd, "starboard_avoid"
-
-        if scenario == "overtaking" and role == "stand_on":
-            return 0.0, 0.0, "hold_course_speed"
-
-        if vessel_name == "vessel2":
-            return 0.0, 0.0, "pure_pursuit"
-        return 0.0, 0.0, "straight"
-
     def _advance_controlled(self, v: Vessel, reached_attr: str, rudder_cmd: float, throttle_cmd: float, dt: float) -> None:
         if getattr(self, reached_attr):
             return
@@ -1070,6 +1008,7 @@ class SingleVessel2FeatureEnv:
         self.vessel2_planned_path = pts
 
     def _build_obs(self, own_vessel: Vessel) -> np.ndarray:
+        # Observation layout: radar(9 sectors × 10 features = 90) + own-vessel features(6) = 96.
         sector_features = self._build_radar_observation(own_vessel)
 
         # own_speed_norm = own_speed / max_speed
@@ -1103,7 +1042,7 @@ class SingleVessel2FeatureEnv:
         raise ValueError(f"Unknown vessel_id: {vessel_id!r}")
 
     def get_obs(self) -> np.ndarray:
-        # Temporary compatibility path while training/policy stay single-observation.
+        # Compatibility path for callers that still expect a single observation tensor.
         return self.get_obs_for_vessel("vessel1")
 
     def reset(self, seed: Optional[int] = None) -> np.ndarray:
@@ -1258,6 +1197,8 @@ class SingleVessel2FeatureEnv:
             info_action = vessel1_action if vessel1_action is not None else vessel2_action
         else:
             shared_action = self._normalize_action_vector(action)
+            # Backward-compatible path: a single action vector is applied to both vessels.
+            # Current training passes a dict and controls only RL-active give-way vessels.
             vessel1_action = shared_action
             vessel2_action = shared_action
             info_action = shared_action

@@ -194,7 +194,10 @@ def _collect_rl_actions_for_step(
     env: SingleVessel2FeatureEnv,
     agent: DDPGAgent,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-    """Collect per-vessel observations/actions from a single pre-step world state."""
+    """Collect per-vessel observations/actions from a single pre-step world state.
+
+    A single shared policy is queried separately for each RL-active vessel.
+    """
     obs_by_vessel: dict[str, np.ndarray] = {}
     action_by_vessel: dict[str, np.ndarray] = {}
     if env.vessel1_rl_active:
@@ -318,6 +321,7 @@ def main() -> None:
             for vessel_id, vessel_obs in obs_by_vessel.items():
                 vessel_next_obs = env.get_obs_for_vessel(vessel_id)
                 vessel_reward_key = "reward_v1" if vessel_id == "vessel1" else "reward_v2"
+                # Replay is built from per-vessel rewards, not the scalar compatibility reward.
                 vessel_reward = float(info[vessel_reward_key])
                 replay.push(vessel_obs, action_by_vessel[vessel_id], vessel_reward, vessel_next_obs, done)
             takeover_triggered = takeover_triggered or bool(info.get("vessel1_rl_active", 0)) or bool(info.get("vessel2_rl_active", 0))
