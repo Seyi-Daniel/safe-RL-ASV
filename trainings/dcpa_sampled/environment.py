@@ -360,12 +360,18 @@ class SingleVessel2FeatureEnv:
             dcpa_norm,
         ]
 
-    def _build_radar_observation(self, own_vessel: Vessel) -> List[float]:
+    def _build_radar_observation(self, own_vessel_id: str) -> List[float]:
         # Vessel-centric radar: 9 sectors, 10 features each.
         # Keep only the closest in-range contact per sector; empty sectors are zero-filled.
+        if own_vessel_id not in self.get_vessel_ids():
+            raise ValueError(f"Unknown vessel_id: {own_vessel_id!r}")
+        own_vessel = self.get_vessel_by_id(own_vessel_id)
+        if own_vessel is None:
+            raise ValueError(f"Unknown vessel_id: {own_vessel_id!r}")
+
         nearest_by_sector: Dict[int, Tuple[float, Vessel, float]] = {}
-        for candidate in self._get_vessel_map().values():
-            if candidate is None or candidate is own_vessel:
+        for candidate in self.get_other_vessels(own_vessel_id):
+            if candidate is None:
                 continue
             distance = math.hypot(candidate.x - own_vessel.x, candidate.y - own_vessel.y)
             if distance > self.envp.sensor_range:
@@ -1037,9 +1043,9 @@ class SingleVessel2FeatureEnv:
 
         self.vessel2_planned_path = pts
 
-    def _build_obs(self, own_vessel: Vessel) -> np.ndarray:
+    def _build_obs(self, own_vessel: Vessel, own_vessel_id: str) -> np.ndarray:
         # Observation layout: radar(9 sectors × 10 features = 90) + own-vessel features(6) = 96.
-        sector_features = self._build_radar_observation(own_vessel)
+        sector_features = self._build_radar_observation(own_vessel_id)
 
         # own_speed_norm = own_speed / max_speed
         own_speed_norm = own_vessel.speed / max(1e-6, self.envp.max_speed)
@@ -1065,10 +1071,11 @@ class SingleVessel2FeatureEnv:
         return np.asarray(sector_features + own_features, dtype=np.float32)
 
     def get_obs_for_vessel(self, vessel_id: str) -> np.ndarray:
-        vessel_map = self._get_vessel_map()
-        own_vessel = vessel_map.get(vessel_id)
+        if vessel_id not in self.get_vessel_ids():
+            raise ValueError(f"Unknown vessel_id: {vessel_id!r}")
+        own_vessel = self.get_vessel_map().get(vessel_id)
         if own_vessel is not None:
-            return self._build_obs(own_vessel)
+            return self._build_obs(own_vessel, vessel_id)
         raise ValueError(f"Unknown vessel_id: {vessel_id!r}")
 
     def get_obs(self) -> np.ndarray:
