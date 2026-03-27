@@ -200,12 +200,34 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--render", action="store_true", help="render during training")
     p.add_argument("--no-render", dest="render", action="store_false")
     p.set_defaults(render=False)
+    p.add_argument("--eval-only", action="store_true", help="run deterministic evaluation only (no training updates)")
+    p.add_argument("--eval-episodes", type=int, default=30, help="accepted evaluation episodes per scenario")
+    p.add_argument(
+        "--eval-scenario",
+        type=str,
+        default="all",
+        choices=["head_on", "crossing", "overtaking", "all"],
+        help="scenario to evaluate (or all)",
+    )
+    p.add_argument(
+        "--eval-max-tries-per-episode",
+        type=int,
+        default=200,
+        help="max seed attempts to find a matching scenario per requested eval episode",
+    )
+    p.add_argument(
+        "--eval-checkpoint",
+        type=str,
+        default="",
+        help="checkpoint path for eval-only mode (default: <out-dir>/ddqn_policy.pt)",
+    )
     return p.parse_args()
 
 
 def _collect_rl_actions_for_step(
     env: SingleVessel2FeatureEnv,
     agent: DDPGAgent,
+    greedy: bool = False,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Collect per-vessel observations/actions from a single pre-step world state.
 
@@ -216,8 +238,111 @@ def _collect_rl_actions_for_step(
     for vessel_id in env.get_rl_controlled_vessel_ids():
         obs = env.get_obs_for_vessel(vessel_id)
         obs_by_vessel[vessel_id] = obs
-        action_by_vessel[vessel_id] = agent.act(obs)
+        action_by_vessel[vessel_id] = agent.act(obs, greedy=greedy)
     return obs_by_vessel, action_by_vessel
+
+
+def _classify_initial_two_vessel_scenario(env: SingleVessel2FeatureEnv) -> str:
+    if env.vessel1 is None or env.vessel2 is None:
+        return "safe"
+    scenario, _, _ = env.classify_geometry(env.vessel1, env.vessel2)
+    return str(scenario)
+
+
+def _run_eval_only(
+    args: argparse.Namespace,
+    env: SingleVessel2FeatureEnv,
+    agent: DDPGAgent,
+) -> None:
+    checkpoint_path = Path(args.eval_checkpoint) if args.eval_checkpoint else (Path(args.out_dir) / "ddqn_policy.pt")
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Evaluation checkpoint not found: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=agent.device)
+    actor_state = ckpt.get("actor_state_dict")
+    if actor_state is None:
+        raise KeyError(f"Checkpoint missing actor_state_dict: {checkpoint_path}")
+    agent.actor.load_state_dict(actor_state)
+    agent.actor.eval()
+
+    scenarios = ["head_on", "crossing", "overtaking"] if args.eval_scenario == "all" else [args.eval_scenario]
+    base_seed = int(args.seed)
+    eval_episodes = max(1, int(args.eval_episodes))
+    max_tries = max(1, int(args.eval_max_tries_per_episode))
+
+    for scenario_idx, target_scenario in enumerate(scenarios):
+        requested_episodes = eval_episodes
+        accepted_episodes = 0
+        candidate_episodes = 0
+        total_tries = 0
+        collision_count = 0
+        goal_completion_count = 0
+        safe_pass_count = 0
+        total_return = 0.0
+        total_steps = 0
+
+        print(f"\n[eval] scenario={target_scenario}")
+        for ep in range(requested_episodes):
+            matched_seed = None
+            for attempt in range(max_tries):
+                candidate_seed = base_seed + scenario_idx * 10_000_000 + ep * 10_000 + attempt
+                candidate_episodes += 1
+                total_tries += 1
+                _ = env.reset(seed=candidate_seed)
+                initial_scenario = _classify_initial_two_vessel_scenario(env)
+                if initial_scenario == target_scenario:
+                    matched_seed = candidate_seed
+                    break
+
+            if matched_seed is None:
+                print(
+                    f"[eval] scenario={target_scenario} episode={ep + 1:03d} skipped "
+                    f"(no match within {max_tries} tries)"
+                )
+                continue
+
+            _ = env.reset(seed=matched_seed)
+            done = False
+            ep_return = 0.0
+            last_info: dict[str, object] = {}
+
+            while not done:
+                if args.render and getattr(env, "paused", False):
+                    env.render()
+                    continue
+
+                _, action_by_vessel = _collect_rl_actions_for_step(env, agent, greedy=True)
+                step_action = action_by_vessel if action_by_vessel else np.array([0.0, 0.0], dtype=np.float32)
+                _, reward, done, info = env.step(step_action)
+                ep_return += float(reward)
+                last_info = info
+
+                if args.render:
+                    env.render()
+
+            accepted_episodes += 1
+            total_return += ep_return
+            total_steps += int(env.step_idx)
+            collision_count += int(last_info.get("collision", 0))
+            v1_reached = int(last_info.get("vessel1_reached", 0))
+            v2_reached = int(last_info.get("vessel2_reached", 0))
+            goal_completion_count += int(v1_reached and v2_reached)
+            safe_pass_count += int(last_info.get("safe_pass_awarded", 0))
+
+        collision_rate = (collision_count / accepted_episodes) if accepted_episodes else 0.0
+        goal_rate = (goal_completion_count / accepted_episodes) if accepted_episodes else 0.0
+        safe_pass_rate = (safe_pass_count / accepted_episodes) if accepted_episodes else 0.0
+        avg_return = (total_return / accepted_episodes) if accepted_episodes else 0.0
+        avg_length = (total_steps / accepted_episodes) if accepted_episodes else 0.0
+
+        print(f"[eval][{target_scenario}] requested_episode_count={requested_episodes}")
+        print(f"[eval][{target_scenario}] candidate_episode_count={candidate_episodes}")
+        print(f"[eval][{target_scenario}] accepted_episode_count={accepted_episodes}")
+        print(f"[eval][{target_scenario}] total_seed_tries={total_tries}")
+        print(f"[eval][{target_scenario}] collisions={collision_count} collision_rate={collision_rate:.3f}")
+        print(f"[eval][{target_scenario}] goal_completion={goal_completion_count} goal_completion_rate={goal_rate:.3f}")
+        print(f"[eval][{target_scenario}] safe_pass={safe_pass_count} safe_pass_rate={safe_pass_rate:.3f}")
+        print(f"[eval][{target_scenario}] average_return={avg_return:.3f}")
+        print(f"[eval][{target_scenario}] average_episode_length={avg_length:.2f}")
 
 
 def main() -> None:
@@ -273,6 +398,12 @@ def main() -> None:
 
     out_dir = Path(train_hp.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.eval_only:
+        _run_eval_only(args, env, agent)
+        env.close()
+        sample_env.close()
+        return
 
     history: list[dict[str, float | int]] = []
     for ep in range(1, train_hp.episodes + 1):
@@ -333,7 +464,7 @@ def main() -> None:
                 env.render()
                 continue
 
-            obs_by_vessel, action_by_vessel = _collect_rl_actions_for_step(env, agent)
+            obs_by_vessel, action_by_vessel = _collect_rl_actions_for_step(env, agent, greedy=False)
             step_action = action_by_vessel if action_by_vessel else np.array([0.0, 0.0], dtype=np.float32)
             _, reward, done, info = env.step(step_action)
 
