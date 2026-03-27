@@ -635,30 +635,17 @@ class SingleVessel2FeatureEnv:
         reward = 0.0
         if rudder > self.rewp.starboard_min_rudder:
             reward += 0.3
-            if tcpa > self.rewp.early_action_tcpa_threshold:
-                reward += 0.2
-            elif tcpa < self.rewp.late_action_tcpa_threshold:
-                reward -= 0.2
         elif rudder < self.rewp.port_max_rudder:
             reward -= 0.5
-        else:
-            if tcpa < self.rewp.late_action_tcpa_threshold:
-                reward -= 0.3
         return reward
 
     def _apply_crossing_shaping(self, rudder: float, tcpa: float, dcpa: float) -> float:
         reward = 0.0
         if rudder > self.rewp.starboard_min_rudder:
             reward += 0.25
-            if tcpa > self.rewp.early_action_tcpa_threshold:
-                reward += 0.15
-            elif tcpa < self.rewp.late_action_tcpa_threshold:
-                reward -= 0.15
         elif rudder < self.rewp.port_max_rudder:
             reward -= 0.4
 
-        if dcpa < self.rewp.danger_dcpa_threshold and tcpa > 0.0:
-            reward -= 0.4
         return reward
 
     def _apply_overtaking_shaping(self, tcpa: float, dcpa: float) -> float:
@@ -667,8 +654,6 @@ class SingleVessel2FeatureEnv:
             reward += 0.2
         if dcpa < self.rewp.danger_dcpa_threshold:
             reward -= 0.3
-        if dcpa < self.rewp.safe_dcpa_threshold and tcpa < self.rewp.late_action_tcpa_threshold:
-            reward -= 0.2
         return reward
 
     def _scenario_local_shaping(
