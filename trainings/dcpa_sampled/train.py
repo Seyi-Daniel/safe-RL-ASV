@@ -116,14 +116,19 @@ class DDPGAgent:
         return float(actor_loss.item()), float(critic_loss.item())
 
 
-def _episode_hits_dcpa_threshold(
+def _screen_candidate_episode(
     env: SingleVessel2FeatureEnv,
     seed: int,
-    dcpa_threshold: float,
-    tcpa_threshold: float,
+    sampling_dcpa_threshold: float,
+    sampling_tcpa_threshold: float,
     max_sampling_steps_per_attempt: int,
-) -> tuple[bool, float, float, int, str]:
+) -> tuple[bool, float, float, int, str, str]:
+    """Run deterministic scripted-only screening for a candidate training seed.
+
+    Screening is strictly policy-independent and is used only for seed acceptance.
+    """
     _ = env.reset(seed=seed)
+    initial_scenario = _classify_initial_two_vessel_scenario(env)
     done = False
     steps = 0
     best_dcpa = float("inf")
@@ -136,6 +141,7 @@ def _episode_hits_dcpa_threshold(
             fail_reason = "reached_goal_before_threshold"
             break
 
+        # Scripted/default rollout only (no policy action injection during screening).
         _, _, done, info = env.step(np.array([0.0, 0.0], dtype=np.float32))
         steps += 1
 
@@ -145,8 +151,8 @@ def _episode_hits_dcpa_threshold(
         if tcpa > 0.0:
             best_tcpa = min(best_tcpa, tcpa)
 
-        if (dcpa <= dcpa_threshold) and (0.0 < tcpa <= tcpa_threshold):
-            return True, best_dcpa, best_tcpa, steps, "accepted"
+        if (dcpa <= sampling_dcpa_threshold) and (0.0 < tcpa <= sampling_tcpa_threshold):
+            return True, best_dcpa, best_tcpa, steps, "accepted", initial_scenario
 
         if steps >= step_cap:
             fail_reason = "max_sampling_steps_per_attempt_guard"
@@ -154,7 +160,67 @@ def _episode_hits_dcpa_threshold(
 
     if done and fail_reason == "terminated_without_threshold":
         fail_reason = str(info.get("reason", "done_without_threshold"))
-    return False, best_dcpa, best_tcpa, steps, fail_reason
+    return False, best_dcpa, best_tcpa, steps, fail_reason, initial_scenario
+
+
+def _find_accepted_seed(
+    sample_env: SingleVessel2FeatureEnv,
+    *,
+    episode_index: int,
+    base_seed: int,
+    max_tries: int,
+    sampling_dcpa_threshold: float,
+    sampling_tcpa_threshold: float,
+    max_sampling_steps_per_attempt: int,
+    sampling_logs: bool,
+) -> tuple[int | None, int, float, float, int, str]:
+    """Search candidate seeds using scripted screening and return the first accepted seed."""
+    accepted_seed = None
+    accepted_attempt = -1
+    accepted_best_dcpa = float("inf")
+    accepted_best_tcpa = float("inf")
+    accepted_sample_steps = 0
+    accepted_scenario = "safe"
+
+    attempt = 0
+    while True:
+        if max_tries > 0 and attempt >= max_tries:
+            break
+
+        candidate_seed = base_seed + episode_index * 100_000 + attempt
+        ok, best_dcpa, best_tcpa, sample_steps, status, scenario = _screen_candidate_episode(
+            sample_env,
+            candidate_seed,
+            sampling_dcpa_threshold,
+            sampling_tcpa_threshold,
+            max_sampling_steps_per_attempt,
+        )
+
+        if ok:
+            accepted_seed = candidate_seed
+            accepted_attempt = attempt
+            accepted_best_dcpa = best_dcpa
+            accepted_best_tcpa = best_tcpa
+            accepted_sample_steps = sample_steps
+            accepted_scenario = scenario
+            if sampling_logs:
+                print(
+                    f"ep={episode_index:04d} accepted_seed={accepted_seed} attempt={accepted_attempt} "
+                    f"sample_steps={accepted_sample_steps} sample_best_dcpa={accepted_best_dcpa:.2f} "
+                    f"sample_best_tcpa={accepted_best_tcpa:.2f} sample_scenario={accepted_scenario}"
+                )
+            break
+
+        if sampling_logs:
+            print(
+                f"ep={episode_index:04d} failed attempt={attempt} seed={candidate_seed} steps={sample_steps} "
+                f"reason={status} sample_scenario={scenario} "
+                f"(best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
+                f"need dcpa <= {sampling_dcpa_threshold:.2f} and tcpa <= {sampling_tcpa_threshold:.2f})"
+            )
+        attempt += 1
+
+    return accepted_seed, accepted_attempt, accepted_best_dcpa, accepted_best_tcpa, accepted_sample_steps, accepted_scenario
 
 
 def parse_args() -> argparse.Namespace:
@@ -472,42 +538,24 @@ def main() -> None:
 
     history: list[dict[str, float | int]] = []
     for ep in range(1, train_hp.episodes + 1):
-        accepted_seed = None
-        accepted_attempt = -1
-        accepted_best_dcpa = float("inf")
-        accepted_best_tcpa = float("inf")
         max_tries = int(args.dcpa_sample_max_tries)
-        attempt = 0
-        while True:
-            if max_tries > 0 and attempt >= max_tries:
-                break
-            candidate_seed = args.seed + ep * 100_000 + attempt
-            ok, best_dcpa, best_tcpa, sample_steps, fail_reason = _episode_hits_dcpa_threshold(
-                sample_env,
-                candidate_seed,
-                sampling_dcpa_threshold,
-                sampling_tcpa_threshold,
-                args.max_sampling_steps_per_attempt,
-            )
-            if ok:
-                accepted_seed = candidate_seed
-                accepted_attempt = attempt
-                accepted_best_dcpa = best_dcpa
-                accepted_best_tcpa = best_tcpa
-                if args.sampling_logs:
-                    print(
-                        f"ep={ep:04d} accepted_seed={accepted_seed} attempt={accepted_attempt} "
-                        f"sample_steps={sample_steps} sample_best_dcpa={accepted_best_dcpa:.2f} "
-                        f"sample_best_tcpa={accepted_best_tcpa:.2f}"
-                    )
-                break
-            if args.sampling_logs:
-                print(
-                    f"ep={ep:04d} failed attempt={attempt} seed={candidate_seed} steps={sample_steps} "
-                    f"reason={fail_reason} (best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
-                    f"need dcpa <= {sampling_dcpa_threshold:.2f} and tcpa <= {sampling_tcpa_threshold:.2f})"
-                )
-            attempt += 1
+        (
+            accepted_seed,
+            accepted_attempt,
+            accepted_best_dcpa,
+            accepted_best_tcpa,
+            accepted_sample_steps,
+            accepted_scenario,
+        ) = _find_accepted_seed(
+            sample_env,
+            episode_index=ep,
+            base_seed=int(args.seed),
+            max_tries=max_tries,
+            sampling_dcpa_threshold=sampling_dcpa_threshold,
+            sampling_tcpa_threshold=sampling_tcpa_threshold,
+            max_sampling_steps_per_attempt=int(args.max_sampling_steps_per_attempt),
+            sampling_logs=bool(args.sampling_logs),
+        )
 
         if accepted_seed is None:
             print(
@@ -516,6 +564,7 @@ def main() -> None:
             )
             continue
 
+        # Real training rollout starts from a fresh reset of the accepted seed.
         _ = env.reset(seed=accepted_seed)
         done = False
         ep_return = 0.0
@@ -613,7 +662,8 @@ def main() -> None:
                 f"replay={len(replay)} collision={int(info.get('collision', 0))} "
                 f"goals={int(bool(info.get('vessel1_reached', 0)) and bool(info.get('vessel2_reached', 0)))} "
                 f"safe_pass={int(info.get('safe_pass_awarded', 0))} takeovers={ep_takeover_count} "
-                f"both_ctrl_steps={ep_both_controlled_steps}"
+                f"both_ctrl_steps={ep_both_controlled_steps} sample_attempt={accepted_attempt} "
+                f"sample_steps={accepted_sample_steps} sample_scenario={accepted_scenario}"
             )
         else:
             print(
@@ -622,7 +672,8 @@ def main() -> None:
                 f"replay={len(replay)} collision={int(info.get('collision', 0))} "
                 f"goals={int(bool(info.get('vessel1_reached', 0)) and bool(info.get('vessel2_reached', 0)))} "
                 f"safe_pass={int(info.get('safe_pass_awarded', 0))} takeovers={ep_takeover_count} "
-                f"both_ctrl_steps={ep_both_controlled_steps}"
+                f"both_ctrl_steps={ep_both_controlled_steps} sample_attempt={accepted_attempt} "
+                f"sample_steps={accepted_sample_steps} sample_scenario={accepted_scenario}"
             )
 
         if ep % train_hp.save_every == 0 or ep == train_hp.episodes:
