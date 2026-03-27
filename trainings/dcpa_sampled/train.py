@@ -249,6 +249,33 @@ def _classify_initial_two_vessel_scenario(env: SingleVessel2FeatureEnv) -> str:
     return str(scenario)
 
 
+def _update_starboard_compliance_metrics(
+    info: dict[str, object],
+    *,
+    starboard_opportunities: int,
+    starboard_compliant: int,
+) -> tuple[int, int]:
+    """Count simple COLREGS starboard opportunities/compliance for RL-controlled give-way vessel steps."""
+    scenario = str(info.get("colregs_scenario", "safe"))
+    if scenario not in {"head_on", "crossing"}:
+        return starboard_opportunities, starboard_compliant
+
+    give_way_vessel = str(info.get("designated_give_way_vessel", "none"))
+    if give_way_vessel not in {"vessel1", "vessel2"}:
+        return starboard_opportunities, starboard_compliant
+
+    control_source = str(info.get(f"{give_way_vessel}_control_source", ""))
+    if control_source != "rl_external":
+        return starboard_opportunities, starboard_compliant
+
+    rudder_key = f"{give_way_vessel}_rudder_deg"
+    rudder_deg = float(info.get(rudder_key, 0.0))
+    starboard_opportunities += 1
+    if rudder_deg > 0.0:
+        starboard_compliant += 1
+    return starboard_opportunities, starboard_compliant
+
+
 def _run_eval_only(
     args: argparse.Namespace,
     env: SingleVessel2FeatureEnv,
@@ -277,6 +304,11 @@ def _run_eval_only(
         collision_count = 0
         goal_completion_count = 0
         safe_pass_count = 0
+        takeover_count = 0
+        both_controlled_step_count = 0
+        scenario_step_counts: dict[str, int] = {"head_on": 0, "crossing": 0, "overtaking": 0}
+        starboard_opportunities = 0
+        starboard_compliant = 0
         total_return = 0.0
         total_steps = 0
 
@@ -304,6 +336,8 @@ def _run_eval_only(
             done = False
             ep_return = 0.0
             last_info: dict[str, object] = {}
+            prev_v1_latched = 0
+            prev_v2_latched = 0
 
             while not done:
                 if args.render and getattr(env, "paused", False):
@@ -315,6 +349,24 @@ def _run_eval_only(
                 _, reward, done, info = env.step(step_action)
                 ep_return += float(reward)
                 last_info = info
+                step_scenario = str(info.get("colregs_scenario", "safe"))
+                if step_scenario in scenario_step_counts:
+                    scenario_step_counts[step_scenario] += 1
+                if int(info.get("vessel1_rl_active", 0)) and int(info.get("vessel2_rl_active", 0)):
+                    both_controlled_step_count += 1
+                starboard_opportunities, starboard_compliant = _update_starboard_compliance_metrics(
+                    info,
+                    starboard_opportunities=starboard_opportunities,
+                    starboard_compliant=starboard_compliant,
+                )
+                v1_latched = int(info.get("vessel1_model_control_latched", info.get("vessel1_rl_latched", 0)))
+                v2_latched = int(info.get("vessel2_model_control_latched", info.get("vessel2_rl_latched", 0)))
+                if v1_latched and not prev_v1_latched:
+                    takeover_count += 1
+                if v2_latched and not prev_v2_latched:
+                    takeover_count += 1
+                prev_v1_latched = v1_latched
+                prev_v2_latched = v2_latched
 
                 if args.render:
                     env.render()
@@ -331,6 +383,7 @@ def _run_eval_only(
         collision_rate = (collision_count / accepted_episodes) if accepted_episodes else 0.0
         goal_rate = (goal_completion_count / accepted_episodes) if accepted_episodes else 0.0
         safe_pass_rate = (safe_pass_count / accepted_episodes) if accepted_episodes else 0.0
+        starboard_rate = (starboard_compliant / starboard_opportunities) if starboard_opportunities else 0.0
         avg_return = (total_return / accepted_episodes) if accepted_episodes else 0.0
         avg_length = (total_steps / accepted_episodes) if accepted_episodes else 0.0
 
@@ -341,6 +394,18 @@ def _run_eval_only(
         print(f"[eval][{target_scenario}] collisions={collision_count} collision_rate={collision_rate:.3f}")
         print(f"[eval][{target_scenario}] goal_completion={goal_completion_count} goal_completion_rate={goal_rate:.3f}")
         print(f"[eval][{target_scenario}] safe_pass={safe_pass_count} safe_pass_rate={safe_pass_rate:.3f}")
+        print(
+            f"[eval][{target_scenario}] starboard_compliance={starboard_compliant}/{starboard_opportunities} "
+            f"starboard_compliance_rate={starboard_rate:.3f}"
+        )
+        print(f"[eval][{target_scenario}] takeovers={takeover_count}")
+        print(f"[eval][{target_scenario}] both_controlled_steps={both_controlled_step_count}")
+        print(
+            f"[eval][{target_scenario}] scenario_step_counts="
+            f"head_on:{scenario_step_counts['head_on']} "
+            f"crossing:{scenario_step_counts['crossing']} "
+            f"overtaking:{scenario_step_counts['overtaking']}"
+        )
         print(f"[eval][{target_scenario}] average_return={avg_return:.3f}")
         print(f"[eval][{target_scenario}] average_episode_length={avg_length:.2f}")
 
@@ -458,6 +523,12 @@ def main() -> None:
         ep_critic_loss = 0.0
         loss_count = 0
         takeover_triggered = False
+        ep_takeover_count = 0
+        ep_both_controlled_steps = 0
+        ep_starboard_opportunities = 0
+        ep_starboard_compliant = 0
+        prev_v1_latched = 0
+        prev_v2_latched = 0
 
         while not done:
             if args.render and getattr(env, "paused", False):
@@ -467,6 +538,21 @@ def main() -> None:
             obs_by_vessel, action_by_vessel = _collect_rl_actions_for_step(env, agent, greedy=False)
             step_action = action_by_vessel if action_by_vessel else np.array([0.0, 0.0], dtype=np.float32)
             _, reward, done, info = env.step(step_action)
+            if int(info.get("vessel1_rl_active", 0)) and int(info.get("vessel2_rl_active", 0)):
+                ep_both_controlled_steps += 1
+            ep_starboard_opportunities, ep_starboard_compliant = _update_starboard_compliance_metrics(
+                info,
+                starboard_opportunities=ep_starboard_opportunities,
+                starboard_compliant=ep_starboard_compliant,
+            )
+            v1_latched = int(info.get("vessel1_model_control_latched", info.get("vessel1_rl_latched", 0)))
+            v2_latched = int(info.get("vessel2_model_control_latched", info.get("vessel2_rl_latched", 0)))
+            if v1_latched and not prev_v1_latched:
+                ep_takeover_count += 1
+            if v2_latched and not prev_v2_latched:
+                ep_takeover_count += 1
+            prev_v1_latched = v1_latched
+            prev_v2_latched = v2_latched
 
             for vessel_id, vessel_obs in obs_by_vessel.items():
                 vessel_next_obs = env.get_obs_for_vessel(vessel_id)
@@ -509,14 +595,34 @@ def main() -> None:
                 "epsilon": float(eps_now),
                 "mean_actor_loss": float(mean_actor_loss),
                 "mean_critic_loss": float(mean_critic_loss),
+                "collision": int(info.get("collision", 0)),
+                "goal_completion": int(bool(info.get("vessel1_reached", 0)) and bool(info.get("vessel2_reached", 0))),
+                "safe_pass": int(info.get("safe_pass_awarded", 0)),
+                "takeovers": int(ep_takeover_count),
+                "both_controlled_steps": int(ep_both_controlled_steps),
+                "starboard_opportunities": int(ep_starboard_opportunities),
+                "starboard_compliant": int(ep_starboard_compliant),
+                "starboard_compliance_rate": (
+                    float(ep_starboard_compliant / ep_starboard_opportunities) if ep_starboard_opportunities else 0.0
+                ),
             }
         )
         if not takeover_triggered:
-            print(f"ep={ep:04d} skipped_learning=no_takeover return={ep_return:8.3f} steps={env.step_idx:4d} replay={len(replay)}")
+            print(
+                f"ep={ep:04d} skipped_learning=no_takeover return={ep_return:8.3f} steps={env.step_idx:4d} "
+                f"replay={len(replay)} collision={int(info.get('collision', 0))} "
+                f"goals={int(bool(info.get('vessel1_reached', 0)) and bool(info.get('vessel2_reached', 0)))} "
+                f"safe_pass={int(info.get('safe_pass_awarded', 0))} takeovers={ep_takeover_count} "
+                f"both_ctrl_steps={ep_both_controlled_steps}"
+            )
         else:
             print(
                 f"ep={ep:04d} return={ep_return:8.3f} steps={env.step_idx:4d} "
-                f"epsilon={eps_now:0.3f} actor_loss={mean_actor_loss:0.4f} critic_loss={mean_critic_loss:0.4f} replay={len(replay)}"
+                f"epsilon={eps_now:0.3f} actor_loss={mean_actor_loss:0.4f} critic_loss={mean_critic_loss:0.4f} "
+                f"replay={len(replay)} collision={int(info.get('collision', 0))} "
+                f"goals={int(bool(info.get('vessel1_reached', 0)) and bool(info.get('vessel2_reached', 0)))} "
+                f"safe_pass={int(info.get('safe_pass_awarded', 0))} takeovers={ep_takeover_count} "
+                f"both_ctrl_steps={ep_both_controlled_steps}"
             )
 
         if ep % train_hp.save_every == 0 or ep == train_hp.episodes:
