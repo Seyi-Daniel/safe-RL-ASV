@@ -222,8 +222,9 @@ def _collect_rl_actions_for_step(
 
 def main() -> None:
     args = parse_args()
-    # Environment thresholds define risk/takeover semantics; sampling thresholds are only
-    # for pre-episode seed acceptance during training.
+    # IMPORTANT:
+    # Sampling thresholds are ONLY for training episode selection.
+    # Environment risk/takeover logic MUST use env.dcpa_risk_threshold / tcpa_risk_threshold.
     sampling_dcpa_threshold = (
         float(args.sampling_dcpa_threshold) if args.sampling_dcpa_threshold is not None else float(args.dcpa_threshold)
     )
