@@ -652,6 +652,8 @@ class SingleVessel2FeatureEnv:
         return risk_of_collision, tcpa, dcpa
 
     def _apply_head_on_shaping(self, rudder: float, tcpa: float) -> float:
+        # Current shaping is rudder-direction based.
+        # Legacy timing-based shaping (e.g., early/late action) is deprecated/inactive.
         reward = 0.0
         if rudder > self.rewp.starboard_min_rudder:
             reward += 0.3
@@ -660,6 +662,8 @@ class SingleVessel2FeatureEnv:
         return reward
 
     def _apply_crossing_shaping(self, rudder: float, tcpa: float, dcpa: float) -> float:
+        # Current shaping is rudder-direction based.
+        # Legacy crossing-ahead/timing shaping is deprecated/inactive.
         reward = 0.0
         if rudder > self.rewp.starboard_min_rudder:
             reward += 0.25

@@ -97,32 +97,42 @@ class EnvParams:
 
 @dataclass
 class RewardParams:
+    """Reward coefficients for the current 2-vessel training setup.
+
+    Notes on compatibility fields:
+    - Some legacy shaping coefficients are intentionally kept so older configs
+      can still deserialize.
+    - Deprecated fields marked below are inactive in current reward code.
+    """
+
     # core objective
     living_penalty: float = -0.002
     progress_weight: float = 0.03
     goal_bonus: float = 8.0
 
-    # shared/global safety terms
+    # active shared/global safety terms
     collision_penalty: float = -20.0
     near_miss_penalty: float = -2.5
     unsafe_proximity_penalty_weight: float = 0.05
     safe_pass_bonus: float = 0.5
+    oscillation_penalty_weight: float = 0.02
+
+    # active scenario-shaping thresholds (post-takeover interpretation)
+    starboard_min_rudder: float = 0.1
+    port_max_rudder: float = -0.1
+    safe_dcpa_threshold: float = 20.0
+    danger_dcpa_threshold: float = 10.0
+
+    # Deprecated / inactive legacy compatibility fields.
+    # These are currently not read by active reward computation.
     give_way_early_action_bonus: float = 0.2
     late_action_penalty: float = -0.4
     crossing_ahead_penalty: float = -0.5
-    oscillation_penalty_weight: float = 0.02
-    # Deprecated / inactive fields kept for compatibility with older configs.
-    # Out-of-bounds penalty and stand-on learning rewards are not used in active reward computation.
+    early_action_tcpa_threshold: float = 25.0
+    late_action_tcpa_threshold: float = 10.0
     out_of_bounds_penalty: float = -8.0
     stand_on_hold_bonus: float = 0.1
     stand_on_unnecessary_action_penalty: float = -0.2
-    # Scenario-shaping thresholds (post-takeover interpretation)
-    starboard_min_rudder: float = 0.1
-    port_max_rudder: float = -0.1
-    early_action_tcpa_threshold: float = 25.0
-    late_action_tcpa_threshold: float = 10.0
-    safe_dcpa_threshold: float = 20.0
-    danger_dcpa_threshold: float = 10.0
 
 
 @dataclass
