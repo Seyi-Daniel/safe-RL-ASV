@@ -148,3 +148,7 @@ class TrainParams:
     seed: int = 7
     save_every: int = 20
     out_dir: str = "runs"
+
+    # training-only episode sampling thresholds (None -> inherit env CLI thresholds)
+    sampling_dcpa_threshold: float | None = None
+    sampling_tcpa_threshold: float | None = None
