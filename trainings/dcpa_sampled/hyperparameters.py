@@ -162,3 +162,6 @@ class TrainParams:
     # training-only episode sampling thresholds (None -> inherit env CLI thresholds)
     sampling_dcpa_threshold: float | None = None
     sampling_tcpa_threshold: float | None = None
+    # optional scripted seed-screening horizon caps (None -> disabled/unlimited)
+    sampling_screen_max_steps: int | None = None
+    sampling_screen_max_seconds: float | None = None
