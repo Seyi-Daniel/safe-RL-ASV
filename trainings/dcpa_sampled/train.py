@@ -121,7 +121,8 @@ def _screen_candidate_episode(
     seed: int,
     sampling_dcpa_threshold: float,
     sampling_tcpa_threshold: float,
-    max_sampling_steps_per_attempt: int,
+    sampling_screen_max_steps: int | None,
+    sampling_screen_max_seconds: float | None,
 ) -> tuple[bool, float, float, int, str, str]:
     """Run deterministic scripted-only screening for a candidate training seed.
 
@@ -134,7 +135,13 @@ def _screen_candidate_episode(
     best_dcpa = float("inf")
     best_tcpa = float("inf")
     fail_reason = "terminated_without_threshold"
-    step_cap = int(max_sampling_steps_per_attempt) if int(max_sampling_steps_per_attempt) > 0 else max(1, 2 * int(env.max_steps))
+    step_cap = int(sampling_screen_max_steps) if sampling_screen_max_steps is not None and int(sampling_screen_max_steps) > 0 else None
+    seconds_cap = (
+        float(sampling_screen_max_seconds)
+        if sampling_screen_max_seconds is not None and float(sampling_screen_max_seconds) > 0.0
+        else None
+    )
+    screen_start_time = float(env.time)
 
     while not done:
         if env.vessel1_reached or env.vessel2_reached:
@@ -154,8 +161,17 @@ def _screen_candidate_episode(
         if (dcpa <= sampling_dcpa_threshold) and (0.0 < tcpa <= sampling_tcpa_threshold):
             return True, best_dcpa, best_tcpa, steps, "accepted", initial_scenario
 
-        if steps >= step_cap:
-            fail_reason = "max_sampling_steps_per_attempt_guard"
+        # Optional screening-only horizons; do not alter real training rollout limits.
+        reached_step_cap = step_cap is not None and steps >= step_cap
+        elapsed_seconds = float(env.time) - screen_start_time
+        reached_seconds_cap = seconds_cap is not None and elapsed_seconds >= seconds_cap
+        if (not done) and (reached_step_cap or reached_seconds_cap):
+            if reached_step_cap and reached_seconds_cap:
+                fail_reason = "screen_horizon_steps_and_seconds"
+            elif reached_step_cap:
+                fail_reason = "screen_horizon_steps"
+            else:
+                fail_reason = "screen_horizon_seconds"
             break
 
     if done and fail_reason == "terminated_without_threshold":
@@ -171,7 +187,8 @@ def _find_accepted_seed(
     max_tries: int,
     sampling_dcpa_threshold: float,
     sampling_tcpa_threshold: float,
-    max_sampling_steps_per_attempt: int,
+    sampling_screen_max_steps: int | None,
+    sampling_screen_max_seconds: float | None,
     sampling_logs: bool,
 ) -> tuple[int | None, int, float, float, int, str]:
     """Search candidate seeds using scripted screening and return the first accepted seed."""
@@ -193,7 +210,8 @@ def _find_accepted_seed(
             candidate_seed,
             sampling_dcpa_threshold,
             sampling_tcpa_threshold,
-            max_sampling_steps_per_attempt,
+            sampling_screen_max_steps,
+            sampling_screen_max_seconds,
         )
 
         if ok:
@@ -212,9 +230,10 @@ def _find_accepted_seed(
             break
 
         if sampling_logs:
+            horizon_suffix = " (stopped by screening horizon)" if status.startswith("screen_horizon_") else ""
             print(
                 f"ep={episode_index:04d} failed attempt={attempt} seed={candidate_seed} steps={sample_steps} "
-                f"reason={status} sample_scenario={scenario} "
+                f"reason={status}{horizon_suffix} sample_scenario={scenario} "
                 f"(best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
                 f"need dcpa <= {sampling_dcpa_threshold:.2f} and tcpa <= {sampling_tcpa_threshold:.2f})"
             )
@@ -257,7 +276,24 @@ def parse_args() -> argparse.Namespace:
         help="TCPA threshold for training episode seed sampling (default: follow --tcpa-threshold)",
     )
     p.add_argument("--dcpa-sample-max-tries", type=int, default=0, help="max sampling tries per training episode (0=unlimited)")
-    p.add_argument("--max-sampling-steps-per-attempt", type=int, default=0, help="sampling step cap per candidate seed (0=2x episode steps)")
+    p.add_argument(
+        "--max-sampling-steps-per-attempt",
+        type=int,
+        default=0,
+        help="legacy alias for --sampling-screen-max-steps (0=disabled/unlimited)",
+    )
+    p.add_argument(
+        "--sampling-screen-max-steps",
+        type=int,
+        default=TrainParams().sampling_screen_max_steps,
+        help="optional screening-only step cap per candidate seed (default: disabled/unlimited)",
+    )
+    p.add_argument(
+        "--sampling-screen-max-seconds",
+        type=float,
+        default=TrainParams().sampling_screen_max_seconds,
+        help="optional screening-only simulated-seconds cap per candidate seed (default: disabled/unlimited)",
+    )
     p.add_argument("--sampling-logs", dest="sampling_logs", action="store_true")
     p.add_argument("--no-sampling-logs", dest="sampling_logs", action="store_false")
     p.set_defaults(sampling_logs=True)
@@ -487,6 +523,20 @@ def main() -> None:
     sampling_tcpa_threshold = (
         float(args.sampling_tcpa_threshold) if args.sampling_tcpa_threshold is not None else float(args.tcpa_threshold)
     )
+    sampling_screen_max_steps = (
+        int(args.sampling_screen_max_steps)
+        if args.sampling_screen_max_steps is not None and int(args.sampling_screen_max_steps) > 0
+        else None
+    )
+    sampling_screen_max_seconds = (
+        float(args.sampling_screen_max_seconds)
+        if args.sampling_screen_max_seconds is not None and float(args.sampling_screen_max_seconds) > 0.0
+        else None
+    )
+    # Backward-compatibility: allow legacy flag to act as screening-only step horizon
+    # when the new explicit option is not provided.
+    if sampling_screen_max_steps is None and int(args.max_sampling_steps_per_attempt) > 0:
+        sampling_screen_max_steps = int(args.max_sampling_steps_per_attempt)
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -553,7 +603,8 @@ def main() -> None:
             max_tries=max_tries,
             sampling_dcpa_threshold=sampling_dcpa_threshold,
             sampling_tcpa_threshold=sampling_tcpa_threshold,
-            max_sampling_steps_per_attempt=int(args.max_sampling_steps_per_attempt),
+            sampling_screen_max_steps=sampling_screen_max_steps,
+            sampling_screen_max_seconds=sampling_screen_max_seconds,
             sampling_logs=bool(args.sampling_logs),
         )
 
