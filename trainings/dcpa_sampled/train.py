@@ -178,6 +178,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-vessels", type=int, default=EnvParams().num_vessels)
     p.add_argument("--dcpa-threshold", type=float, default=10.0)
     p.add_argument("--tcpa-threshold", type=float, default=10.0)
+    p.add_argument(
+        "--sampling-dcpa-threshold",
+        type=float,
+        default=TrainParams().sampling_dcpa_threshold,
+        help="DCPA threshold for training episode seed sampling (default: follow --dcpa-threshold)",
+    )
+    p.add_argument(
+        "--sampling-tcpa-threshold",
+        type=float,
+        default=TrainParams().sampling_tcpa_threshold,
+        help="TCPA threshold for training episode seed sampling (default: follow --tcpa-threshold)",
+    )
     p.add_argument("--dcpa-sample-max-tries", type=int, default=0, help="max sampling tries per training episode (0=unlimited)")
     p.add_argument("--max-sampling-steps-per-attempt", type=int, default=0, help="sampling step cap per candidate seed (0=2x episode steps)")
     p.add_argument("--sampling-logs", dest="sampling_logs", action="store_true")
@@ -210,6 +222,15 @@ def _collect_rl_actions_for_step(
 
 def main() -> None:
     args = parse_args()
+    # IMPORTANT:
+    # Sampling thresholds are ONLY for training episode selection.
+    # Environment risk/takeover logic MUST use env.dcpa_risk_threshold / tcpa_risk_threshold.
+    sampling_dcpa_threshold = (
+        float(args.sampling_dcpa_threshold) if args.sampling_dcpa_threshold is not None else float(args.dcpa_threshold)
+    )
+    sampling_tcpa_threshold = (
+        float(args.sampling_tcpa_threshold) if args.sampling_tcpa_threshold is not None else float(args.tcpa_threshold)
+    )
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -268,8 +289,8 @@ def main() -> None:
             ok, best_dcpa, best_tcpa, sample_steps, fail_reason = _episode_hits_dcpa_threshold(
                 sample_env,
                 candidate_seed,
-                args.dcpa_threshold,
-                args.tcpa_threshold,
+                sampling_dcpa_threshold,
+                sampling_tcpa_threshold,
                 args.max_sampling_steps_per_attempt,
             )
             if ok:
@@ -288,14 +309,14 @@ def main() -> None:
                 print(
                     f"ep={ep:04d} failed attempt={attempt} seed={candidate_seed} steps={sample_steps} "
                     f"reason={fail_reason} (best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
-                    f"need dcpa <= {args.dcpa_threshold:.2f} and tcpa <= {args.tcpa_threshold:.2f})"
+                    f"need dcpa <= {sampling_dcpa_threshold:.2f} and tcpa <= {sampling_tcpa_threshold:.2f})"
                 )
             attempt += 1
 
         if accepted_seed is None:
             print(
-                f"ep={ep:04d} skipped: no sample found with dcpa <= {args.dcpa_threshold:.2f} "
-                f"and tcpa <= {args.tcpa_threshold:.2f} within {max_tries} tries"
+                f"ep={ep:04d} skipped: no sample found with dcpa <= {sampling_dcpa_threshold:.2f} "
+                f"and tcpa <= {sampling_tcpa_threshold:.2f} within {max_tries} tries"
             )
             continue
 
