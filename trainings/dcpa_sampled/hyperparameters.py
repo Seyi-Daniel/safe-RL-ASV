@@ -92,7 +92,7 @@ class EnvParams:
     collision_distance: float = 8.0
     near_miss_distance: float = 15.0
     safe_pass_distance: float = 25.0
-    sensor_range: float = 100.0
+    sensor_range: float = 140.0
 
 
 @dataclass

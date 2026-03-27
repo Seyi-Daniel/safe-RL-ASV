@@ -177,6 +177,7 @@ class SingleVessel2FeatureEnv:
         self._screen = None
         self._clock = None
         self._font = None
+        self._validate_radar_bearing_convention()
         if self.render_enabled:
             self._init_render()
 
@@ -495,6 +496,20 @@ class SingleVessel2FeatureEnv:
             return 7
         return 8
 
+    def _validate_radar_bearing_convention(self) -> None:
+        """Lightweight self-check of radar bearing convention and sector wrap behavior."""
+        eps = 1e-6
+        observer = Vessel(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        ahead = Vessel(10.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        port = Vessel(0.0, 10.0, 0.0, 0.0, 0.0, 0.0)
+        starboard = Vessel(0.0, -10.0, 0.0, 0.0, 0.0, 0.0)
+        assert abs(self._get_relative_bearing(observer, ahead) - 0.0) < eps
+        assert abs(self._get_relative_bearing(observer, port) - 90.0) < eps
+        assert abs(self._get_relative_bearing(observer, starboard) - 270.0) < eps
+        assert self._get_sector_index(359.0) == 0
+        assert self._get_sector_index(0.0) == 0
+        assert self._get_sector_index(1.0) == 0
+
     def _build_sector_features(self, own_vessel: Vessel, target_vessel: Vessel, distance: float, relative_bearing_deg: float) -> List[float]:
         # distance_norm = clip(distance / sensor_range, 0, 1)
         distance_norm = clamp(distance / max(1e-6, self.envp.sensor_range), 0.0, 1.0)
@@ -509,8 +524,8 @@ class SingleVessel2FeatureEnv:
         relative_heading_sin = math.sin(relative_heading)
         relative_heading_cos = math.cos(relative_heading)
 
-        # target_speed_norm = target_speed / max_speed
-        target_speed_norm = target_vessel.speed / max(1e-6, self.envp.max_speed)
+        # target_speed_norm = clip(target_speed / max_speed, 0, 1)
+        target_speed_norm = clamp(target_vessel.speed / max(1e-6, self.envp.max_speed), 0.0, 1.0)
 
         # closing_speed = relative_velocity_along_line_of_sight (positive means closing here)
         los_x = (target_vessel.x - own_vessel.x) / max(1e-6, distance)
@@ -519,15 +534,20 @@ class SingleVessel2FeatureEnv:
         rvy = math.sin(target_vessel.h) * target_vessel.speed - math.sin(own_vessel.h) * own_vessel.speed
         range_rate = rvx * los_x + rvy * los_y
         closing_speed = -range_rate
-        # closing_speed_norm = tanh(closing_speed / scale)
+        # closing_speed_norm = tanh(closing_speed / max_speed), signed and bounded in [-1, 1]
         closing_speed_norm = math.tanh(closing_speed / max(1e-6, self.envp.max_speed))
 
         # Reuse existing TCPA/DCPA computation for pair.
         tcpa, dcpa = self._tcpa_dcpa(own_vessel, target_vessel)
-        # tcpa_norm = clip(tcpa / tcpa_risk_threshold, 0, 1)
-        # dcpa_norm = clip(dcpa / dcpa_risk_threshold, 0, 1)
-        tcpa_norm = 1.0 if not math.isfinite(tcpa) else clamp(tcpa / max(1e-6, self.envp.tcpa_risk_threshold), 0.0, 1.0)
-        dcpa_norm = 1.0 if not math.isfinite(dcpa) else clamp(dcpa / max(1e-6, self.envp.dcpa_risk_threshold), 0.0, 1.0)
+        # tcpa_norm = 1 for non-future encounters (tcpa<=0) or non-finite values,
+        # otherwise clip(tcpa / tcpa_horizon, 0, 1) with tcpa_horizon = tcpa_risk_threshold.
+        tcpa_norm = 1.0
+        if math.isfinite(tcpa) and tcpa > 0.0:
+            tcpa_norm = clamp(tcpa / max(1e-6, self.envp.tcpa_risk_threshold), 0.0, 1.0)
+
+        # dcpa_norm = clip(dcpa / dcpa_scale, 0, 1) where dcpa_scale = max(dcpa_risk_threshold, collision_distance).
+        dcpa_scale = max(self.envp.dcpa_risk_threshold, self.envp.collision_distance)
+        dcpa_norm = 1.0 if not math.isfinite(dcpa) else clamp(dcpa / max(1e-6, dcpa_scale), 0.0, 1.0)
 
         return [
             1.0,  # occupied_flag
@@ -1316,7 +1336,9 @@ class SingleVessel2FeatureEnv:
             clamp(own_vessel.rudder, -1.0, 1.0),   # own_rudder_norm
             clamp(own_vessel.throttle, -1.0, 1.0),  # own_throttle_norm
         ]
-        return np.asarray(sector_features + own_features, dtype=np.float32)
+        obs = np.asarray(sector_features + own_features, dtype=np.float32)
+        assert obs.shape[0] == 96
+        return obs
 
     def get_obs_for_vessel(self, vessel_id: str) -> np.ndarray:
         if vessel_id not in self.get_vessel_ids():
