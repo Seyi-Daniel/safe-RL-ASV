@@ -22,6 +22,7 @@ class EnvParams:
     render_fps: int = 60
     show_grid: bool = True
     show_spawn_rings: bool = True
+    show_risk_overlay: bool = False
     enable_step_risk_logging: bool = False
     debug_multi_vessel_status: bool = False
 

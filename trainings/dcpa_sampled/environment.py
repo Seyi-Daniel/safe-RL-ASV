@@ -1722,6 +1722,7 @@ class SingleVessel2FeatureEnv:
         # Show the RL takeover overlay exactly once per episode, on the first step RL activates.
         if (
             self.render_enabled
+            and self.envp.show_risk_overlay
             and not self.rl_overlay_shown
             and self.rl_ever_triggered
             and (self.vessel1_rl_active or self.vessel2_rl_active)
@@ -1905,7 +1906,7 @@ class SingleVessel2FeatureEnv:
         surf.blit(hud4, (10, 80))
         surf.blit(hud5, (10, 98))
 
-        if self.risk_overlay_active:
+        if self.envp.show_risk_overlay and self.risk_overlay_active:
             self._draw_risk_overlay(surf)
 
         pygame.display.flip()
