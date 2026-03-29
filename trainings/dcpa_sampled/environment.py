@@ -1730,9 +1730,11 @@ class SingleVessel2FeatureEnv:
             and self.rl_ever_triggered
             and (self.vessel1_rl_active or self.vessel2_rl_active)
         ):
+            show_hud_overlay = bool(self.envp.show_risk_overlay)
+            show_sector_overlay = bool(self.envp.auto_show_risk_sector_overlay)
             self.rl_overlay_shown = True
-            self.paused = True
-            if self.envp.show_risk_overlay:
+            self.paused = bool(show_hud_overlay or show_sector_overlay)
+            if show_hud_overlay:
                 self.risk_overlay_active = True
                 self.risk_overlay_payload = {
                     "step": int(self.step_idx),
@@ -1760,7 +1762,10 @@ class SingleVessel2FeatureEnv:
                     "vessel1_distance": float(vessel1_dist),
                     "vessel2_distance": float(vessel2_dist),
                 }
-            if self.envp.auto_show_risk_sector_overlay:
+            else:
+                self.risk_overlay_active = False
+                self.risk_overlay_payload = {}
+            if show_sector_overlay:
                 self.risk_sector_overlay_active = True
             else:
                 self.risk_sector_overlay_active = False
@@ -1819,10 +1824,6 @@ class SingleVessel2FeatureEnv:
 
         surf.blit(panel, (0, 0))
 
-    def _sector_boundaries_deg(self) -> List[float]:
-        """True radar-sector boundaries in relative-bearing coordinates."""
-        return [350.0, 10.0, 40.0, 75.0, 112.5, 180.0, 247.5, 285.0, 320.0, 350.0]
-
     def _sector_spans_with_category(self) -> List[Tuple[float, float, str]]:
         # Category mapping:
         # - head_on: 350→10
@@ -1861,9 +1862,7 @@ class SingleVessel2FeatureEnv:
         return [self._sector_span_for_index(sector_idx)]
 
     def _sector_spans_for_vessel_overlay(self, vessel_id: str) -> List[Tuple[float, float, str]]:
-        if self.manual_sector_overlay_enabled:
-            return self._sector_spans_with_category()
-        if self.risk_sector_overlay_active:
+        if self.manual_sector_overlay_enabled or self.risk_sector_overlay_active:
             return self._risk_occupied_spans_for_vessel(vessel_id)
         return []
 
@@ -1916,20 +1915,12 @@ class SingleVessel2FeatureEnv:
                 arc_pts = self._bearing_arc_points(vessel, start_deg, end_deg, ray_len, steps)
                 poly = [(x0, y0)] + arc_pts
                 pygame.draw.polygon(overlay, fill_rgba, poly)
+                _, line_rgb = self._sector_style_for_category(category)
                 line_bearings = [start_deg, end_deg]
                 for bdeg in line_bearings:
                     world_ang = vessel.h + math.radians(bdeg % 360.0)
                     x1 = self.sx(vessel.x + ray_len * math.cos(world_ang))
                     y1 = self.sy(vessel.y + ray_len * math.sin(world_ang))
-                    category = "head_on" if category == "head_on" else ("overtaking" if category == "overtaking" else "crossing")
-                    _, line_rgb = self._sector_style_for_category(category)
-                    pygame.draw.line(surf, line_rgb, (x0, y0), (x1, y1), 1)
-            if self.manual_sector_overlay_enabled:
-                for bdeg in self._sector_boundaries_deg():
-                    world_ang = vessel.h + math.radians(bdeg % 360.0)
-                    x1 = self.sx(vessel.x + ray_len * math.cos(world_ang))
-                    y1 = self.sy(vessel.y + ray_len * math.sin(world_ang))
-                    _, line_rgb = self._sector_style_for_category("crossing")
                     pygame.draw.line(surf, line_rgb, (x0, y0), (x1, y1), 1)
         surf.blit(overlay, (0, 0))
 
