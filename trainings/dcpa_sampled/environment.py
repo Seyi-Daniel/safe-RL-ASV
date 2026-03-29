@@ -1840,6 +1840,33 @@ class SingleVessel2FeatureEnv:
             (320.0, 350.0, "crossing"),
         ]
 
+    def _sector_span_for_index(self, sector_idx: int) -> Tuple[float, float, str]:
+        spans = self._sector_spans_with_category()
+        clamped_idx = max(0, min(8, int(sector_idx)))
+        return spans[clamped_idx]
+
+    def _risk_occupied_spans_for_vessel(self, vessel_id: str) -> List[Tuple[float, float, str]]:
+        if vessel_id == "vessel1":
+            observer = self.vessel1
+            target = self.vessel2
+        elif vessel_id == "vessel2":
+            observer = self.vessel2
+            target = self.vessel1
+        else:
+            return []
+        if observer is None or target is None:
+            return []
+        rel_bearing = self._get_relative_bearing(observer, target)
+        sector_idx = self._get_sector_index(rel_bearing)
+        return [self._sector_span_for_index(sector_idx)]
+
+    def _sector_spans_for_vessel_overlay(self, vessel_id: str) -> List[Tuple[float, float, str]]:
+        if self.manual_sector_overlay_enabled:
+            return self._sector_spans_with_category()
+        if self.risk_sector_overlay_active:
+            return self._risk_occupied_spans_for_vessel(vessel_id)
+        return []
+
     def _sector_overlay_is_active(self) -> bool:
         return bool(self.manual_sector_overlay_enabled or self.risk_sector_overlay_active)
 
@@ -1877,22 +1904,33 @@ class SingleVessel2FeatureEnv:
             vessel = self.get_vessel_by_id(vessel_id)
             if vessel is None:
                 continue
+            spans_to_draw = self._sector_spans_for_vessel_overlay(vessel_id)
+            if not spans_to_draw:
+                continue
             x0 = self.sx(vessel.x)
             y0 = self.sy(vessel.y)
-            for start_deg, end_deg, category in self._sector_spans_with_category():
+            for start_deg, end_deg, category in spans_to_draw:
                 fill_rgba, _ = self._sector_style_for_category(category)
                 span = (end_deg - start_deg) % 360.0
                 steps = max(4, int(round(span / 6.0)))
                 arc_pts = self._bearing_arc_points(vessel, start_deg, end_deg, ray_len, steps)
                 poly = [(x0, y0)] + arc_pts
                 pygame.draw.polygon(overlay, fill_rgba, poly)
-            for bdeg in self._sector_boundaries_deg():
-                world_ang = vessel.h + math.radians(bdeg % 360.0)
-                x1 = self.sx(vessel.x + ray_len * math.cos(world_ang))
-                y1 = self.sy(vessel.y + ray_len * math.sin(world_ang))
-                category = "head_on" if bdeg in (350.0, 10.0) else "crossing"
-                _, line_rgb = self._sector_style_for_category(category)
-                pygame.draw.line(surf, line_rgb, (x0, y0), (x1, y1), 1)
+                line_bearings = [start_deg, end_deg]
+                for bdeg in line_bearings:
+                    world_ang = vessel.h + math.radians(bdeg % 360.0)
+                    x1 = self.sx(vessel.x + ray_len * math.cos(world_ang))
+                    y1 = self.sy(vessel.y + ray_len * math.sin(world_ang))
+                    category = "head_on" if category == "head_on" else ("overtaking" if category == "overtaking" else "crossing")
+                    _, line_rgb = self._sector_style_for_category(category)
+                    pygame.draw.line(surf, line_rgb, (x0, y0), (x1, y1), 1)
+            if self.manual_sector_overlay_enabled:
+                for bdeg in self._sector_boundaries_deg():
+                    world_ang = vessel.h + math.radians(bdeg % 360.0)
+                    x1 = self.sx(vessel.x + ray_len * math.cos(world_ang))
+                    y1 = self.sy(vessel.y + ray_len * math.sin(world_ang))
+                    _, line_rgb = self._sector_style_for_category("crossing")
+                    pygame.draw.line(surf, line_rgb, (x0, y0), (x1, y1), 1)
         surf.blit(overlay, (0, 0))
 
     def render(self) -> None:
