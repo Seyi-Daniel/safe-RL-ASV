@@ -566,7 +566,6 @@ def main() -> None:
         episode_seconds=args.episode_seconds,
         dcpa_risk_threshold=args.dcpa_threshold,
         tcpa_risk_threshold=args.tcpa_threshold,
-        require_reset_viable_takeover_path=False,
         enable_no_takeover_early_done=False,
     )
     sample_env = SingleVessel2FeatureEnv(envp, RewardParams(), render=False)

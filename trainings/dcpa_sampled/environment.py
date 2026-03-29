@@ -900,161 +900,6 @@ class SingleVessel2FeatureEnv:
             }
         return self._resolve_colregs_pair(self.vessel1, self.vessel2)
 
-    def _reset_sample_triggers_takeover(self, vessel1: Vessel, vessel2: Vessel) -> bool:
-        saved_latch_state = (
-            self.overtaking_latched,
-            self.latched_scenario,
-            self.latched_vessel1_role,
-            self.latched_vessel2_role,
-            self.overtaking_clear_steps,
-            self.encounter_latched,
-            self.latched_encounter_active,
-            self.latched_geometry,
-            self.encounter_clear_steps,
-            self.designated_vessel1_role,
-            self.designated_vessel2_role,
-            self.rl_controlled_vessel,
-            self.candidate_scenario,
-            self.candidate_vessel1_role,
-            self.candidate_vessel2_role,
-            self.candidate_steps,
-            self.active_non_overtaking_scenario,
-            self.active_non_overtaking_vessel1_role,
-            self.active_non_overtaking_vessel2_role,
-            self.active_non_overtaking_exit_steps,
-            self.locked,
-            self.locked_scenario,
-            self.locked_role_v1,
-            self.locked_role_v2,
-            self.lock_candidate_steps,
-        )
-
-        def _restore_latch_state() -> None:
-            (
-                self.overtaking_latched,
-                self.latched_scenario,
-                self.latched_vessel1_role,
-                self.latched_vessel2_role,
-                self.overtaking_clear_steps,
-                self.encounter_latched,
-                self.latched_encounter_active,
-                self.latched_geometry,
-                self.encounter_clear_steps,
-                self.designated_vessel1_role,
-                self.designated_vessel2_role,
-                self.rl_controlled_vessel,
-                self.candidate_scenario,
-                self.candidate_vessel1_role,
-                self.candidate_vessel2_role,
-                self.candidate_steps,
-                self.active_non_overtaking_scenario,
-                self.active_non_overtaking_vessel1_role,
-                self.active_non_overtaking_vessel2_role,
-                self.active_non_overtaking_exit_steps,
-                self.locked,
-                self.locked_scenario,
-                self.locked_role_v1,
-                self.locked_role_v2,
-                self.lock_candidate_steps,
-            ) = saved_latch_state
-
-        self.overtaking_latched = False
-        self.latched_scenario = "safe"
-        self.latched_vessel1_role = "none"
-        self.latched_vessel2_role = "none"
-        self.overtaking_clear_steps = 0
-        self.encounter_latched = False
-        self.latched_encounter_active = False
-        self.latched_geometry = "none"
-        self.encounter_clear_steps = 0
-        self.designated_vessel1_role = "none"
-        self.designated_vessel2_role = "none"
-        self.rl_controlled_vessel = "none"
-
-        vessel1_sim = Vessel(vessel1.x, vessel1.y, vessel1.h, vessel1.speed, vessel1.goal_x, vessel1.goal_y, vessel1.rudder, vessel1.throttle)
-        vessel2_sim = Vessel(vessel2.x, vessel2.y, vessel2.h, vessel2.speed, vessel2.goal_x, vessel2.goal_y, vessel2.rudder, vessel2.throttle)
-
-        vessel1_reached = False
-        vessel2_reached = False
-        vessel1_start = (vessel1_sim.x, vessel1_sim.y)
-        vessel2_start = (vessel2_sim.x, vessel2_sim.y)
-        h = self.envp.dt / max(1, self.envp.substeps)
-
-        takeover_viable = False
-        min_separation = float("inf")
-
-        for _ in range(self.max_steps):
-            if vessel1_reached or vessel2_reached:
-                encounter = {
-                    "vessel1_role": "none",
-                    "vessel2_role": "none",
-                    "risk_of_collision": False,
-                    "dcpa": float("inf"),
-                    "tcpa": float("inf"),
-                }
-            else:
-                encounter = self._resolve_colregs_pair(vessel1_sim, vessel2_sim)
-
-            separation = math.hypot(vessel2_sim.x - vessel1_sim.x, vessel2_sim.y - vessel1_sim.y)
-            min_separation = min(min_separation, separation)
-
-            risk_now = bool(encounter.get("risk_of_collision", False))
-
-            vessel1_dist = self._distance_from_start(vessel1_sim, vessel1_start)
-            vessel2_dist = self._distance_from_start(vessel2_sim, vessel2_start)
-            if (
-                risk_now
-                and encounter["vessel1_role"] == "give_way"
-                and not vessel1_reached
-                and vessel1_dist >= self.envp.rl_takeover_distance
-            ):
-                takeover_viable = True
-            if (
-                risk_now
-                and encounter["vessel2_role"] == "give_way"
-                and not vessel2_reached
-                and vessel2_dist >= self.envp.rl_takeover_distance
-            ):
-                takeover_viable = True
-
-            for _ in range(max(1, self.envp.substeps)):
-                if not vessel1_reached:
-                    d_vessel1 = math.hypot(vessel1_sim.goal_x - vessel1_sim.x, vessel1_sim.goal_y - vessel1_sim.y)
-                    if d_vessel1 <= self.envp.goal_radius:
-                        vessel1_reached = True
-                        vessel1_sim.speed = 0.0
-                    else:
-                        travel = min(vessel1_sim.speed * h, d_vessel1)
-                        vessel1_sim.x += math.cos(vessel1_sim.h) * travel
-                        vessel1_sim.y += math.sin(vessel1_sim.h) * travel
-                        if math.hypot(vessel1_sim.goal_x - vessel1_sim.x, vessel1_sim.goal_y - vessel1_sim.y) <= self.envp.goal_radius:
-                            vessel1_reached = True
-                            vessel1_sim.speed = 0.0
-
-                if not vessel2_reached:
-                    d_vessel2 = math.hypot(vessel2_sim.goal_x - vessel2_sim.x, vessel2_sim.goal_y - vessel2_sim.y)
-                    if d_vessel2 <= self.envp.goal_radius:
-                        vessel2_reached = True
-                        vessel2_sim.speed = 0.0
-                    else:
-                        rudder_cmd = self._pure_pursuit_rudder_cmd(vessel2_sim, vessel2_sim.goal_x, vessel2_sim.goal_y)
-                        self._integrate_rudder_heading(vessel2_sim, rudder_cmd, h)
-                        vessel2_sim.speed = clamp(vessel2_sim.speed, self.envp.vessel2_min_speed, self.envp.vessel2_max_speed)
-                        travel = min(vessel2_sim.speed * h, d_vessel2)
-                        vessel2_sim.x += travel * math.cos(vessel2_sim.h)
-                        vessel2_sim.y += travel * math.sin(vessel2_sim.h)
-                        if math.hypot(vessel2_sim.goal_x - vessel2_sim.x, vessel2_sim.goal_y - vessel2_sim.y) <= self.envp.goal_radius:
-                            vessel2_reached = True
-                            vessel2_sim.speed = 0.0
-
-            if (vessel1_reached and vessel2_reached) or self._outside(vessel1_sim) or self._outside(vessel2_sim):
-                break
-
-        unavoidable_hazard = min_separation <= self.envp.near_miss_distance
-        qualifies = takeover_viable and unavoidable_hazard
-        _restore_latch_state()
-        return qualifies
-
     def _point_on_big_circle(self, ang: float) -> Tuple[float, float]:
         r = self.envp.vessel2_outer_radius
         return self.start_x + r * math.cos(ang), self.start_y + r * math.sin(ang)
@@ -1360,26 +1205,16 @@ class SingleVessel2FeatureEnv:
         if seed is not None:
             self.rng.seed(seed)
 
-        max_tries = max(1, int(self.envp.reset_viable_episode_max_tries))
-        require_viable_path = bool(self.envp.require_reset_viable_takeover_path)
-        sampled_vessel1: Vessel | None = None
-        sampled_vessel2: Vessel | None = None
-        for _ in range(max_tries):
-            goal_ang_1 = self.rng.uniform(0.0, 2.0 * math.pi)
-            agx, agy = self._point_on_big_circle(goal_ang_1)
-            ah = math.atan2(agy - self.start_y, agx - self.start_x)
-            aspeed = self.rng.uniform(self.envp.min_speed, self.envp.max_speed)
-            candidate_agent = Vessel(self.start_x, self.start_y, ah, aspeed, agx, agy)
-            candidate_target = self._sample_vessel2_path()
-            if (not require_viable_path) or self._reset_sample_triggers_takeover(candidate_agent, candidate_target):
-                sampled_vessel1 = candidate_agent
-                sampled_vessel2 = candidate_target
-                break
+        goal_ang_1 = self.rng.uniform(0.0, 2.0 * math.pi)
+        agx, agy = self._point_on_big_circle(goal_ang_1)
+        ah = math.atan2(agy - self.start_y, agx - self.start_x)
+        aspeed = self.rng.uniform(self.envp.min_speed, self.envp.max_speed)
+        sampled_vessel1 = Vessel(self.start_x, self.start_y, ah, aspeed, agx, agy)
+        sampled_vessel2 = self._sample_vessel2_path()
 
-        self.reset_has_takeover_path = sampled_vessel1 is not None and sampled_vessel2 is not None
-        if sampled_vessel1 is None or sampled_vessel2 is None:
-            sampled_vessel1 = candidate_agent
-            sampled_vessel2 = candidate_target
+        # Episode acceptance is handled by the training-side scripted screening
+        # pipeline; reset() must not apply hidden takeover/near-miss gating.
+        self.reset_has_takeover_path = True
 
         self.vessel1 = sampled_vessel1
         self.vessel2 = sampled_vessel2
