@@ -308,6 +308,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hide-risk-overlay", dest="show_risk_overlay", action="store_false",
                    help="hide RL takeover/risk HUD overlay during render mode")
     p.set_defaults(show_risk_overlay=EnvParams().show_risk_overlay)
+    p.add_argument(
+        "--auto-show-risk-sector-overlay",
+        dest="auto_show_risk_sector_overlay",
+        action="store_true",
+        help="when takeover HUD pause triggers, also auto-show radar sector rays until continue",
+    )
+    p.add_argument(
+        "--no-auto-show-risk-sector-overlay",
+        dest="auto_show_risk_sector_overlay",
+        action="store_false",
+        help="do not auto-show radar sector rays at takeover HUD pause",
+    )
+    p.set_defaults(auto_show_risk_sector_overlay=EnvParams().auto_show_risk_sector_overlay)
     p.add_argument("--eval-only", action="store_true", help="run deterministic evaluation only (no training updates)")
     p.add_argument("--eval-episodes", type=int, default=30, help="accepted evaluation episodes per scenario")
     p.add_argument(
@@ -573,6 +586,7 @@ def main() -> None:
         dcpa_risk_threshold=args.dcpa_threshold,
         tcpa_risk_threshold=args.tcpa_threshold,
         show_risk_overlay=bool(args.show_risk_overlay),
+        auto_show_risk_sector_overlay=bool(args.auto_show_risk_sector_overlay),
     )
     sample_env = SingleVessel2FeatureEnv(envp, RewardParams(), render=False)
     env = SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)

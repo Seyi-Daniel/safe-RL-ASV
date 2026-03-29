@@ -111,6 +111,9 @@ class SingleVessel2FeatureEnv:
         self.paused = False
         self.risk_overlay_active = False
         self.risk_overlay_payload: Dict[str, float | str | int] = {}
+        self.manual_sector_overlay_enabled = False
+        self.risk_sector_overlay_active = False
+        self.risk_sector_overlay_scenario = "safe"
         self.rl_ever_triggered: bool = False  # latches True when RL first activates, never resets within episode
         self.rl_overlay_shown: bool = False  # True after overlay has been shown once this episode
         self.prev_vessel1_rl_active = False
@@ -1258,6 +1261,9 @@ class SingleVessel2FeatureEnv:
         self.paused = False
         self.risk_overlay_active = False
         self.risk_overlay_payload = {}
+        self.manual_sector_overlay_enabled = False
+        self.risk_sector_overlay_active = False
+        self.risk_sector_overlay_scenario = "safe"
         self.rl_ever_triggered = False
         self.rl_overlay_shown = False
         self.prev_vessel1_rl_active = False
@@ -1756,6 +1762,9 @@ class SingleVessel2FeatureEnv:
                 "vessel1_distance": float(vessel1_dist),
                 "vessel2_distance": float(vessel2_dist),
             }
+            if self.envp.auto_show_risk_sector_overlay:
+                self.risk_sector_overlay_active = True
+                self.risk_sector_overlay_scenario = str(self.colregs_scenario)
 
         self.prev_vessel1_rl_active = self.vessel1_rl_active
         self.prev_vessel2_rl_active = self.vessel2_rl_active
@@ -1811,6 +1820,42 @@ class SingleVessel2FeatureEnv:
 
         surf.blit(panel, (0, 0))
 
+    def _sector_ray_bearings_deg(self) -> List[float]:
+        """Representative ray heading for each of the 9 radar sectors (same geometry as observation sectors)."""
+        return [0.0, 25.0, 57.5, 93.75, 146.25, 213.75, 266.25, 302.5, 335.0]
+
+    def _sector_overlay_is_active(self) -> bool:
+        return bool(self.manual_sector_overlay_enabled or self.risk_sector_overlay_active)
+
+    def _sector_overlay_color(self) -> Tuple[int, int, int]:
+        if self.risk_sector_overlay_active:
+            scenario = str(self.risk_sector_overlay_scenario)
+            if scenario == "head_on":
+                return (255, 215, 60)
+            if scenario == "crossing":
+                return (120, 255, 165)
+            if scenario == "overtaking":
+                return (255, 155, 120)
+        return (210, 230, 255)
+
+    def _draw_sector_overlay_rays(self, surf) -> None:
+        if not self._sector_overlay_is_active():
+            return
+
+        color = self._sector_overlay_color()
+        ray_len = float(self.envp.sensor_range)
+        for vessel_id in self.get_vessel_ids():
+            vessel = self.get_vessel_by_id(vessel_id)
+            if vessel is None:
+                continue
+            x0 = self.sx(vessel.x)
+            y0 = self.sy(vessel.y)
+            for rel_bearing_deg in self._sector_ray_bearings_deg():
+                world_ang = vessel.h + math.radians(rel_bearing_deg)
+                x1 = self.sx(vessel.x + ray_len * math.cos(world_ang))
+                y1 = self.sy(vessel.y + ray_len * math.sin(world_ang))
+                pygame.draw.line(surf, color, (x0, y0), (x1, y1), 1)
+
     def render(self) -> None:
         if not self.render_enabled or self._screen is None:
             return
@@ -1820,10 +1865,14 @@ class SingleVessel2FeatureEnv:
                 raise SystemExit
             if event.type == pygame.KEYDOWN and event.key == pygame.K_p:
                 self.show_planned_paths = not self.show_planned_paths
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_o:
+                self.manual_sector_overlay_enabled = not self.manual_sector_overlay_enabled
             if event.type == pygame.KEYDOWN and event.key in (pygame.K_SPACE, pygame.K_RETURN):
                 if self.risk_overlay_active:
                     self.risk_overlay_active = False
                     self.risk_overlay_payload = {}
+                    self.risk_sector_overlay_active = False
+                    self.risk_sector_overlay_scenario = "safe"
                     self.paused = False
                 else:
                     self.paused = not self.paused
@@ -1870,6 +1919,7 @@ class SingleVessel2FeatureEnv:
         for vessel_id, vessel in self.extra_vessels.items():
             label = f"V{vessel_id.replace('vessel', '')}"
             self._draw_vessel(vessel, (255, 150, 120), label)
+        self._draw_sector_overlay_rays(surf)
 
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
 
