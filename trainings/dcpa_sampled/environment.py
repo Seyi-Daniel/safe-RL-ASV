@@ -113,7 +113,6 @@ class SingleVessel2FeatureEnv:
         self.risk_overlay_payload: Dict[str, float | str | int] = {}
         self.manual_sector_overlay_enabled = False
         self.risk_sector_overlay_active = False
-        self.risk_sector_overlay_scenario = "safe"
         self.rl_ever_triggered: bool = False  # latches True when RL first activates, never resets within episode
         self.rl_overlay_shown: bool = False  # True after overlay has been shown once this episode
         self.prev_vessel1_rl_active = False
@@ -1263,7 +1262,6 @@ class SingleVessel2FeatureEnv:
         self.risk_overlay_payload = {}
         self.manual_sector_overlay_enabled = False
         self.risk_sector_overlay_active = False
-        self.risk_sector_overlay_scenario = "safe"
         self.rl_ever_triggered = False
         self.rl_overlay_shown = False
         self.prev_vessel1_rl_active = False
@@ -1725,46 +1723,47 @@ class SingleVessel2FeatureEnv:
         self._append_multi_vessel_debug_info(info)
         self._maybe_print_multi_vessel_debug(info)
 
-        # Show the RL takeover overlay exactly once per episode, on the first step RL activates.
+        # Trigger the takeover pause event exactly once per episode, on the first step RL activates.
         if (
             self.render_enabled
-            and self.envp.show_risk_overlay
             and not self.rl_overlay_shown
             and self.rl_ever_triggered
             and (self.vessel1_rl_active or self.vessel2_rl_active)
         ):
             self.rl_overlay_shown = True
             self.paused = True
-            self.risk_overlay_active = True
-            self.risk_overlay_payload = {
-                "step": int(self.step_idx),
-                "time": float(self.time),
-                "geometry": self.geometry_scenario,
-                "scenario": self.colregs_scenario,
-                "risk_of_collision": int(self.risk_of_collision),
-                "encounter_latched": int(self.encounter_latched),
-                "overtaking_latched": int(self.overtaking_latched),
-                "vessel1_role": self.vessel1_role,
-                "vessel2_role": self.vessel2_role,
-                "dcpa": float(self.last_dcpa),
-                "tcpa": float(self.last_tcpa),
-                "vessel1_bearing": float(self.vessel1_relative_bearing_deg),
-                "vessel2_bearing": float(self.vessel2_relative_bearing_deg),
-                "vessel1_rl_active": int(self.vessel1_rl_active),
-                "vessel2_rl_active": int(self.vessel2_rl_active),
-                "vessel1_model_control_latched": int(self.vessel1_model_control_latched),
-                "vessel2_model_control_latched": int(self.vessel2_model_control_latched),
-                # Backward-compatible aliases.
-                "vessel1_rl_latched": int(self.vessel1_model_control_latched),
-                "vessel2_rl_latched": int(self.vessel2_model_control_latched),
-                "vessel1_control_source": self.vessel1_control_source,
-                "vessel2_control_source": self.vessel2_control_source,
-                "vessel1_distance": float(vessel1_dist),
-                "vessel2_distance": float(vessel2_dist),
-            }
+            if self.envp.show_risk_overlay:
+                self.risk_overlay_active = True
+                self.risk_overlay_payload = {
+                    "step": int(self.step_idx),
+                    "time": float(self.time),
+                    "geometry": self.geometry_scenario,
+                    "scenario": self.colregs_scenario,
+                    "risk_of_collision": int(self.risk_of_collision),
+                    "encounter_latched": int(self.encounter_latched),
+                    "overtaking_latched": int(self.overtaking_latched),
+                    "vessel1_role": self.vessel1_role,
+                    "vessel2_role": self.vessel2_role,
+                    "dcpa": float(self.last_dcpa),
+                    "tcpa": float(self.last_tcpa),
+                    "vessel1_bearing": float(self.vessel1_relative_bearing_deg),
+                    "vessel2_bearing": float(self.vessel2_relative_bearing_deg),
+                    "vessel1_rl_active": int(self.vessel1_rl_active),
+                    "vessel2_rl_active": int(self.vessel2_rl_active),
+                    "vessel1_model_control_latched": int(self.vessel1_model_control_latched),
+                    "vessel2_model_control_latched": int(self.vessel2_model_control_latched),
+                    # Backward-compatible aliases.
+                    "vessel1_rl_latched": int(self.vessel1_model_control_latched),
+                    "vessel2_rl_latched": int(self.vessel2_model_control_latched),
+                    "vessel1_control_source": self.vessel1_control_source,
+                    "vessel2_control_source": self.vessel2_control_source,
+                    "vessel1_distance": float(vessel1_dist),
+                    "vessel2_distance": float(vessel2_dist),
+                }
             if self.envp.auto_show_risk_sector_overlay:
                 self.risk_sector_overlay_active = True
-                self.risk_sector_overlay_scenario = str(self.colregs_scenario)
+            else:
+                self.risk_sector_overlay_active = False
 
         self.prev_vessel1_rl_active = self.vessel1_rl_active
         self.prev_vessel2_rl_active = self.vessel2_rl_active
@@ -1820,41 +1819,81 @@ class SingleVessel2FeatureEnv:
 
         surf.blit(panel, (0, 0))
 
-    def _sector_ray_bearings_deg(self) -> List[float]:
-        """Representative ray heading for each of the 9 radar sectors (same geometry as observation sectors)."""
-        return [0.0, 25.0, 57.5, 93.75, 146.25, 213.75, 266.25, 302.5, 335.0]
+    def _sector_boundaries_deg(self) -> List[float]:
+        """True radar-sector boundaries in relative-bearing coordinates."""
+        return [350.0, 10.0, 40.0, 75.0, 112.5, 180.0, 247.5, 285.0, 320.0, 350.0]
+
+    def _sector_spans_with_category(self) -> List[Tuple[float, float, str]]:
+        # Category mapping:
+        # - head_on: 350→10
+        # - crossing: 10→40, 40→75, 75→112.5, 247.5→285, 285→320, 320→350
+        # - overtaking: 112.5→180, 180→247.5
+        return [
+            (350.0, 10.0, "head_on"),
+            (10.0, 40.0, "crossing"),
+            (40.0, 75.0, "crossing"),
+            (75.0, 112.5, "crossing"),
+            (112.5, 180.0, "overtaking"),
+            (180.0, 247.5, "overtaking"),
+            (247.5, 285.0, "crossing"),
+            (285.0, 320.0, "crossing"),
+            (320.0, 350.0, "crossing"),
+        ]
 
     def _sector_overlay_is_active(self) -> bool:
         return bool(self.manual_sector_overlay_enabled or self.risk_sector_overlay_active)
 
-    def _sector_overlay_color(self) -> Tuple[int, int, int]:
-        if self.risk_sector_overlay_active:
-            scenario = str(self.risk_sector_overlay_scenario)
-            if scenario == "head_on":
-                return (255, 215, 60)
-            if scenario == "crossing":
-                return (120, 255, 165)
-            if scenario == "overtaking":
-                return (255, 155, 120)
-        return (210, 230, 255)
+    def _sector_style_for_category(self, category: str) -> Tuple[Tuple[int, int, int, int], Tuple[int, int, int]]:
+        if category == "head_on":
+            return (255, 220, 120, 36), (255, 225, 150)
+        if category == "overtaking":
+            return (255, 160, 140, 30), (255, 185, 165)
+        # crossing sectors (default)
+        return (140, 205, 255, 30), (170, 220, 255)
 
-    def _draw_sector_overlay_rays(self, surf) -> None:
+    def _bearing_arc_points(self, vessel: Vessel, start_deg: float, end_deg: float, radius: float, steps: int) -> List[Tuple[int, int]]:
+        start = start_deg
+        end = end_deg
+        if end < start:
+            end += 360.0
+        pts: List[Tuple[int, int]] = []
+        for i in range(steps + 1):
+            bdeg = start + (end - start) * (i / max(1, steps))
+            world_ang = vessel.h + math.radians(bdeg % 360.0)
+            wx = vessel.x + radius * math.cos(world_ang)
+            wy = vessel.y + radius * math.sin(world_ang)
+            pts.append((self.sx(wx), self.sy(wy)))
+        return pts
+
+    def _draw_sector_overlay(self, surf) -> None:
         if not self._sector_overlay_is_active():
             return
 
-        color = self._sector_overlay_color()
+        w = self.sx(self.envp.world_w)
+        h = self.sy(self.envp.world_h)
+        overlay = pygame.Surface((w, h), pygame.SRCALPHA)
         ray_len = float(self.envp.sensor_range)
-        for vessel_id in self.get_vessel_ids():
+        for vessel_id in ("vessel1", "vessel2"):
             vessel = self.get_vessel_by_id(vessel_id)
             if vessel is None:
                 continue
             x0 = self.sx(vessel.x)
             y0 = self.sy(vessel.y)
-            for rel_bearing_deg in self._sector_ray_bearings_deg():
-                world_ang = vessel.h + math.radians(rel_bearing_deg)
+            for start_deg, end_deg, category in self._sector_spans_with_category():
+                fill_rgba, _ = self._sector_style_for_category(category)
+                span = (end_deg - start_deg) % 360.0
+                steps = max(4, int(round(span / 6.0)))
+                arc_pts = self._bearing_arc_points(vessel, start_deg, end_deg, ray_len, steps)
+                poly = [(x0, y0)] + arc_pts
+                pygame.draw.polygon(overlay, fill_rgba, poly)
+            for bdeg in self._sector_boundaries_deg():
+                world_ang = vessel.h + math.radians(bdeg % 360.0)
                 x1 = self.sx(vessel.x + ray_len * math.cos(world_ang))
                 y1 = self.sy(vessel.y + ray_len * math.sin(world_ang))
-                pygame.draw.line(surf, color, (x0, y0), (x1, y1), 1)
+                category = "head_on" if bdeg in (350.0, 10.0) else "crossing"
+                _, line_rgb = self._sector_style_for_category(category)
+                pygame.draw.line(surf, line_rgb, (x0, y0), (x1, y1), 1)
+        surf.blit(overlay, (0, 0))
 
     def render(self) -> None:
         if not self.render_enabled or self._screen is None:
@@ -1872,7 +1911,9 @@ class SingleVessel2FeatureEnv:
                     self.risk_overlay_active = False
                     self.risk_overlay_payload = {}
                     self.risk_sector_overlay_active = False
-                    self.risk_sector_overlay_scenario = "safe"
+                    self.paused = False
+                elif self.paused and self.risk_sector_overlay_active:
+                    self.risk_sector_overlay_active = False
                     self.paused = False
                 else:
                     self.paused = not self.paused
@@ -1919,7 +1960,7 @@ class SingleVessel2FeatureEnv:
         for vessel_id, vessel in self.extra_vessels.items():
             label = f"V{vessel_id.replace('vessel', '')}"
             self._draw_vessel(vessel, (255, 150, 120), label)
-        self._draw_sector_overlay_rays(surf)
+        self._draw_sector_overlay(surf)
 
         tcpa_txt = "inf" if math.isinf(self.last_tcpa) else f"{self.last_tcpa:.1f}s"
 
