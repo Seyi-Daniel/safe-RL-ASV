@@ -126,7 +126,8 @@ def _screen_candidate_episode(
 ) -> tuple[bool, float, float, int, str, str]:
     """Run deterministic scripted-only screening for a candidate training seed.
 
-    Screening is strictly policy-independent and is used only for seed acceptance.
+    Screening is strictly policy-independent and is the authoritative episode-
+    selection gate for training seed acceptance.
     """
     _ = env.reset(seed=seed)
     initial_scenario = _classify_initial_two_vessel_scenario(env)
@@ -566,7 +567,6 @@ def main() -> None:
         episode_seconds=args.episode_seconds,
         dcpa_risk_threshold=args.dcpa_threshold,
         tcpa_risk_threshold=args.tcpa_threshold,
-        enable_no_takeover_early_done=False,
     )
     sample_env = SingleVessel2FeatureEnv(envp, RewardParams(), render=False)
     env = SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)
@@ -614,7 +614,7 @@ def main() -> None:
             )
             continue
 
-        # Real training rollout starts from a fresh reset of the accepted seed.
+        # Real training rollout starts from a fresh reset of the accepted seed (no hidden reset-side viability gate).
         _ = env.reset(seed=accepted_seed)
         done = False
         ep_return = 0.0
