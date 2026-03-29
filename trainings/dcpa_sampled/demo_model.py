@@ -25,6 +25,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--scenario", choices=["head_on", "crossing", "overtaking", "all"], default=None)
     parser.add_argument("--num-vessels", type=int, default=2)
+    parser.add_argument("--show-risk-overlay", dest="show_risk_overlay", action="store_true",
+                        help="show RL takeover/risk HUD overlay during render mode")
+    parser.add_argument("--hide-risk-overlay", dest="show_risk_overlay", action="store_false",
+                        help="hide RL takeover/risk HUD overlay during render mode")
+    parser.set_defaults(show_risk_overlay=EnvParams().show_risk_overlay)
     return parser.parse_args()
 
 
@@ -85,7 +90,10 @@ def select_action(actor: ContinuousActor, obs: np.ndarray, device: torch.device)
 
 
 def run_demo(args: argparse.Namespace) -> None:
-    env_params = EnvParams(num_vessels=int(args.num_vessels))
+    env_params = EnvParams(
+        num_vessels=int(args.num_vessels),
+        show_risk_overlay=bool(args.show_risk_overlay),
+    )
     reward_params = RewardParams()
     env = SingleVessel2FeatureEnv(env_params=env_params, reward_params=reward_params, render=True)
 

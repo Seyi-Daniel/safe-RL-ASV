@@ -303,6 +303,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--render", action="store_true", help="render during training")
     p.add_argument("--no-render", dest="render", action="store_false")
     p.set_defaults(render=False)
+    p.add_argument("--show-risk-overlay", dest="show_risk_overlay", action="store_true",
+                   help="show RL takeover/risk HUD overlay during render mode")
+    p.add_argument("--hide-risk-overlay", dest="show_risk_overlay", action="store_false",
+                   help="hide RL takeover/risk HUD overlay during render mode")
+    p.set_defaults(show_risk_overlay=EnvParams().show_risk_overlay)
     p.add_argument("--eval-only", action="store_true", help="run deterministic evaluation only (no training updates)")
     p.add_argument("--eval-episodes", type=int, default=30, help="accepted evaluation episodes per scenario")
     p.add_argument(
@@ -567,6 +572,7 @@ def main() -> None:
         episode_seconds=args.episode_seconds,
         dcpa_risk_threshold=args.dcpa_threshold,
         tcpa_risk_threshold=args.tcpa_threshold,
+        show_risk_overlay=bool(args.show_risk_overlay),
     )
     sample_env = SingleVessel2FeatureEnv(envp, RewardParams(), render=False)
     env = SingleVessel2FeatureEnv(envp, RewardParams(), render=args.render)
