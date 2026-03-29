@@ -23,6 +23,7 @@ class EnvParams:
     show_grid: bool = True
     show_spawn_rings: bool = True
     show_risk_overlay: bool = False
+    auto_show_risk_sector_overlay: bool = False
     enable_step_risk_logging: bool = False
     debug_multi_vessel_status: bool = False
 
@@ -88,7 +89,7 @@ class EnvParams:
     collision_distance: float = 8.0
     near_miss_distance: float = 15.0
     safe_pass_distance: float = 25.0
-    sensor_range: float = 140.0
+    sensor_range: float = 500.0
 
 
 @dataclass

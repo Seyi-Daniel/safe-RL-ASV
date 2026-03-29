@@ -30,6 +30,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hide-risk-overlay", dest="show_risk_overlay", action="store_false",
                         help="hide RL takeover/risk HUD overlay during render mode")
     parser.set_defaults(show_risk_overlay=EnvParams().show_risk_overlay)
+    parser.add_argument(
+        "--auto-show-risk-sector-overlay",
+        dest="auto_show_risk_sector_overlay",
+        action="store_true",
+        help="when takeover HUD pause triggers, also auto-show radar sector rays until continue",
+    )
+    parser.add_argument(
+        "--no-auto-show-risk-sector-overlay",
+        dest="auto_show_risk_sector_overlay",
+        action="store_false",
+        help="do not auto-show radar sector rays at takeover HUD pause",
+    )
+    parser.set_defaults(auto_show_risk_sector_overlay=EnvParams().auto_show_risk_sector_overlay)
     return parser.parse_args()
 
 
@@ -93,6 +106,7 @@ def run_demo(args: argparse.Namespace) -> None:
     env_params = EnvParams(
         num_vessels=int(args.num_vessels),
         show_risk_overlay=bool(args.show_risk_overlay),
+        auto_show_risk_sector_overlay=bool(args.auto_show_risk_sector_overlay),
     )
     reward_params = RewardParams()
     env = SingleVessel2FeatureEnv(env_params=env_params, reward_params=reward_params, render=True)
