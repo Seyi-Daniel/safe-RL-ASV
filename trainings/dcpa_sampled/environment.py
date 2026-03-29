@@ -1213,8 +1213,8 @@ class SingleVessel2FeatureEnv:
         sampled_vessel2 = self._sample_vessel2_path()
 
         # Episode acceptance is handled by the training-side scripted screening
-        # pipeline; reset() must not apply hidden takeover/near-miss gating.
-        self.reset_has_takeover_path = True
+        # pipeline in train.py; reset() intentionally avoids hidden viability
+        # filtering.
 
         self.vessel1 = sampled_vessel1
         self.vessel2 = sampled_vessel2
@@ -1509,85 +1509,6 @@ class SingleVessel2FeatureEnv:
         stand_on_vessel = "vessel1" if self.vessel1_role == "stand_on" else "vessel2" if self.vessel2_role == "stand_on" else "none"
         stand_on_nominal_mode = "pure_pursuit" if stand_on_vessel == "vessel2" else "straight" if stand_on_vessel == "vessel1" else "none"
 
-        early_cutoff_steps = max(1, int(self.envp.no_takeover_early_done_steps))
-        if bool(self.envp.enable_no_takeover_early_done) and (not self.reset_has_takeover_path) and (not self.any_rl_ever_triggered) and (self.step_idx + 1) >= early_cutoff_steps:
-            self.step_idx += 1
-            self.time += self.envp.dt
-            d_vessel1 = self._goal_distance(self.vessel1)
-            d_vessel2 = self._goal_distance(self.vessel2)
-            h_err_vessel1 = self._goal_heading_error(self.vessel1)
-            h_err_vessel2 = self._goal_heading_error(self.vessel2)
-            vessel1_local_reward = self._compute_progress_reward_for_vessel(
-                self.prev_goal_d_vessel1,
-                d_vessel1,
-                self.prev_goal_heading_err_vessel1,
-                h_err_vessel1,
-            )
-            vessel2_local_reward = self._compute_progress_reward_for_vessel(
-                self.prev_goal_d_vessel2,
-                d_vessel2,
-                self.prev_goal_heading_err_vessel2,
-                h_err_vessel2,
-            )
-            shared_reward = self.rewp.living_penalty
-            reward_v1 = vessel1_local_reward + shared_reward
-            reward_v2 = vessel2_local_reward + shared_reward
-            reward_by_vessel = self.get_reward_by_vessel(reward_v1, reward_v2, extras={vessel_id: shared_reward for vessel_id in self.extra_vessels})
-            # Backward-compatible scalar return for legacy callers/logging.
-            # Training updates consume per-vessel rewards from info["reward_v1"/"reward_v2"].
-            reward = reward_v1 + reward_v2 - shared_reward
-            self.prev_goal_d_vessel1 = d_vessel1
-            self.prev_goal_d_vessel2 = d_vessel2
-            self.prev_goal_heading_err_vessel1 = h_err_vessel1
-            self.prev_goal_heading_err_vessel2 = h_err_vessel2
-            info: Dict[str, object] = {
-                "reason": "no_takeover_trigger",
-                "vessel1_goal_distance": d_vessel1,
-                "vessel2_goal_distance": d_vessel2,
-                "vessel1_reached": int(self.vessel1_reached),
-                "vessel2_reached": int(self.vessel2_reached),
-                "rudder_cmd": rudder_cmd,
-                "throttle_cmd": throttle_cmd,
-                "vessel1_steps_taken": int(self.vessel1_steps_taken),
-                "vessel2_steps_taken": int(self.vessel2_steps_taken),
-                "vessel1_start_speed": float(self.vessel1_start_speed),
-                "vessel2_start_speed": float(self.vessel2_start_speed),
-                "vessel1_heading_deg": float(math.degrees(self.vessel1.h)),
-                "vessel2_heading_deg": float(math.degrees(self.vessel2.h)),
-                "vessel1_rudder_deg": float(math.degrees(self.vessel1.rudder)),
-                "vessel2_rudder_deg": float(math.degrees(self.vessel2.rudder)),
-                "dcpa": float(dcpa),
-                "tcpa": float(tcpa),
-                "risk_of_collision": int(self.risk_of_collision),
-                "colregs_scenario": self.colregs_scenario,
-                "geometry_scenario": self.geometry_scenario,
-                "encounter_latched": int(self.encounter_latched),
-                "overtaking_latched": int(self.overtaking_latched),
-                "vessel1_role": self.vessel1_role,
-                "vessel2_role": self.vessel2_role,
-                "vessel1_rl_active": int(self.vessel1_rl_active),
-                "vessel2_rl_active": int(self.vessel2_rl_active),
-                "vessel1_model_control_latched": int(self.vessel1_model_control_latched),
-                "vessel2_model_control_latched": int(self.vessel2_model_control_latched),
-                # Backward-compatible aliases.
-                "vessel1_rl_latched": int(self.vessel1_model_control_latched),
-                "vessel2_rl_latched": int(self.vessel2_model_control_latched),
-                "vessel1_distance_from_start": float(vessel1_dist),
-                "vessel2_distance_from_start": float(vessel2_dist),
-                "vessel1_relative_bearing_deg": float(self.vessel1_relative_bearing_deg),
-                "vessel2_relative_bearing_deg": float(self.vessel2_relative_bearing_deg),
-                "vessel1_control_source": self.vessel1_control_source,
-                "vessel2_control_source": self.vessel2_control_source,
-                "reward_v1": reward_by_vessel["vessel1"],
-                "reward_v2": reward_by_vessel["vessel2"],
-                "reward_by_vessel": reward_by_vessel,
-            }
-            self._append_multi_vessel_debug_info(info)
-            self._maybe_print_multi_vessel_debug(info)
-            self.prev_vessel1_rl_active = self.vessel1_rl_active
-            self.prev_vessel2_rl_active = self.vessel2_rl_active
-            return self.get_obs(), float(reward), True, info
-
         h = self.envp.dt / max(1, self.envp.substeps)
         was_vessel1_active = not self.vessel1_reached
         was_vessel2_active = not self.vessel2_reached
@@ -1833,7 +1754,6 @@ class SingleVessel2FeatureEnv:
                 "vessel2_control_source": self.vessel2_control_source,
                 "vessel1_distance": float(vessel1_dist),
                 "vessel2_distance": float(vessel2_dist),
-                "takeover_distance": float(self.envp.rl_takeover_distance),
             }
 
         self.prev_vessel1_rl_active = self.vessel1_rl_active
