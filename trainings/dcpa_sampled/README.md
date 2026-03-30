@@ -201,6 +201,76 @@ or:
 python trainings/dcpa_sampled/demo_model.py --checkpoint trainings/dcpa_sampled/runs/0330_1323/policy_latest.pt
 ```
 
+### Normal demo mode (existing simple flow)
+
+By default, demo playback keeps the simple seed-selection behavior:
+
+- If `--scenario` is omitted (or `all`), it plays accepted reset seeds directly.
+- If `--scenario` is set (`head_on`, `crossing`, `overtaking`), it searches for a seed whose **initial** geometry matches that scenario.
+- This mode is useful for quick visual inspection, but it may still include episodes where takeover never activates.
+
+### Screened demo mode (training-style seed acceptance)
+
+Enable screened demo selection with `--screened-demo` to mirror training-style scripted screening before playback:
+
+- Candidate seeds are rolled out with **scripted-only control** (no policy actions injected during screening).
+- Acceptance requires meeting screening thresholds:
+  - `DCPA <= --screening-dcpa-threshold` (default `20.0`)
+  - `0 < TCPA <= --screening-tcpa-threshold` (default `20.0`)
+- Optional screening horizons:
+  - `--screening-max-steps`
+  - `--screening-max-seconds`
+- Candidate search budget:
+  - `--screening-max-tries` (`0` means unlimited)
+
+This better matches the training seed-selection philosophy and reduces “safe/no-risk” demo episodes where the model had nothing to do.
+
+### Optional takeover requirement
+
+Use `--require-takeover` **together with** `--screened-demo` when you want only takeover-relevant demo episodes:
+
+- A candidate seed is accepted only if scripted screening observed at least one RL-active/takeover step.
+- If omitted, screened mode still enforces DCPA/TCPA acceptance, but does not force takeover occurrence.
+
+### Combining scenario filtering + screening
+
+You can combine `--scenario` with `--screened-demo` (and optionally `--require-takeover`):
+
+- Scenario filter must match (`head_on`, `crossing`, `overtaking`) **and**
+- Scripted screening acceptance must pass threshold checks (and takeover requirement if enabled).
+
+### Playback takeover discipline
+
+`demo_model.py` enforces the same takeover discipline expected during training:
+
+- Before takeover: actor is **not queried**, observations are **not built** for model use, and no model actions are produced.
+- After takeover activates: actor is queried only for RL-active vessel IDs, and only those vessels receive action entries.
+
+Per episode, demo logs include at least:
+
+- accepted seed
+- scenario label
+- whether screening was used
+- whether takeover was observed during screening
+- whether takeover occurred during actual playback
+- number of playback steps with at least one RL-active vessel
+- collision / success / terminal reason
+
+### Recommended screened demo command
+
+```bash
+python trainings/dcpa_sampled/demo_model.py \
+  --checkpoint trainings/dcpa_sampled/runs/0330_1323/policy_latest.pt \
+  --seed 7 \
+  --episodes 5 \
+  --screened-demo \
+  --scenario crossing \
+  --require-takeover \
+  --screening-dcpa-threshold 20.0 \
+  --screening-tcpa-threshold 20.0 \
+  --screening-max-tries 500
+```
+
 Device selection behavior for both `train.py` and `demo_model.py`:
 
 - If CUDA is available and `--cuda` is not provided, device defaults to `cuda:0`.
