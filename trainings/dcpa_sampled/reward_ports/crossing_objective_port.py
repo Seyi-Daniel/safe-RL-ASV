@@ -275,10 +275,7 @@ class CrossingObjectivePort:
             goal_x = self._get_goal_coordinate(vessel1, "x")
             goal_y = self._get_goal_coordinate(vessel1, "y")
 
-            heading_deg = self._get_attr_value(
-                vessel1,
-                ("heading_deg", "heading", "course_deg", "yaw_deg"),
-            )
+            heading_deg = self._resolve_heading_deg(vessel1)
             desired_heading_deg = math.degrees(math.atan2(goal_y - vessel_y, goal_x - vessel_x))
             return self._signed_angle_difference_deg(desired_heading_deg, heading_deg)
 
@@ -291,6 +288,24 @@ class CrossingObjectivePort:
     def _signed_angle_difference_deg(target_deg: float, source_deg: float) -> float:
         wrapped = (target_deg - source_deg + 180.0) % 360.0 - 180.0
         return float(wrapped)
+
+    @staticmethod
+    def _resolve_heading_deg(vessel: Any) -> float:
+        """Resolve vessel heading in degrees from common degree/radian attribute names."""
+        degree_names = ("heading_deg", "heading", "course_deg", "yaw_deg")
+        for name in degree_names:
+            if hasattr(vessel, name):
+                return float(getattr(vessel, name))
+
+        radian_names = ("h", "heading_rad", "yaw_rad", "course_rad")
+        for name in radian_names:
+            if hasattr(vessel, name):
+                return math.degrees(float(getattr(vessel, name)))
+
+        raise ValueError(
+            "Unable to resolve vessel heading. Tried degree names "
+            f"{degree_names!r} and radian names {radian_names!r} on object={type(vessel).__name__}."
+        )
 
     @staticmethod
     def _get_attr_value(source: Any, names: tuple[str, ...]) -> float:
