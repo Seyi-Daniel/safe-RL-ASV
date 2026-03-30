@@ -99,7 +99,7 @@ Important notes:
 - Screening is the authoritative episode-selection gate.
 - Environment reset itself has no hidden viability filtering.
 - Candidates are still accepted/rejected by scripted screening thresholds (`DCPA <= sampling_dcpa_threshold` and `0 < TCPA <= sampling_tcpa_threshold`).
-- If `--sampling-scenario` is provided, an additional filter is applied using the scenario at the **first takeover moment** observed during scripted screening (first step with RL-active vessel), not reset-time geometry and not merely first threshold-hit geometry.
+- If `--sampling-scenario` is provided, an additional filter is applied using the scenario at the **scripted screening acceptance step** (the first step where those threshold conditions are met), not reset-time geometry.
 
 ## Output layout
 
@@ -164,7 +164,7 @@ python trainings/dcpa_sampled/train.py [flags]
 - `--sampling-screen-max-seconds`: optional screening-only simulated-seconds cap per candidate attempt.
 - `--max-sampling-steps-per-attempt`: legacy alias for screening step cap.
 
-`--sampling-scenario` applies **only** to training candidate-seed screening/acceptance. It filters by the scenario observed at the first takeover moment during scripted screening (first RL-active step), not merely the initial/reset scenario label and not merely the first threshold-hit step. If omitted, all scenarios remain eligible (mixed-scenario behavior unchanged). It does **not** change runtime environment risk/takeover logic and does **not** change reward logic.
+`--sampling-scenario` applies **only** to training candidate-seed screening/acceptance. It filters by the scenario observed at the scripted screening acceptance step (the first step where DCPA/TCPA screening acceptance conditions are met), not merely the initial/reset scenario label. If omitted, all scenarios remain eligible (mixed-scenario behavior unchanged). It does **not** change runtime environment risk/takeover logic and does **not** change reward logic.
 
 ### 4) Environment / risk thresholds
 
