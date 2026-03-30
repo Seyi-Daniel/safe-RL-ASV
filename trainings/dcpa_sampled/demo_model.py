@@ -28,6 +28,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--cuda",
+        type=int,
+        default=None,
+        help=(
+            "CUDA device index to use (for example: --cuda 0, --cuda 1). "
+            "When CUDA is available and this flag is omitted, defaults to GPU 0."
+        ),
+    )
     parser.add_argument("--scenario", choices=["head_on", "crossing", "overtaking", "all"], default=None)
     parser.add_argument("--num-vessels", type=int, default=2)
     parser.add_argument("--show-risk-overlay", dest="show_risk_overlay", action="store_true",
@@ -49,6 +58,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.set_defaults(auto_show_risk_sector_overlay=EnvParams().auto_show_risk_sector_overlay)
     return parser.parse_args()
+
+
+def select_runtime_device(cuda_index: int | None) -> torch.device:
+    cuda_available = torch.cuda.is_available()
+    if not cuda_available:
+        if cuda_index is not None:
+            print("CUDA was requested, but no CUDA device is available. Falling back to CPU.")
+        return torch.device("cpu")
+
+    device_count = torch.cuda.device_count()
+    selected_index = 0 if cuda_index is None else int(cuda_index)
+    if selected_index < 0 or selected_index >= device_count:
+        raise ValueError(
+            f"Invalid CUDA device index {selected_index}. "
+            f"Available CUDA devices: 0 to {device_count - 1}."
+        )
+    return torch.device(f"cuda:{selected_index}")
 
 
 def classify_initial_scenario(env: SingleVessel2FeatureEnv) -> str:
@@ -116,7 +142,15 @@ def run_demo(args: argparse.Namespace) -> None:
     reward_params = RewardParams()
     env = SingleVessel2FeatureEnv(env_params=env_params, reward_params=reward_params, render=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    try:
+        device = select_runtime_device(args.cuda)
+    except ValueError as exc:
+        raise SystemExit(f"Device selection error: {exc}") from exc
+
+    if device.type == "cuda":
+        print(f"Using device: {device} (CUDA devices available: {torch.cuda.device_count()})")
+    else:
+        print("Using device: cpu")
 
     try:
         initial_obs = env.reset(seed=args.seed)

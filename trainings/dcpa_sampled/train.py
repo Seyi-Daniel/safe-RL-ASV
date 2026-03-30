@@ -304,6 +304,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hidden-dim-2", type=int, default=TrainParams().hidden_dim_2)
     p.add_argument("--hidden-dim-3", type=int, default=TrainParams().hidden_dim_3)
     p.add_argument("--seed", type=int, default=TrainParams().seed)
+    p.add_argument(
+        "--cuda",
+        type=int,
+        default=None,
+        help=(
+            "CUDA device index to use (for example: --cuda 0, --cuda 1). "
+            "When CUDA is available and this flag is omitted, defaults to GPU 0."
+        ),
+    )
     p.add_argument("--episode-seconds", type=float, default=500.0)
     p.add_argument("--num-vessels", type=int, default=EnvParams().num_vessels)
     p.add_argument(
@@ -405,6 +414,24 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     return p.parse_args()
+
+
+def _select_runtime_device(cuda_index: int | None) -> torch.device:
+    cuda_available = torch.cuda.is_available()
+    if not cuda_available:
+        if cuda_index is not None:
+            print("CUDA was requested, but no CUDA device is available. Falling back to CPU.")
+        return torch.device("cpu")
+
+    device_count = torch.cuda.device_count()
+    selected_index = 0 if cuda_index is None else int(cuda_index)
+    if selected_index < 0 or selected_index >= device_count:
+        raise ValueError(
+            f"Invalid CUDA device index {selected_index}. "
+            f"Available CUDA devices: 0 to {device_count - 1}."
+        )
+
+    return torch.device(f"cuda:{selected_index}")
 
 
 def _collect_rl_actions_for_step(
@@ -641,7 +668,15 @@ def main() -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    try:
+        device = _select_runtime_device(args.cuda)
+    except ValueError as exc:
+        raise SystemExit(f"Device selection error: {exc}") from exc
+
+    if device.type == "cuda":
+        print(f"Using device: {device} (CUDA devices available: {torch.cuda.device_count()})")
+    else:
+        print("Using device: cpu")
 
     train_hp = TrainParams(
         episodes=args.episodes,
