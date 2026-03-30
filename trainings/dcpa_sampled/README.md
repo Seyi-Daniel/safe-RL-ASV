@@ -156,10 +156,13 @@ python trainings/dcpa_sampled/train.py [flags]
 
 - `--sampling-dcpa-threshold`: training-only candidate-seed DCPA acceptance threshold (default `20.0`).
 - `--sampling-tcpa-threshold`: training-only candidate-seed TCPA acceptance threshold (default `20.0`).
+- `--sampling-scenario`: optional training-only scenario filter for candidate-seed acceptance (`head_on`, `crossing`, `overtaking`). If omitted, all scenarios are eligible and mixed-scenario training behavior is preserved.
 - `--dcpa-sample-max-tries`: max candidate-seed attempts per training episode (`0` = unlimited).
 - `--sampling-screen-max-steps`: optional screening-only step cap per candidate attempt.
 - `--sampling-screen-max-seconds`: optional screening-only simulated-seconds cap per candidate attempt.
 - `--max-sampling-steps-per-attempt`: legacy alias for screening step cap.
+
+`--sampling-scenario` applies **only** to training candidate-seed screening/acceptance. It does **not** change runtime environment risk/takeover logic and does **not** change reward logic.
 
 ### 4) Environment / risk thresholds
 
