@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import random
 import sys
@@ -305,19 +306,29 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=TrainParams().seed)
     p.add_argument("--episode-seconds", type=float, default=500.0)
     p.add_argument("--num-vessels", type=int, default=EnvParams().num_vessels)
-    p.add_argument("--dcpa-threshold", type=float, default=10.0)
-    p.add_argument("--tcpa-threshold", type=float, default=10.0)
+    p.add_argument(
+        "--dcpa-threshold",
+        type=float,
+        default=EnvParams().dcpa_risk_threshold,
+        help="environment runtime risk/takeover DCPA threshold (not sampling threshold)",
+    )
+    p.add_argument(
+        "--tcpa-threshold",
+        type=float,
+        default=EnvParams().tcpa_risk_threshold,
+        help="environment runtime risk/takeover TCPA threshold (not sampling threshold)",
+    )
     p.add_argument(
         "--sampling-dcpa-threshold",
         type=float,
         default=TrainParams().sampling_dcpa_threshold,
-        help="DCPA threshold for training episode seed sampling (default: follow --dcpa-threshold)",
+        help="training-only seed-screening DCPA threshold (independent from runtime risk threshold)",
     )
     p.add_argument(
         "--sampling-tcpa-threshold",
         type=float,
         default=TrainParams().sampling_tcpa_threshold,
-        help="TCPA threshold for training episode seed sampling (default: follow --tcpa-threshold)",
+        help="training-only seed-screening TCPA threshold (independent from runtime risk threshold)",
     )
     p.add_argument("--dcpa-sample-max-tries", type=int, default=0, help="max sampling tries per training episode (0=unlimited)")
     p.add_argument(
@@ -342,7 +353,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-sampling-logs", dest="sampling_logs", action="store_false")
     p.set_defaults(sampling_logs=True)
     p.add_argument("--save-every", type=int, default=TrainParams().save_every)
-    p.add_argument("--out-dir", type=str, default="runs/dcpa_sampled")
+    p.add_argument(
+        "--out-dir",
+        type=str,
+        default=TrainParams().out_dir,
+        help="base output folder; training creates a timestamped run subfolder under this path",
+    )
     p.add_argument("--render", action="store_true", help="render during training")
     p.add_argument("--no-render", dest="render", action="store_false")
     p.set_defaults(render=False)
@@ -383,7 +399,10 @@ def parse_args() -> argparse.Namespace:
         "--eval-checkpoint",
         type=str,
         default="",
-        help="checkpoint path for eval-only mode (default: <out-dir>/ddqn_policy.pt)",
+        help=(
+            "checkpoint path for eval-only mode. "
+            "If omitted, resolve <out-dir>/policy_latest.pt or the newest timestamped run's policy_latest.pt"
+        ),
     )
     return p.parse_args()
 
@@ -445,7 +464,7 @@ def _run_eval_only(
     env: SingleVessel2FeatureEnv,
     agent: DDPGAgent,
 ) -> None:
-    checkpoint_path = Path(args.eval_checkpoint) if args.eval_checkpoint else (Path(args.out_dir) / "ddqn_policy.pt")
+    checkpoint_path = _resolve_eval_checkpoint_path(args.eval_checkpoint, Path(args.out_dir))
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Evaluation checkpoint not found: {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=agent.device)
@@ -574,17 +593,35 @@ def _run_eval_only(
         print(f"[eval][{target_scenario}] average_episode_length={avg_length:.2f}")
 
 
+def _resolve_eval_checkpoint_path(eval_checkpoint: str, out_dir: Path) -> Path:
+    """Resolve eval checkpoint from explicit path or latest timestamped run folder."""
+    if eval_checkpoint:
+        return Path(eval_checkpoint)
+
+    direct_policy_latest = out_dir / "policy_latest.pt"
+    if direct_policy_latest.exists():
+        return direct_policy_latest
+
+    candidate_runs = [
+        run_dir for run_dir in out_dir.iterdir() if run_dir.is_dir() and (run_dir / "policy_latest.pt").exists()
+    ] if out_dir.exists() else []
+    if candidate_runs:
+        latest_run = max(candidate_runs, key=lambda p: p.stat().st_mtime)
+        return latest_run / "policy_latest.pt"
+
+    raise FileNotFoundError(
+        "No evaluation checkpoint found. Pass --eval-checkpoint explicitly, or set --out-dir to a run folder "
+        "containing policy_latest.pt, or ensure at least one timestamped run exists under the base out-dir."
+    )
+
+
 def main() -> None:
     args = parse_args()
     # IMPORTANT:
-    # Sampling thresholds are ONLY for training episode selection.
+    # Sampling thresholds are ONLY for training episode seed selection.
     # Environment risk/takeover logic MUST use env.dcpa_risk_threshold / tcpa_risk_threshold.
-    sampling_dcpa_threshold = (
-        float(args.sampling_dcpa_threshold) if args.sampling_dcpa_threshold is not None else float(args.dcpa_threshold)
-    )
-    sampling_tcpa_threshold = (
-        float(args.sampling_tcpa_threshold) if args.sampling_tcpa_threshold is not None else float(args.tcpa_threshold)
-    )
+    sampling_dcpa_threshold = float(args.sampling_dcpa_threshold)
+    sampling_tcpa_threshold = float(args.sampling_tcpa_threshold)
     sampling_screen_max_steps = (
         int(args.sampling_screen_max_steps)
         if args.sampling_screen_max_steps is not None and int(args.sampling_screen_max_steps) > 0
@@ -642,14 +679,22 @@ def main() -> None:
     agent = DDPGAgent(in_dim=obs_dim, hp=train_hp, device=device)
     replay = ReplayBuffer(train_hp.replay_size)
 
-    out_dir = Path(train_hp.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    script_dir = Path(__file__).resolve().parent
+    base_out_dir = Path(train_hp.out_dir)
+    if not base_out_dir.is_absolute():
+        base_out_dir = script_dir / base_out_dir
+    base_out_dir.mkdir(parents=True, exist_ok=True)
+    args.out_dir = str(base_out_dir)
 
     if args.eval_only:
         _run_eval_only(args, env, agent)
         env.close()
         sample_env.close()
         return
+
+    run_stamp = datetime.now().strftime("%m%d_%H%M")
+    out_dir = base_out_dir / run_stamp
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     history: list[dict[str, float | int]] = []
     for ep in range(1, train_hp.episodes + 1):
@@ -794,18 +839,20 @@ def main() -> None:
             )
 
         if ep % train_hp.save_every == 0 or ep == train_hp.episodes:
+            checkpoint_payload = {
+                "actor_state_dict": agent.actor.state_dict(),
+                "critic_state_dict": agent.critic.state_dict(),
+                "obs_dim": obs_dim,
+                "hidden_dims": [train_hp.hidden_dim_1, train_hp.hidden_dim_2, train_hp.hidden_dim_3],
+                "action_dim": ACTION_DIM,
+                "algo": "ddpg_style",
+                "train_args": vars(args),
+            }
             torch.save(
-                {
-                    "actor_state_dict": agent.actor.state_dict(),
-                    "critic_state_dict": agent.critic.state_dict(),
-                    "obs_dim": obs_dim,
-                    "hidden_dims": [train_hp.hidden_dim_1, train_hp.hidden_dim_2, train_hp.hidden_dim_3],
-                    "action_dim": ACTION_DIM,
-                    "algo": "ddpg_style",
-                    "train_args": vars(args),
-                },
-                out_dir / "ddqn_policy.pt",
+                checkpoint_payload,
+                out_dir / f"policy_{ep}.pt",
             )
+            torch.save(checkpoint_payload, out_dir / "policy_latest.pt")
             with open(out_dir / "train_history.json", "w", encoding="utf-8") as f:
                 json.dump(history, f, indent=2)
 

@@ -49,7 +49,7 @@ class EnvParams:
 
     # shared big circle geometry (both vessel goals lie on this circumference)
     vessel2_outer_radius: float = 180.0
-    vessel2_min_speed: float = 0.5
+    vessel2_min_speed: float = 0.0
     vessel2_max_speed: float = 7.0
     vessel2_min_goal_arc_distance_from_start: float = 80.0  # Interpreted as straight-line (chord) distance
     adaptive_vessel2_min_goal_arc_from_speed: bool = True
@@ -137,7 +137,7 @@ class TrainParams:
     # DDPG-style continuous-control training
     episodes: int = 600
     batch_size: int = 256
-    replay_size: int = 200_000
+    replay_size: int = 1_000_000
     min_replay: int = 10_000
     gamma: float = 0.995
     learning_rate: float = 2e-4
@@ -166,12 +166,12 @@ class TrainParams:
 
     # reproducibility / checkpoints
     seed: int = 7
-    save_every: int = 20
+    save_every: int = 100
     out_dir: str = "runs"
 
-    # training-only episode sampling thresholds (None -> inherit env CLI thresholds)
-    sampling_dcpa_threshold: float | None = None
-    sampling_tcpa_threshold: float | None = None
+    # Training-only seed-screening thresholds (independent from runtime risk thresholds).
+    sampling_dcpa_threshold: float = 20.0
+    sampling_tcpa_threshold: float = 20.0
     # optional scripted seed-screening horizon caps (None -> disabled/unlimited)
     sampling_screen_max_steps: int | None = None
     sampling_screen_max_seconds: float | None = None
