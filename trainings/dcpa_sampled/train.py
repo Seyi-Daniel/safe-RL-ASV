@@ -42,12 +42,36 @@ class ReplayBuffer:
 
 class DDPGAgent:
     def __init__(self, in_dim: int, hp: TrainParams, device: torch.device):
-        self.actor = ContinuousActor(in_dim=in_dim, hidden_dim=hp.hidden_dim, action_dim=ACTION_DIM).to(device)
-        self.actor_tgt = ContinuousActor(in_dim=in_dim, hidden_dim=hp.hidden_dim, action_dim=ACTION_DIM).to(device)
+        self.actor = ContinuousActor(
+            in_dim=in_dim,
+            hidden_dim_1=hp.hidden_dim_1,
+            hidden_dim_2=hp.hidden_dim_2,
+            hidden_dim_3=hp.hidden_dim_3,
+            action_dim=ACTION_DIM,
+        ).to(device)
+        self.actor_tgt = ContinuousActor(
+            in_dim=in_dim,
+            hidden_dim_1=hp.hidden_dim_1,
+            hidden_dim_2=hp.hidden_dim_2,
+            hidden_dim_3=hp.hidden_dim_3,
+            action_dim=ACTION_DIM,
+        ).to(device)
         self.actor_tgt.load_state_dict(self.actor.state_dict())
 
-        self.critic = ContinuousCritic(in_dim=in_dim, hidden_dim=hp.hidden_dim, action_dim=ACTION_DIM).to(device)
-        self.critic_tgt = ContinuousCritic(in_dim=in_dim, hidden_dim=hp.hidden_dim, action_dim=ACTION_DIM).to(device)
+        self.critic = ContinuousCritic(
+            in_dim=in_dim,
+            hidden_dim_1=hp.hidden_dim_1,
+            hidden_dim_2=hp.hidden_dim_2,
+            hidden_dim_3=hp.hidden_dim_3,
+            action_dim=ACTION_DIM,
+        ).to(device)
+        self.critic_tgt = ContinuousCritic(
+            in_dim=in_dim,
+            hidden_dim_1=hp.hidden_dim_1,
+            hidden_dim_2=hp.hidden_dim_2,
+            hidden_dim_3=hp.hidden_dim_3,
+            action_dim=ACTION_DIM,
+        ).to(device)
         self.critic_tgt.load_state_dict(self.critic.state_dict())
 
         self.actor_opt = optim.Adam(self.actor.parameters(), lr=hp.learning_rate)
@@ -275,7 +299,9 @@ def parse_args() -> argparse.Namespace:
             "default: 1000"
         ),
     )
-    p.add_argument("--hidden-dim", type=int, default=TrainParams().hidden_dim)
+    p.add_argument("--hidden-dim-1", type=int, default=TrainParams().hidden_dim_1)
+    p.add_argument("--hidden-dim-2", type=int, default=TrainParams().hidden_dim_2)
+    p.add_argument("--hidden-dim-3", type=int, default=TrainParams().hidden_dim_3)
     p.add_argument("--seed", type=int, default=TrainParams().seed)
     p.add_argument("--episode-seconds", type=float, default=500.0)
     p.add_argument("--num-vessels", type=int, default=EnvParams().num_vessels)
@@ -591,7 +617,9 @@ def main() -> None:
         eps_end=args.eps_end,
         epsilon_decay=args.epsilon_decay,
         epsilon_decay_episodes=args.epsilon_decay_episodes,
-        hidden_dim=args.hidden_dim,
+        hidden_dim_1=args.hidden_dim_1,
+        hidden_dim_2=args.hidden_dim_2,
+        hidden_dim_3=args.hidden_dim_3,
         seed=args.seed,
         save_every=args.save_every,
         out_dir=args.out_dir,
@@ -771,7 +799,7 @@ def main() -> None:
                     "actor_state_dict": agent.actor.state_dict(),
                     "critic_state_dict": agent.critic.state_dict(),
                     "obs_dim": obs_dim,
-                    "hidden_dim": train_hp.hidden_dim,
+                    "hidden_dims": [train_hp.hidden_dim_1, train_hp.hidden_dim_2, train_hp.hidden_dim_3],
                     "action_dim": ACTION_DIM,
                     "algo": "ddpg_style",
                     "train_args": vars(args),

@@ -35,6 +35,21 @@ Each vessel observation is a 96-dimensional vector:
 - **Own-vessel block: 6 dims**
 - Total: **96 dims**
 
+## Policy / value network architecture (current)
+
+Both actor and critic use a 3-layer fully connected backbone with hidden sizes:
+
+- **512**
+- **256**
+- **128**
+
+Shapes:
+
+- **Actor:** `obs(96) -> 512 -> 256 -> 128 -> action(2)` with ReLU between hidden layers and Tanh output.
+- **Critic:** `(obs(96)+action(2)) -> 512 -> 256 -> 128 -> Q(1)` with ReLU between hidden layers.
+
+Only the backbone width/depth above is changed by this update. Epsilon behavior, optimizer choice (Adam), soft target updates, and loss/objectives remain unchanged.
+
 ## Epsilon / exploration behavior (current)
 
 Training uses **episode-based multiplicative epsilon decay**:
@@ -87,6 +102,9 @@ python trainings/dcpa_sampled/train.py [flags]
 - `--save-every`: checkpoint/history save period (episodes).
 - `--out-dir`: output folder for checkpoint/history.
 - `--seed`: random seed for Python/NumPy/PyTorch and seed generation base.
+- `--hidden-dim-1`: first FC hidden width (default `512`).
+- `--hidden-dim-2`: second FC hidden width (default `256`).
+- `--hidden-dim-3`: third FC hidden width (default `128`).
 
 ### 2) Epsilon / exploration
 

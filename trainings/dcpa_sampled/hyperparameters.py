@@ -159,8 +159,10 @@ class TrainParams:
         decay_episodes = max(1, int(self.epsilon_decay_episodes))
         return float((safe_end / safe_start) ** (1.0 / decay_episodes))
 
-    # network backbone: obs_dim(=96 in current radar observation design) -> hidden -> hidden -> 2 continuous actions
-    hidden_dim: int = 256
+    # network backbone: obs_dim(=96 in current radar observation design) -> 512 -> 256 -> 128 -> 2 continuous actions
+    hidden_dim_1: int = 512
+    hidden_dim_2: int = 256
+    hidden_dim_3: int = 128
 
     # reproducibility / checkpoints
     seed: int = 7
