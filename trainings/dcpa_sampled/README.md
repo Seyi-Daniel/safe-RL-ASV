@@ -142,6 +142,7 @@ python trainings/dcpa_sampled/train.py [flags]
 - `--save-every`: checkpoint/history save period in episodes (default `100`).
 - `--out-dir`: base output folder (default `runs`; training creates a timestamped run subfolder).
 - `--seed`: random seed for Python/NumPy/PyTorch and seed generation base.
+- `--cuda`: CUDA GPU index (for example `--cuda 0`, `--cuda 1`). If CUDA is available and this flag is omitted, runtime defaults to `cuda:0`. If CUDA is unavailable, runtime falls back to CPU.
 - `--hidden-dim-1`, `--hidden-dim-2`, `--hidden-dim-3`: policy/critic hidden widths.
 
 ### 2) Epsilon / exploration
@@ -199,6 +200,12 @@ or:
 ```bash
 python trainings/dcpa_sampled/demo_model.py --checkpoint trainings/dcpa_sampled/runs/0330_1323/policy_latest.pt
 ```
+
+Device selection behavior for both `train.py` and `demo_model.py`:
+
+- If CUDA is available and `--cuda` is not provided, device defaults to `cuda:0`.
+- If CUDA is available and `--cuda N` is provided, device `cuda:N` is used (validated against `torch.cuda.device_count()`).
+- If CUDA is unavailable, runtime falls back to `cpu` cleanly.
 
 ## Current limitations / scope
 
