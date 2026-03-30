@@ -20,7 +20,12 @@ from trainings.dcpa_sampled.policy import ACTION_DIM, ContinuousActor
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visual playback for a trained dcpa_sampled policy")
-    parser.add_argument("--checkpoint", type=str, default="runs/dcpa_sampled/ddqn_policy.pt")
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="runs/<mmdd_hrmn>/policy_latest.pt",
+        help="checkpoint file path (for example: runs/0330_1323/policy_100.pt)",
+    )
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--scenario", choices=["head_on", "crossing", "overtaking", "all"], default=None)
