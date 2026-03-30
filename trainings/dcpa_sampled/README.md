@@ -98,6 +98,8 @@ Important notes:
 
 - Screening is the authoritative episode-selection gate.
 - Environment reset itself has no hidden viability filtering.
+- When a candidate first satisfies screening thresholds (`DCPA <= sampling_dcpa_threshold` and `0 < TCPA <= sampling_tcpa_threshold`), that exact step is treated as the acceptance/risk-trigger moment.
+- If `--sampling-scenario` is provided, scenario filtering is applied to the scenario observed at that acceptance moment (not just reset-time geometry).
 
 ## Output layout
 
@@ -162,7 +164,7 @@ python trainings/dcpa_sampled/train.py [flags]
 - `--sampling-screen-max-seconds`: optional screening-only simulated-seconds cap per candidate attempt.
 - `--max-sampling-steps-per-attempt`: legacy alias for screening step cap.
 
-`--sampling-scenario` applies **only** to training candidate-seed screening/acceptance. It does **not** change runtime environment risk/takeover logic and does **not** change reward logic.
+`--sampling-scenario` applies **only** to training candidate-seed screening/acceptance. It filters by the scenario observed at the scripted screening acceptance moment (the step where threshold acceptance is first met), not merely the initial/reset scenario label. It does **not** change runtime environment risk/takeover logic and does **not** change reward logic.
 
 ### 4) Environment / risk thresholds
 

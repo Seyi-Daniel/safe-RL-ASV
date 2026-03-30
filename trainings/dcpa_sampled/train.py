@@ -149,14 +149,15 @@ def _screen_candidate_episode(
     sampling_tcpa_threshold: float,
     sampling_screen_max_steps: int | None,
     sampling_screen_max_seconds: float | None,
-) -> tuple[bool, float, float, int, str, str]:
+) -> tuple[bool, float, float, int, str, str, str]:
     """Run deterministic scripted-only screening for a candidate training seed.
 
     Screening is strictly policy-independent and is the authoritative episode-
     selection gate for training seed acceptance.
     """
     _ = env.reset(seed=seed)
-    initial_scenario = _classify_initial_two_vessel_scenario(env)
+    initial_scenario = _classify_two_vessel_scenario(env)
+    acceptance_scenario = "none"
     done = False
     steps = 0
     best_dcpa = float("inf")
@@ -186,7 +187,8 @@ def _screen_candidate_episode(
             best_tcpa = min(best_tcpa, tcpa)
 
         if (dcpa <= sampling_dcpa_threshold) and (0.0 < tcpa <= sampling_tcpa_threshold):
-            return True, best_dcpa, best_tcpa, steps, "accepted", initial_scenario
+            acceptance_scenario = _classify_two_vessel_scenario(env)
+            return True, best_dcpa, best_tcpa, steps, "accepted", initial_scenario, acceptance_scenario
 
         # Optional screening-only horizons; do not alter real training rollout limits.
         reached_step_cap = step_cap is not None and steps >= step_cap
@@ -203,7 +205,7 @@ def _screen_candidate_episode(
 
     if done and fail_reason == "terminated_without_threshold":
         fail_reason = str(info.get("reason", "done_without_threshold"))
-    return False, best_dcpa, best_tcpa, steps, fail_reason, initial_scenario
+    return False, best_dcpa, best_tcpa, steps, fail_reason, initial_scenario, acceptance_scenario
 
 
 def _find_accepted_seed(
@@ -233,7 +235,7 @@ def _find_accepted_seed(
             break
 
         candidate_seed = base_seed + episode_index * 100_000 + attempt
-        ok, best_dcpa, best_tcpa, sample_steps, status, scenario = _screen_candidate_episode(
+        ok, best_dcpa, best_tcpa, sample_steps, status, initial_scenario, acceptance_scenario = _screen_candidate_episode(
             sample_env,
             candidate_seed,
             sampling_dcpa_threshold,
@@ -242,10 +244,15 @@ def _find_accepted_seed(
             sampling_screen_max_seconds,
         )
 
-        scenario_filter_mismatch = bool(sampling_scenario is not None and scenario != sampling_scenario)
+        scenario_filter_mismatch = bool(
+            sampling_scenario is not None and acceptance_scenario != sampling_scenario
+        )
         if ok and scenario_filter_mismatch:
             ok = False
-            status = f"scenario_mismatch(required={sampling_scenario}, got={scenario})"
+            status = (
+                "scenario_mismatch("
+                f"required={sampling_scenario}, acceptance_scenario={acceptance_scenario})"
+            )
 
         if ok:
             accepted_seed = candidate_seed
@@ -253,12 +260,13 @@ def _find_accepted_seed(
             accepted_best_dcpa = best_dcpa
             accepted_best_tcpa = best_tcpa
             accepted_sample_steps = sample_steps
-            accepted_scenario = scenario
+            accepted_scenario = acceptance_scenario
             if sampling_logs:
                 print(
                     f"ep={episode_index:04d} accepted_seed={accepted_seed} attempt={accepted_attempt} "
                     f"sample_steps={accepted_sample_steps} sample_best_dcpa={accepted_best_dcpa:.2f} "
-                    f"sample_best_tcpa={accepted_best_tcpa:.2f} sample_scenario={accepted_scenario}"
+                    f"sample_best_tcpa={accepted_best_tcpa:.2f} sample_scenario={accepted_scenario} "
+                    f"initial_scenario={initial_scenario} acceptance_scenario={acceptance_scenario}"
                 )
             break
 
@@ -266,7 +274,8 @@ def _find_accepted_seed(
             horizon_suffix = " (stopped by screening horizon)" if status.startswith("screen_horizon_") else ""
             print(
                 f"ep={episode_index:04d} failed attempt={attempt} seed={candidate_seed} steps={sample_steps} "
-                f"reason={status}{horizon_suffix} sample_scenario={scenario} "
+                f"reason={status}{horizon_suffix} initial_scenario={initial_scenario} "
+                f"acceptance_scenario={acceptance_scenario} "
                 f"(best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
                 f"need dcpa <= {sampling_dcpa_threshold:.2f} and tcpa <= {sampling_tcpa_threshold:.2f})"
             )
@@ -470,7 +479,7 @@ def _collect_rl_actions_for_step(
     return obs_by_vessel, action_by_vessel
 
 
-def _classify_initial_two_vessel_scenario(env: SingleVessel2FeatureEnv) -> str:
+def _classify_two_vessel_scenario(env: SingleVessel2FeatureEnv) -> str:
     if env.vessel1 is None or env.vessel2 is None:
         return "safe"
     scenario, _, _ = env.classify_geometry(env.vessel1, env.vessel2)
@@ -548,7 +557,7 @@ def _run_eval_only(
                 candidate_episodes += 1
                 total_tries += 1
                 _ = env.reset(seed=candidate_seed)
-                initial_scenario = _classify_initial_two_vessel_scenario(env)
+                initial_scenario = _classify_two_vessel_scenario(env)
                 if initial_scenario == target_scenario:
                     matched_seed = candidate_seed
                     break
