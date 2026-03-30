@@ -143,10 +143,21 @@ class TrainParams:
     learning_rate: float = 2e-4
     target_update: int = 4000
 
-    # epsilon-greedy exploration schedule (linear in global environment steps)
+    # epsilon-greedy exploration schedule (episode-based multiplicative decay)
     eps_start: float = 1.0
     eps_end: float = 0.05
-    eps_decay_steps: int = 300_000
+    epsilon_decay: float | None = None
+    epsilon_decay_episodes: int = 1000
+
+    def resolve_epsilon_decay(self) -> float:
+        """Return explicit epsilon multiplier or derive from episode horizon."""
+        if self.epsilon_decay is not None:
+            return float(self.epsilon_decay)
+
+        safe_start = max(float(self.eps_start), 1e-12)
+        safe_end = max(float(self.eps_end), 1e-12)
+        decay_episodes = max(1, int(self.epsilon_decay_episodes))
+        return float((safe_end / safe_start) ** (1.0 / decay_episodes))
 
     # network backbone: obs_dim(=96 in current radar observation design) -> hidden -> hidden -> 2 continuous actions
     hidden_dim: int = 256
