@@ -149,7 +149,7 @@ def _screen_candidate_episode(
     sampling_tcpa_threshold: float,
     sampling_screen_max_steps: int | None,
     sampling_screen_max_seconds: float | None,
-) -> tuple[bool, float, float, int, str, str, str]:
+) -> tuple[bool, float, float, int, str, str, str, bool, str]:
     """Run deterministic scripted-only screening for a candidate training seed.
 
     Screening is strictly policy-independent and is the authoritative episode-
@@ -157,7 +157,9 @@ def _screen_candidate_episode(
     """
     _ = env.reset(seed=seed)
     initial_scenario = _classify_two_vessel_scenario(env)
-    acceptance_scenario = "none"
+    threshold_hit_scenario = "none"
+    takeover_observed = False
+    takeover_scenario = "none"
     done = False
     steps = 0
     best_dcpa = float("inf")
@@ -179,6 +181,13 @@ def _screen_candidate_episode(
         # Scripted/default rollout only (no policy action injection during screening).
         _, _, done, info = env.step(np.array([0.0, 0.0], dtype=np.float32))
         steps += 1
+        runtime_scenario = str(info.get("colregs_scenario", "")).strip() or "unknown"
+
+        if not takeover_observed and (
+            int(info.get("vessel1_rl_active", 0)) or int(info.get("vessel2_rl_active", 0))
+        ):
+            takeover_observed = True
+            takeover_scenario = runtime_scenario
 
         dcpa = float(info.get("dcpa", float("inf")))
         tcpa = float(info.get("tcpa", float("inf")))
@@ -187,8 +196,18 @@ def _screen_candidate_episode(
             best_tcpa = min(best_tcpa, tcpa)
 
         if (dcpa <= sampling_dcpa_threshold) and (0.0 < tcpa <= sampling_tcpa_threshold):
-            acceptance_scenario = _classify_two_vessel_scenario(env)
-            return True, best_dcpa, best_tcpa, steps, "accepted", initial_scenario, acceptance_scenario
+            threshold_hit_scenario = runtime_scenario
+            return (
+                True,
+                best_dcpa,
+                best_tcpa,
+                steps,
+                "accepted",
+                initial_scenario,
+                threshold_hit_scenario,
+                takeover_observed,
+                takeover_scenario,
+            )
 
         # Optional screening-only horizons; do not alter real training rollout limits.
         reached_step_cap = step_cap is not None and steps >= step_cap
@@ -205,7 +224,17 @@ def _screen_candidate_episode(
 
     if done and fail_reason == "terminated_without_threshold":
         fail_reason = str(info.get("reason", "done_without_threshold"))
-    return False, best_dcpa, best_tcpa, steps, fail_reason, initial_scenario, acceptance_scenario
+    return (
+        False,
+        best_dcpa,
+        best_tcpa,
+        steps,
+        fail_reason,
+        initial_scenario,
+        threshold_hit_scenario,
+        takeover_observed,
+        takeover_scenario,
+    )
 
 
 def _find_accepted_seed(
@@ -235,7 +264,17 @@ def _find_accepted_seed(
             break
 
         candidate_seed = base_seed + episode_index * 100_000 + attempt
-        ok, best_dcpa, best_tcpa, sample_steps, status, initial_scenario, acceptance_scenario = _screen_candidate_episode(
+        (
+            ok,
+            best_dcpa,
+            best_tcpa,
+            sample_steps,
+            status,
+            initial_scenario,
+            threshold_hit_scenario,
+            takeover_observed,
+            takeover_scenario,
+        ) = _screen_candidate_episode(
             sample_env,
             candidate_seed,
             sampling_dcpa_threshold,
@@ -244,15 +283,19 @@ def _find_accepted_seed(
             sampling_screen_max_seconds,
         )
 
-        scenario_filter_mismatch = bool(
-            sampling_scenario is not None and acceptance_scenario != sampling_scenario
-        )
-        if ok and scenario_filter_mismatch:
-            ok = False
-            status = (
-                "scenario_mismatch("
-                f"required={sampling_scenario}, acceptance_scenario={acceptance_scenario})"
-            )
+        if ok and sampling_scenario is not None:
+            if not takeover_observed:
+                ok = False
+                status = "no_takeover_observed_during_screening"
+            elif takeover_scenario in {"none", "unknown"}:
+                ok = False
+                status = "takeover_scenario_missing_in_screen_info"
+            elif takeover_scenario != sampling_scenario:
+                ok = False
+                status = (
+                    "scenario_mismatch("
+                    f"required={sampling_scenario}, takeover_scenario={takeover_scenario})"
+                )
 
         if ok:
             accepted_seed = candidate_seed
@@ -260,13 +303,14 @@ def _find_accepted_seed(
             accepted_best_dcpa = best_dcpa
             accepted_best_tcpa = best_tcpa
             accepted_sample_steps = sample_steps
-            accepted_scenario = acceptance_scenario
+            accepted_scenario = takeover_scenario if takeover_observed else threshold_hit_scenario
             if sampling_logs:
                 print(
                     f"ep={episode_index:04d} accepted_seed={accepted_seed} attempt={accepted_attempt} "
                     f"sample_steps={accepted_sample_steps} sample_best_dcpa={accepted_best_dcpa:.2f} "
                     f"sample_best_tcpa={accepted_best_tcpa:.2f} sample_scenario={accepted_scenario} "
-                    f"initial_scenario={initial_scenario} acceptance_scenario={acceptance_scenario}"
+                    f"initial_scenario={initial_scenario} threshold_hit_scenario={threshold_hit_scenario} "
+                    f"takeover_observed={int(takeover_observed)} takeover_scenario={takeover_scenario}"
                 )
             break
 
@@ -275,7 +319,8 @@ def _find_accepted_seed(
             print(
                 f"ep={episode_index:04d} failed attempt={attempt} seed={candidate_seed} steps={sample_steps} "
                 f"reason={status}{horizon_suffix} initial_scenario={initial_scenario} "
-                f"acceptance_scenario={acceptance_scenario} "
+                f"threshold_hit_scenario={threshold_hit_scenario} "
+                f"takeover_observed={int(takeover_observed)} takeover_scenario={takeover_scenario} "
                 f"(best_dcpa={best_dcpa:.2f}, best_tcpa={best_tcpa:.2f}; "
                 f"need dcpa <= {sampling_dcpa_threshold:.2f} and tcpa <= {sampling_tcpa_threshold:.2f})"
             )
@@ -361,7 +406,8 @@ def parse_args() -> argparse.Namespace:
         choices=["head_on", "crossing", "overtaking"],
         help=(
             "optional training candidate-seed sampling scenario filter. "
-            "This only affects candidate-seed acceptance during training screening; "
+            "This only affects candidate-seed acceptance during training screening and "
+            "uses the scenario at the first observed takeover moment during screening; "
             "it does not change runtime environment risk logic or reward logic. "
             "If omitted, all scenarios are eligible."
         ),
@@ -696,7 +742,8 @@ def main() -> None:
     else:
         print(
             "Training candidate-seed scenario filter enabled: "
-            f"{sampling_scenario} (screening acceptance only; runtime risk/reward unchanged)."
+            f"{sampling_scenario} (matched against first takeover scenario observed during screening; "
+            "runtime risk/reward unchanged)."
         )
 
     random.seed(args.seed)
