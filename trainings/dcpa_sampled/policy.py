@@ -10,16 +10,23 @@ DEFAULT_OBS_DIM = 96  # [9 sectors x 10 features] + [own vessel 6 features]
 class ContinuousActor(nn.Module):
     """Continuous actor producing normalized controls in [-1, 1]."""
 
-    def __init__(self, in_dim: int = DEFAULT_OBS_DIM, hidden_dim: int = 256, action_dim: int = ACTION_DIM):
+    def __init__(
+        self,
+        in_dim: int = DEFAULT_OBS_DIM,
+        hidden_dim_1: int = 512,
+        hidden_dim_2: int = 256,
+        hidden_dim_3: int = 128,
+        action_dim: int = ACTION_DIM,
+    ):
         super().__init__()
         self.backbone = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
+            nn.Linear(in_dim, hidden_dim_1),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim_1, hidden_dim_2),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, 128),
+            nn.Linear(hidden_dim_2, hidden_dim_3),
             nn.ReLU(inplace=True),
-            nn.Linear(128, action_dim),
+            nn.Linear(hidden_dim_3, action_dim),
             nn.Tanh(),
         )
         for m in self.modules():
@@ -34,16 +41,23 @@ class ContinuousActor(nn.Module):
 class ContinuousCritic(nn.Module):
     """State-action critic Q(s,a) for DDPG-style training."""
 
-    def __init__(self, in_dim: int = DEFAULT_OBS_DIM, action_dim: int = ACTION_DIM, hidden_dim: int = 256):
+    def __init__(
+        self,
+        in_dim: int = DEFAULT_OBS_DIM,
+        action_dim: int = ACTION_DIM,
+        hidden_dim_1: int = 512,
+        hidden_dim_2: int = 256,
+        hidden_dim_3: int = 128,
+    ):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(in_dim + action_dim, hidden_dim),
+            nn.Linear(in_dim + action_dim, hidden_dim_1),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim_1, hidden_dim_2),
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, 128),
+            nn.Linear(hidden_dim_2, hidden_dim_3),
             nn.ReLU(inplace=True),
-            nn.Linear(128, 1),
+            nn.Linear(hidden_dim_3, 1),
         )
         for m in self.modules():
             if isinstance(m, nn.Linear):
