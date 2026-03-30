@@ -55,18 +55,19 @@ class DDPGAgent:
 
         self.gamma = hp.gamma
         self.device = device
-        self.eps_start = hp.eps_start
-        self.eps_end = hp.eps_end
-        self.eps_decay_steps = hp.eps_decay_steps
+        self.eps_start = float(hp.eps_start)
+        self.eps_end = float(hp.eps_end)
+        self.epsilon_decay = float(hp.resolve_epsilon_decay())
+        self.epsilon = self.eps_start
         self.tau = 0.005
         self.global_step = 0
 
-    def epsilon(self) -> float:
-        frac = min(1.0, self.global_step / max(1, self.eps_decay_steps))
-        return self.eps_start + frac * (self.eps_end - self.eps_start)
+    def decay_epsilon(self) -> float:
+        self.epsilon = max(self.eps_end, self.epsilon * self.epsilon_decay)
+        return self.epsilon
 
     def act(self, obs: np.ndarray, greedy: bool = False) -> np.ndarray:
-        if not greedy and np.random.random() < self.epsilon():
+        if not greedy and np.random.random() < self.epsilon:
             return np.random.uniform(-1.0, 1.0, size=(ACTION_DIM,)).astype(np.float32)
 
         with torch.no_grad():
@@ -253,11 +254,27 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--learning-rate", type=float, default=TrainParams().learning_rate)
     p.add_argument("--target-update", type=int, default=TrainParams().target_update)
     p.add_argument("--eps-start", type=float, default=TrainParams().eps_start,
-                   help="epsilon-greedy random-action probability at step 0")
+                   help="episode-level epsilon at the start of training")
     p.add_argument("--eps-end", type=float, default=TrainParams().eps_end,
-                   help="final epsilon-greedy random-action probability after decay")
-    p.add_argument("--eps-decay-steps", type=int, default=TrainParams().eps_decay_steps,
-                   help="steps to linearly decay epsilon-greedy probability")
+                   help="minimum episode-level epsilon floor")
+    p.add_argument(
+        "--epsilon-decay",
+        type=float,
+        default=None,
+        help=(
+            "episode-based multiplicative epsilon decay. "
+            "If provided, overrides decay derived from --epsilon-decay-episodes"
+        ),
+    )
+    p.add_argument(
+        "--epsilon-decay-episodes",
+        type=int,
+        default=TrainParams().epsilon_decay_episodes,
+        help=(
+            "number of episodes used to derive decay when --epsilon-decay is not provided; "
+            "default: 1000"
+        ),
+    )
     p.add_argument("--hidden-dim", type=int, default=TrainParams().hidden_dim)
     p.add_argument("--seed", type=int, default=TrainParams().seed)
     p.add_argument("--episode-seconds", type=float, default=500.0)
@@ -572,7 +589,8 @@ def main() -> None:
         learning_rate=args.learning_rate,
         eps_start=args.eps_start,
         eps_end=args.eps_end,
-        eps_decay_steps=args.eps_decay_steps,
+        epsilon_decay=args.epsilon_decay,
+        epsilon_decay_episodes=args.epsilon_decay_episodes,
         hidden_dim=args.hidden_dim,
         seed=args.seed,
         save_every=args.save_every,
@@ -689,7 +707,6 @@ def main() -> None:
                 replay.push(vessel_obs, action_by_vessel[vessel_id], vessel_reward, vessel_next_obs, done)
             takeover_triggered = takeover_triggered or bool(env.get_rl_controlled_vessel_ids())
             ep_return += reward
-            # Epsilon schedule is defined over environment steps, not replay entries.
             agent.global_step += 1
 
             if takeover_triggered and len(replay) >= train_hp.min_replay:
@@ -705,7 +722,7 @@ def main() -> None:
 
         mean_actor_loss = ep_actor_loss / max(1, loss_count)
         mean_critic_loss = ep_critic_loss / max(1, loss_count)
-        eps_now = agent.epsilon()
+        eps_now = agent.epsilon
         history.append(
             {
                 "episode": ep,
@@ -726,6 +743,8 @@ def main() -> None:
                 ),
             }
         )
+        agent.decay_epsilon()
+
         if not takeover_triggered:
             print(
                 f"ep={ep:04d} skipped_learning=no_takeover return={ep_return:8.3f} steps={env.step_idx:4d} "
