@@ -130,6 +130,27 @@ def classify_initial_scenario(env: SingleVessel2FeatureEnv) -> str:
     return str(scenario)
 
 
+def compute_rl_step_return(info: dict[str, object], rl_vessel_ids: list[str]) -> float:
+    """Return step reward contribution from RL-controlled vessels only."""
+    if not rl_vessel_ids:
+        return 0.0
+
+    reward_by_vessel = info.get("reward_by_vessel")
+    step_return = 0.0
+    for vessel_id in rl_vessel_ids:
+        vessel_reward = None
+        if isinstance(reward_by_vessel, dict) and (vessel_id in reward_by_vessel):
+            vessel_reward = reward_by_vessel[vessel_id]
+        elif vessel_id == "vessel1":
+            vessel_reward = info.get("reward_v1")
+        elif vessel_id == "vessel2":
+            vessel_reward = info.get("reward_v2")
+
+        if vessel_reward is not None:
+            step_return += float(vessel_reward)
+    return step_return
+
+
 def find_matching_seed(
     env: SingleVessel2FeatureEnv,
     target_scenario: str,
@@ -371,7 +392,7 @@ def run_demo(args: argparse.Namespace) -> None:
 
             _ = env.reset(seed=matched_seed)
             done = False
-            total_reward = 0.0
+            rl_episode_return = 0.0
             steps = 0
             rl_active_step_count = 0
             takeover_observed_in_playback = False
@@ -393,10 +414,10 @@ def run_demo(args: argparse.Namespace) -> None:
                         vessel_obs = env.get_obs_for_vessel(vessel_id)
                         action_dict[vessel_id] = select_action(actor, vessel_obs, device)
 
-                _, reward, done, info = env.step(action_dict)
+                _, _, done, info = env.step(action_dict)
                 env.render()
 
-                total_reward += float(reward)
+                rl_episode_return += compute_rl_step_return(info, rl_vessel_ids)
                 steps += 1
                 last_info = info
 
@@ -411,7 +432,7 @@ def run_demo(args: argparse.Namespace) -> None:
                 f"scenario_matched={bool(episode_selection.get('scenario_matched', False))} | "
                 f"screen_takeover_observed={bool(episode_selection.get('screen_takeover_observed', False))} | "
                 f"playback_takeover_observed={takeover_observed_in_playback} | "
-                f"playback_rl_active_steps={rl_active_step_count} | total_reward={total_reward:.3f} | "
+                f"playback_rl_active_steps={rl_active_step_count} | return={rl_episode_return:.3f} | "
                 f"steps={steps} | collision={collision} | success={success} | reason={reason}"
             )
 

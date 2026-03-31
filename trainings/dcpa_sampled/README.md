@@ -52,6 +52,23 @@ Vessels are not globally RL-driven at all times.
 - RL activation is role-aware (give-way emphasis in risky encounters).
 - Once a vessel enters model-control latch, control remains latched for that vessel until goal completion/reset.
 
+## Reported return semantics (training and demo)
+
+User-facing episode `return` is intentionally **RL-only return** (model-relevant return), not broad world/environment scalar reward.
+
+Specifically, the reported episode return:
+
+- Sums per-vessel rewards from `info["reward_by_vessel"]` (with existing vessel-specific compatibility keys as fallback) only for vessel IDs that were RL-controlled on that step.
+- Counts only steps where takeover/model-control was active for at least one vessel.
+- Excludes scripted/pre-takeover motion from reported return accounting.
+- Excludes stand-on/scripted-only vessel contributions unless that vessel is actually RL-controlled on that step.
+- Is exactly `0` when no takeover occurs in the episode.
+
+This applies to:
+
+- `train.py` episode logs/history (`train_history.json` `return` field).
+- `demo_model.py` episode summary printout `return=...`.
+
 ## Observation design (96D)
 
 Each controlled vessel gets a fixed-size 96-dimensional observation:
