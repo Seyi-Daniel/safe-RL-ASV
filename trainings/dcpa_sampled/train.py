@@ -503,6 +503,27 @@ def _collect_rl_actions_for_step(
     return obs_by_vessel, action_by_vessel
 
 
+def _compute_rl_step_return(info: dict[str, object], rl_vessel_ids: list[str]) -> float:
+    """Return step reward contribution from RL-controlled vessels only."""
+    if not rl_vessel_ids:
+        return 0.0
+
+    reward_by_vessel = info.get("reward_by_vessel")
+    step_return = 0.0
+    for vessel_id in rl_vessel_ids:
+        vessel_reward = None
+        if isinstance(reward_by_vessel, dict) and (vessel_id in reward_by_vessel):
+            vessel_reward = reward_by_vessel[vessel_id]
+        elif vessel_id == "vessel1":
+            vessel_reward = info.get("reward_v1")
+        elif vessel_id == "vessel2":
+            vessel_reward = info.get("reward_v2")
+
+        if vessel_reward is not None:
+            step_return += float(vessel_reward)
+    return step_return
+
+
 def _classify_two_vessel_scenario(env: SingleVessel2FeatureEnv) -> str:
     if env.vessel1 is None or env.vessel2 is None:
         return "safe"
@@ -824,7 +845,7 @@ def main() -> None:
         # Real training rollout starts from a fresh reset of the accepted seed (no hidden reset-side viability gate).
         _ = env.reset(seed=accepted_seed)
         done = False
-        ep_return = 0.0
+        ep_rl_return = 0.0
         ep_actor_loss = 0.0
         ep_critic_loss = 0.0
         loss_count = 0
@@ -842,6 +863,7 @@ def main() -> None:
                 continue
 
             obs_by_vessel, action_by_vessel = _collect_rl_actions_for_step(env, agent, greedy=False)
+            rl_vessel_ids_this_step = list(obs_by_vessel.keys())
             step_action = action_by_vessel if action_by_vessel else np.array([0.0, 0.0], dtype=np.float32)
             _, reward, done, info = env.step(step_action)
             if int(info.get("vessel1_rl_active", 0)) and int(info.get("vessel2_rl_active", 0)):
@@ -875,7 +897,7 @@ def main() -> None:
                 # Replay is built from per-vessel rewards, not the scalar compatibility reward.
                 replay.push(vessel_obs, action_by_vessel[vessel_id], vessel_reward, vessel_next_obs, done)
             takeover_triggered = takeover_triggered or bool(env.get_rl_controlled_vessel_ids())
-            ep_return += reward
+            ep_rl_return += _compute_rl_step_return(info, rl_vessel_ids_this_step)
             agent.global_step += 1
 
             if takeover_triggered and len(replay) >= train_hp.min_replay:
@@ -895,7 +917,7 @@ def main() -> None:
         history.append(
             {
                 "episode": ep,
-                "return": float(ep_return),
+                "return": float(ep_rl_return),
                 "steps": env.step_idx,
                 "epsilon": float(eps_now),
                 "mean_actor_loss": float(mean_actor_loss),
@@ -916,7 +938,7 @@ def main() -> None:
 
         if not takeover_triggered:
             print(
-                f"ep={ep:04d} skipped_learning=no_takeover return={ep_return:8.3f} steps={env.step_idx:4d} "
+                f"ep={ep:04d} skipped_learning=no_takeover return={ep_rl_return:8.3f} steps={env.step_idx:4d} "
                 f"replay={len(replay)} collision={int(info.get('collision', 0))} "
                 f"goals={int(bool(info.get('vessel1_reached', 0)) and bool(info.get('vessel2_reached', 0)))} "
                 f"safe_pass={int(info.get('safe_pass_awarded', 0))} takeovers={ep_takeover_count} "
@@ -926,7 +948,7 @@ def main() -> None:
             )
         else:
             print(
-                f"ep={ep:04d} return={ep_return:8.3f} steps={env.step_idx:4d} "
+                f"ep={ep:04d} return={ep_rl_return:8.3f} steps={env.step_idx:4d} "
                 f"epsilon={eps_now:0.3f} actor_loss={mean_actor_loss:0.4f} critic_loss={mean_critic_loss:0.4f} "
                 f"replay={len(replay)} collision={int(info.get('collision', 0))} "
                 f"goals={int(bool(info.get('vessel1_reached', 0)) and bool(info.get('vessel2_reached', 0)))} "
